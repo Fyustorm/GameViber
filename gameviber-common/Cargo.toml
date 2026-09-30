@@ -1,0 +1,10 @@
+[package]
+name = "gameviber-common"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[features]
+default = []
+# Activé côté userspace ; absent quand le crate est compilé dans le programme eBPF.
+user = []

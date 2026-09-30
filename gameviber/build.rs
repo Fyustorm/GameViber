@@ -1,0 +1,22 @@
+use aya_build::{build_ebpf, Package, Toolchain};
+use std::path::PathBuf;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // SKIP_EBPF_BUILD=1 : compile sans la toolchain eBPF (nightly + bpf-linker),
+    // la source ebpf échouera alors au chargement.
+    if std::env::var_os("SKIP_EBPF_BUILD").is_some() {
+        let out_dir = PathBuf::from(std::env::var("OUT_DIR")?);
+        std::fs::write(out_dir.join("gameviber-ebpf"), [])?;
+        return Ok(());
+    }
+    build_ebpf(
+        [Package {
+            name: "gameviber-ebpf",
+            root_dir: "../gameviber-ebpf",
+            no_default_features: false,
+            features: &[],
+        }],
+        Toolchain::default(),
+    )?;
+    Ok(())
+}

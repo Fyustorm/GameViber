@@ -1,0 +1,10 @@
+[workspace]
+members = ["gameviber-common", "gameviber-ebpf", "gameviber"]
+# gameviber-ebpf est no_std/no_main : il n'est compilé que via aya-build
+# (gameviber/build.rs), jamais directement pour la cible hôte.
+default-members = ["gameviber-common", "gameviber"]
+resolver = "2"
+
+[profile.release]
+lto = true
+strip = true

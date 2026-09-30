@@ -1,0 +1,21 @@
+[package]
+name = "gameviber"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1"
+aya = "0.14"
+buttplug = "12"
+buttplug_core = "11"
+futures = "0.3"
+clap = { version = "4", features = ["derive"] }
+env_logger = "0.11"
+evdev = "0.13"
+gameviber-common = { path = "../gameviber-common", features = ["user"] }
+libc = "0.2"
+log = "0.4"
+tokio = { version = "1", features = ["full"] }
+
+[build-dependencies]
+aya-build = "0.2"
