@@ -4,6 +4,7 @@ use std::path::PathBuf;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // SKIP_EBPF_BUILD=1: build without the eBPF toolchain (nightly + bpf-linker);
     // the ebpf source then fails at load time.
+    println!("cargo:rerun-if-env-changed=SKIP_EBPF_BUILD");
     if std::env::var_os("SKIP_EBPF_BUILD").is_some() {
         let out_dir = PathBuf::from(std::env::var("OUT_DIR")?);
         std::fs::write(out_dir.join("gameviber-ebpf"), [])?;
