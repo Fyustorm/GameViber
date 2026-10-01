@@ -397,3 +397,26 @@ fn ambient_wave_fades_out_when_idle() {
     let out = run(&mut rt, 40.0, rumble(0.0, 0.0), &PadState::default(), 1e9);
     assert_eq!(out.channels["main"], 0.0);
 }
+
+#[test]
+fn apply_params_sets_all_values_and_defaults_the_rest() {
+    let src = "mode { api = 1, name = 'T', params = {
+                 x = number(1, 0, 2, 'X'), y = number(0.5, 0, 1, 'Y'), c = choice('a', { 'a', 'b' }, 'C') } }
+               changes = 0
+               function on_param_changed() changes += 1 end
+               function tick() plot('changes', changes) end";
+    let mut rt = load(src);
+    rt.set_param("y", &ParamValue::Number(0.9)).unwrap();
+    let preset = BTreeMap::from([
+        ("x".to_owned(), ParamValue::Number(5.0)),
+        ("c".to_owned(), ParamValue::Text("bogus".into())),
+        ("stale".to_owned(), ParamValue::Bool(true)),
+    ]);
+    rt.apply_params(&preset).unwrap();
+    let values = rt.param_values();
+    assert_eq!(values["x"], ParamValue::Number(2.0), "clamped");
+    assert_eq!(values["y"], ParamValue::Number(0.5), "missing -> default");
+    assert_eq!(values["c"], ParamValue::Text("a".into()), "invalid -> default");
+    // y set by hand, then x and y changed by the preset; c unchanged: no callback.
+    assert_eq!(plot_value(&step(&mut rt, rumble(0.0, 0.0)), "changes"), 3.0);
+}

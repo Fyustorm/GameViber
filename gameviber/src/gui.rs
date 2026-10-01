@@ -1,7 +1,7 @@
 //! egui front end: status bar with panic stop, mode list and parameters,
 //! and tabs for live graphs, the mode editor, routing, the simulator and logs.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -10,10 +10,10 @@ use egui_plot::{Legend, Line, Plot, PlotPoints};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::config::{self, ModeEntry, SourceChoice, NEW_MODE_TEMPLATE};
-use crate::engine::{Command, SharedHandle, HISTORY_SECS};
+use crate::engine::{Command, ModeView, SharedHandle, HISTORY_SECS};
 use crate::gamepad::BUTTONS;
 use crate::logging::LogBuffer;
-use crate::mode::{ParamDef, ParamKind, ParamValue};
+use crate::mode::{ModeInfo, ParamDef, ParamKind, ParamValue};
 
 const REPAINT: Duration = Duration::from_millis(33);
 const SIM_HIT: Duration = Duration::from_millis(300);
@@ -46,6 +46,9 @@ pub struct App {
     tab: Tab,
     editor: Editor,
     new_mode_name: String,
+    new_preset_name: String,
+    /// Preset whose deletion waits for confirmation.
+    confirm_delete: Option<String>,
     sim_strong: f64,
     sim_weak: f64,
     sim_hit_until: Option<Instant>,
@@ -64,6 +67,8 @@ impl App {
             tab: Tab::Monitor,
             editor: Editor::default(),
             new_mode_name: String::new(),
+            new_preset_name: String::new(),
+            confirm_delete: None,
             sim_strong: 0.0,
             sim_weak: 0.0,
             sim_hit_until: None,
@@ -245,6 +250,8 @@ impl App {
                 }
                 if let Some(info) = &mode.info {
                     ui.separator();
+                    self.presets(ui, info, &mode);
+                    ui.separator();
                     for def in &info.params {
                         if let Some(value) = mode.values.get(&def.name) {
                             if let Some(new) = param_widget(ui, def, value) {
@@ -254,6 +261,61 @@ impl App {
                     }
                 }
             });
+        });
+    }
+
+    fn presets(&mut self, ui: &mut egui::Ui, info: &ModeInfo, mode: &ModeView) {
+        let presets = &mode.presets.presets;
+        let active = mode.presets.active.as_deref().filter(|name| presets.contains_key(*name));
+        let modified = active.is_some_and(|name| !matches_values(info, &presets[name], &mode.values));
+        let current = match active {
+            Some(name) if modified => format!("{name} (modified)"),
+            Some(name) => name.to_owned(),
+            None => "(none)".to_owned(),
+        };
+        ui.horizontal(|ui| {
+            ui.label("Preset");
+            egui::ComboBox::from_id_salt("preset").selected_text(current).show_ui(ui, |ui| {
+                if presets.is_empty() {
+                    ui.label(RichText::new("no preset saved").weak());
+                }
+                for name in presets.keys() {
+                    // Selecting the active preset again reverts its unsaved changes.
+                    if ui.selectable_label(Some(name.as_str()) == active, name).clicked() {
+                        self.send(Command::LoadPreset(name.clone()));
+                    }
+                }
+            });
+        });
+        ui.horizontal(|ui| {
+            if let Some(name) = active {
+                if ui.add_enabled(modified, egui::Button::new("Save")).on_hover_text("Overwrite this preset").clicked() {
+                    self.send(Command::SavePreset(name.to_owned()));
+                }
+                if self.confirm_delete.as_deref() == Some(name) {
+                    if ui.button(RichText::new("Really delete?").color(DANGER)).clicked() {
+                        self.send(Command::DeletePreset(name.to_owned()));
+                        self.confirm_delete = None;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        self.confirm_delete = None;
+                    }
+                } else if ui.button("Delete").clicked() {
+                    self.confirm_delete = Some(name.to_owned());
+                }
+            }
+            if ui.button("Defaults").on_hover_text("Put every parameter back to its default").clicked() {
+                self.send(Command::ResetParams);
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.add(egui::TextEdit::singleline(&mut self.new_preset_name).hint_text("new preset name").desired_width(140.0));
+            let name = self.new_preset_name.trim().to_owned();
+            let label = if presets.contains_key(&name) { "Replace" } else { "Save as" };
+            if ui.add_enabled(!name.is_empty(), egui::Button::new(label)).clicked() {
+                self.send(Command::SavePreset(name));
+                self.new_preset_name.clear();
+            }
         });
     }
 
@@ -492,6 +554,14 @@ fn source_help(source: SourceChoice) -> &'static str {
         SourceChoice::Ebpf => "Passive kernel probe; games keep the real gamepad (asks for your password)",
         SourceChoice::None => "No interception: simulator only",
     }
+}
+
+/// True when applying `preset` would leave `values` unchanged.
+fn matches_values(info: &ModeInfo, preset: &BTreeMap<String, ParamValue>, values: &BTreeMap<String, ParamValue>) -> bool {
+    info.params.iter().all(|def| {
+        let wanted = preset.get(&def.name).and_then(|v| def.accept(v)).unwrap_or_else(|| def.default.clone());
+        values.get(&def.name) == Some(&wanted)
+    })
 }
 
 /// Draws a parameter control; returns the new value when the user changed it.

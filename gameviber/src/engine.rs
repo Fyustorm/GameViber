@@ -12,7 +12,7 @@ use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::mpsc;
 
 pub use crate::config::SourceChoice;
-use crate::config::{self, ModeEntry, Settings};
+use crate::config::{self, ModeEntry, Presets, Settings};
 use crate::helper::client::Helper;
 use crate::gamepad::{PadState, BUTTONS};
 use crate::intiface::{Intiface, IntifaceStatus, Toy, ToyOutputs};
@@ -40,6 +40,8 @@ pub struct EngineOptions {
     pub url: Option<String>,
     pub intiface: bool,
     pub mode: Option<String>,
+    /// Preset of the startup mode to load.
+    pub preset: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -49,6 +51,13 @@ pub enum Command {
     ReloadMode,
     RefreshModes,
     SetParam(String, ParamValue),
+    /// Applies a named preset of the active mode.
+    LoadPreset(String),
+    /// Saves the current parameter values under a name (replacing a preset of that name).
+    SavePreset(String),
+    DeletePreset(String),
+    /// Puts every parameter back to its default.
+    ResetParams,
     Resume,
     Panic,
     Rearm,
@@ -65,6 +74,7 @@ pub struct ModeView {
     pub id: String,
     pub info: Option<ModeInfo>,
     pub values: BTreeMap<String, ParamValue>,
+    pub presets: Presets,
     pub error: Option<String>,
     pub suspended: bool,
 }
@@ -100,6 +110,7 @@ pub type SharedHandle = Arc<Mutex<Shared>>;
 struct ActiveMode {
     entry: ModeEntry,
     runtime: Option<ModeRuntime>,
+    presets: Presets,
     error: Option<String>,
     suspended: bool,
     modified: Option<SystemTime>,
@@ -205,6 +216,9 @@ async fn run_async(
     engine.refresh_modes();
     let first_mode = engine.opts.mode.clone().unwrap_or_else(|| engine.settings.active_mode.clone());
     engine.select_mode(&first_mode);
+    if let Some(preset) = engine.opts.preset.clone() {
+        engine.load_preset(&preset);
+    }
 
     let mut tick = tokio::time::interval(TICK);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -310,6 +324,10 @@ impl Engine {
             Command::ReloadMode => self.reload_mode(),
             Command::RefreshModes => self.refresh_modes(),
             Command::SetParam(name, value) => self.set_param(&name, &value),
+            Command::LoadPreset(name) => self.load_preset(&name),
+            Command::SavePreset(name) => self.save_preset(&name),
+            Command::DeletePreset(name) => self.delete_preset(&name),
+            Command::ResetParams => self.apply_params(&BTreeMap::new(), None),
             Command::Resume => self.resume(),
             Command::Panic => self.trigger_panic("GUI"),
             Command::Rearm => {
@@ -371,8 +389,14 @@ impl Engine {
             }
         }
         let entry = ModeEntry::from_id(id);
-        let mut active =
-            ActiveMode { modified: entry.modified(), entry, runtime: None, error: None, suspended: false };
+        let mut active = ActiveMode {
+            modified: entry.modified(),
+            presets: entry.load_presets(),
+            entry,
+            runtime: None,
+            error: None,
+            suspended: false,
+        };
         match Self::load(&active.entry, None) {
             Ok(mut rt) => {
                 log::info!("mode '{}' loaded ({})", rt.info().name, active.entry.id);
@@ -432,6 +456,56 @@ impl Engine {
             active.error = Some(e);
         }
         self.params_dirty = true;
+    }
+
+    fn load_preset(&mut self, name: &str) {
+        let Some(active) = self.mode.as_ref() else { return };
+        match active.presets.presets.get(name) {
+            Some(values) => self.apply_params(&values.clone(), Some(name)),
+            None => log::warn!("mode {} has no preset '{name}'", active.entry.key),
+        }
+    }
+
+    /// Sets every parameter from `values` (defaults for missing ones) and records `preset`
+    /// as the active preset.
+    fn apply_params(&mut self, values: &BTreeMap<String, ParamValue>, preset: Option<&str>) {
+        let Some(active) = self.mode.as_mut() else { return };
+        let Some(rt) = active.runtime.as_mut() else { return };
+        if let Err(e) = rt.apply_params(values) {
+            log::warn!("applying parameters: {e}");
+            active.error = Some(e);
+        }
+        match preset {
+            Some(name) => log::info!("preset '{name}' loaded"),
+            None => log::info!("parameters reset to defaults"),
+        }
+        active.presets.active = preset.map(str::to_owned);
+        active.entry.save_presets(&active.presets);
+        self.params_dirty = true;
+    }
+
+    fn save_preset(&mut self, name: &str) {
+        let name = name.trim();
+        let Some(ActiveMode { entry, runtime: Some(rt), presets, .. }) = self.mode.as_mut() else { return };
+        if name.is_empty() {
+            return;
+        }
+        presets.presets.insert(name.to_owned(), rt.param_values().clone());
+        presets.active = Some(name.to_owned());
+        entry.save_presets(presets);
+        log::info!("preset '{name}' saved");
+    }
+
+    fn delete_preset(&mut self, name: &str) {
+        let Some(active) = self.mode.as_mut() else { return };
+        if active.presets.presets.remove(name).is_none() {
+            return;
+        }
+        if active.presets.active.as_deref() == Some(name) {
+            active.presets.active = None;
+        }
+        active.entry.save_presets(&active.presets);
+        log::info!("preset '{name}' deleted");
     }
 
     fn save_params(&mut self) {
@@ -577,6 +651,7 @@ impl Engine {
                 id: active.entry.id.clone(),
                 info: active.runtime.as_ref().map(|rt| rt.info().clone()),
                 values: active.runtime.as_ref().map(|rt| rt.param_values().clone()).unwrap_or_default(),
+                presets: active.presets.clone(),
                 error: active.error.clone(),
                 suspended: active.suspended,
             },

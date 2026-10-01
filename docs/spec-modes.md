@@ -81,6 +81,34 @@ params = {
 - Any change from the GUI calls `on_param_changed(name, value)`, if that callback is
   defined.
 
+### 4.1 Presets
+
+A **preset** is a named set of parameter values for one mode, typically one per game
+(e.g. "Tekken 8" for the Combo mode). Presets are managed from the GUI (load, save,
+save as, delete, reset to defaults) and are invisible to the script.
+
+- They are stored in `~/.config/gameviber/presets/<key>.toml`, with the name of the
+  preset last loaded or saved (`active`):
+
+```toml
+active = "Tekken 8"
+
+[presets."Tekken 8"]
+window = 0.4
+max_hits = 8
+
+[presets."Street Fighter 6"]
+window = 0.5
+```
+
+- Loading a preset sets **every** parameter: a value missing from the preset, or no
+  longer valid (wrong type, unknown option), falls back to the default; numbers are
+  clamped to their range. Values of parameters the mode no longer declares are ignored.
+- `on_param_changed` is called only for the parameters whose value actually changes.
+- The GUI shows "(modified)" when the current values differ from the active preset;
+  selecting the preset again reverts the changes.
+- `--preset <name>` loads a preset of the startup mode (useful with `--headless`).
+
 ## 5. Callbacks
 
 All callbacks are optional, except `tick`.
@@ -256,8 +284,6 @@ resolution is therefore 20 ms.
 
 ## 13. Planned evolutions (not in v1)
 
-- **Named parameter presets**: several saved parameter sets per mode, to build game
-  profiles (e.g. "Tekken 8" = Combo mode with its own tuning).
 - **Chaining**: `input.upstream` would expose the output of the previous mode.
 - **Per-game mode**: detecting the game process and mapping it to a mode.
 - **Linear outputs** (`LinearCmd`, for strokers): `stroke(speed, range)`.

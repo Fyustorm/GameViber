@@ -51,6 +51,9 @@ struct Args {
     /// engine, heartbeat, all_or_nothing, ambient)
     #[arg(long)]
     mode: Option<String>,
+    /// Named preset of the mode to load at startup
+    #[arg(long)]
+    preset: Option<String>,
     /// Verbose logs (effects, buttons)
     #[arg(short, long)]
     verbose: bool,
@@ -87,6 +90,7 @@ fn main() -> anyhow::Result<()> {
         url: args.url,
         intiface: !args.no_intiface,
         mode: args.mode.as_deref().map(mode_id),
+        preset: args.preset,
     };
     let shared = Arc::new(Mutex::new(Shared::default()));
     let (commands, commands_rx) = mpsc::unbounded_channel();

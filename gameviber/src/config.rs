@@ -1,4 +1,4 @@
-//! Settings, per-mode parameter values and the mode catalog, stored under
+//! Settings, per-mode parameter values and presets, and the mode catalog, stored under
 //! `~/.config/gameviber` of the invoking user (even when run through sudo).
 
 use std::collections::BTreeMap;
@@ -167,6 +167,15 @@ impl Settings {
     }
 }
 
+/// Named parameter sets of a mode, stored in `presets/<key>.toml`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Presets {
+    /// Preset last loaded or saved, shown as the current one in the GUI.
+    pub active: Option<String>,
+    pub presets: BTreeMap<String, BTreeMap<String, ParamValue>>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModeEntry {
     /// "builtin:<name>" or the absolute path of a user mode file.
@@ -220,6 +229,18 @@ impl ModeEntry {
 
     pub fn save_params(&self, values: &BTreeMap<String, ParamValue>) {
         write_toml(&self.params_path(), values);
+    }
+
+    fn presets_path(&self) -> PathBuf {
+        config_dir().join("presets").join(format!("{}.toml", self.key))
+    }
+
+    pub fn load_presets(&self) -> Presets {
+        read_toml(&self.presets_path())
+    }
+
+    pub fn save_presets(&self, presets: &Presets) {
+        write_toml(&self.presets_path(), presets);
     }
 }
 
@@ -287,5 +308,19 @@ mod tests {
         let text = toml::to_string_pretty(&values).unwrap();
         let back: BTreeMap<String, ParamValue> = toml::from_str(&text).unwrap();
         assert_eq!(back, values);
+    }
+
+    #[test]
+    fn presets_round_trip_through_toml() {
+        let values = BTreeMap::from([("window".to_owned(), ParamValue::Number(0.4))]);
+        let presets = Presets {
+            active: Some("Tekken 8".into()),
+            presets: BTreeMap::from([("Tekken 8".to_owned(), values.clone()), ("soft.v2".to_owned(), values)]),
+        };
+        let text = toml::to_string_pretty(&presets).unwrap();
+        assert_eq!(toml::from_str::<Presets>(&text).unwrap(), presets);
+        let none = Presets { active: None, ..presets };
+        let text = toml::to_string_pretty(&none).unwrap();
+        assert_eq!(toml::from_str::<Presets>(&text).unwrap(), none);
     }
 }

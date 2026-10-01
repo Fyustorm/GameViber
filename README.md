@@ -22,7 +22,8 @@ The GUI provides:
 - a status bar with **STOP ALL** (also: BACK + START held for 0.5 s on the
   gamepad), the global maximum intensity, the **source selector**
   (proxy / eBPF / none) and the "hide the real gamepad" checkbox;
-- the list of modes and their parameters, generated from the script;
+- the list of modes and their parameters, generated from the script, with named
+  **presets** per mode (e.g. one per game);
 - **Monitor**: graphs of the rumble, the outputs and `plot()` values;
 - **Editor**: mode editing with hot reload (Ctrl+S);
 - **Routing**: which toys each mode channel drives;
@@ -50,7 +51,8 @@ The heuristics (parry window, "hit" threshold) need tuning per game: the
 rumble does not tell who took the hit.
 
 Options: `--source proxy|ebpf|none` (remembered afterwards), `--device /dev/input/eventX`,
-`--hide`, `--no-passthrough`, `--url`, `--no-intiface`, `--mode <file or name>`, `-v`.
+`--hide`, `--no-passthrough`, `--url`, `--no-intiface`, `--mode <file or name>`,
+`--preset <name>`, `-v`.
 
 ## Interception sources
 

@@ -328,6 +328,23 @@ impl ModeRuntime {
         self.call_opt(&self.callbacks.on_param_changed, (name, lua_value))
     }
 
+    /// Sets every parameter at once (a preset): missing or invalid values fall back to
+    /// the default. `on_param_changed` is only called for values that change.
+    pub fn apply_params(&mut self, values: &BTreeMap<String, ParamValue>) -> Result<(), String> {
+        let wanted: Vec<_> = self
+            .info
+            .params
+            .iter()
+            .map(|def| (def.name.clone(), values.get(&def.name).and_then(|v| def.accept(v)).unwrap_or_else(|| def.default.clone())))
+            .collect();
+        for (name, value) in wanted {
+            if self.param_values.get(&name) != Some(&value) {
+                self.set_param(&name, &value)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Current `persist` table, for carrying it over a hot reload.
     pub fn persist_snapshot(&self) -> Option<PersistValue> {
         lua_to_persist(&Value::Table(self.persist.clone()), 0)
