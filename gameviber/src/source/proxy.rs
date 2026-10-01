@@ -1,25 +1,28 @@
-//! Source « proxy » : la vraie manette est grab et une copie virtuelle
-//! (uinput, même nom et même VID/PID) est exposée aux jeux. Les inputs sont
-//! relayés vers la copie ; le force-feedback que le jeu y téléverse est
-//! capturé puis relayé à la vraie manette (passthrough).
+//! "proxy" source: the real gamepad is grabbed and a virtual copy (uinput,
+//! same name and VID/PID) is exposed to games. Inputs are forwarded to the
+//! copy; the force feedback games upload to it is captured, then forwarded
+//! to the real gamepad (passthrough).
 
 use std::collections::HashMap;
 use std::io;
 use std::os::fd::AsRawFd;
 use std::path::Path;
-use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 use anyhow::Context;
 use evdev::uinput::VirtualDevice;
 use evdev::{
-    AbsInfo, AttributeSet, Device, EventSummary, EventType, FFEffect, FFEffectCode, InputEvent,
-    SynchronizationCode, UInputCode, UinputAbsSetup,
+    AbsInfo, AttributeSet, Device, EventSummary, EventType, FFEffect, FFEffectCode, InputEvent, SynchronizationCode,
+    UInputCode, UinputAbsSetup,
 };
 
 use super::{find_gamepad, translate_input, EventSender, SourceEvent, SourceKind};
+use crate::gamepad::AxisRanges;
+use crate::helper::client::{Helper, Phase};
+use crate::helper::Request;
+use crate::hider::DeviceHider;
 use crate::rumble::Effect;
 
 const FF_CODES: [FFEffectCode; 6] = [
@@ -31,47 +34,85 @@ const FF_CODES: [FFEffectCode; 6] = [
     FFEffectCode::FF_GAIN,
 ];
 
+/// How the real gamepad is hidden from games.
+pub enum Hide {
+    No,
+    /// We already run as root.
+    Local,
+    Helper(Arc<Helper>),
+}
+
+enum Hidden {
+    No,
+    Local(DeviceHider),
+    Helper(Arc<Helper>),
+}
+
 pub struct ProxySource {
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
-    hider: Option<DeviceHider>,
+    hidden: Hidden,
+    status: Arc<Mutex<String>>,
 }
 
 impl ProxySource {
-    pub fn start(device: Option<&Path>, passthrough: bool, hide: bool, tx: EventSender) -> anyhow::Result<Self> {
+    pub fn start(device: Option<&Path>, passthrough: bool, hide: Hide, tx: EventSender) -> anyhow::Result<Self> {
         let (real_path, mut real) = find_gamepad(device)?;
-        let mut virt = build_virtual(&real).context("création de la manette virtuelle")?;
+        let mut virt = build_virtual(&real).context("cannot create the virtual gamepad")?;
         let virt_path = virt
             .enumerate_dev_nodes_blocking()
-            .context("recherche du nœud de la manette virtuelle")?
+            .context("cannot find the virtual gamepad node")?
             .filter_map(Result::ok)
             .find(|p| p.to_string_lossy().contains("event"))
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_else(|| "?".into());
-        real.grab().context("grab de la vraie manette")?;
-        log::info!(
-            "Manette virtuelle '{}' créée sur {virt_path} (réelle {real_path} grab)",
-            real.name().unwrap_or("?")
-        );
+        real.grab().context("cannot grab the real gamepad")?;
+        let name = real.name().unwrap_or("?").to_owned();
+        log::info!("virtual gamepad '{name}' created at {virt_path} (real one at {real_path} grabbed)");
 
-        let hider = if hide {
-            let h = DeviceHider::hide(&real_path)?;
-            Some(h)
-        } else {
-            None
+        let hidden = match hide {
+            Hide::No => Hidden::No,
+            Hide::Local => Hidden::Local(DeviceHider::hide(&real_path)?),
+            Hide::Helper(helper) => {
+                helper.request(Request::Hide { device: real_path.clone() });
+                Hidden::Helper(helper)
+            }
         };
+        let status = Arc::new(Mutex::new(format!("proxy: {name} ({real_path} → {virt_path})")));
 
         let stop = Arc::new(AtomicBool::new(false));
         let thread = {
-            let stop = stop.clone();
+            let (stop, status) = (stop.clone(), status.clone());
+            let ranges = AxisRanges::from_device(&real);
             std::thread::Builder::new().name("proxy".into()).spawn(move || {
-                let mut proxy = Proxy { real, virt, real_effects: HashMap::new(), passthrough, tx, device: virt_path };
+                let mut proxy =
+                    Proxy { real, virt, ranges, real_effects: HashMap::new(), passthrough, tx, device: virt_path };
                 if let Err(e) = proxy.run(&stop) {
-                    log::error!("proxy arrêté : {e:#}");
+                    log::error!("proxy stopped: {e:#}");
+                    *status.lock().unwrap() = format!("proxy stopped: {e:#}");
                 }
             })?
         };
-        Ok(Self { stop, thread: Some(thread), hider })
+        Ok(Self { stop, thread: Some(thread), hidden, status })
+    }
+
+    pub fn status(&self) -> String {
+        let base = self.status.lock().unwrap().clone();
+        let hidden = match &self.hidden {
+            Hidden::No => String::new(),
+            Hidden::Local(_) => ", real gamepad hidden".into(),
+            Hidden::Helper(helper) => {
+                let state = helper.state();
+                match (&state.phase, &state.hidden, &state.last_error) {
+                    (_, Some(_), _) => ", real gamepad hidden".into(),
+                    (Phase::NotStarted | Phase::Authorizing, ..) => ", hiding: waiting for authorization...".into(),
+                    (Phase::Failed(e), ..) => format!(", not hidden: {e}"),
+                    (Phase::Ready, None, Some(e)) => format!(", not hidden: {e}"),
+                    (Phase::Ready, None, None) => ", hiding...".into(),
+                }
+            }
+        };
+        format!("{base}{hidden}")
     }
 
     pub fn shutdown(mut self) {
@@ -79,8 +120,10 @@ impl ProxySource {
         if let Some(t) = self.thread.take() {
             let _ = t.join();
         }
-        if let Some(h) = self.hider.take() {
-            h.restore();
+        match std::mem::replace(&mut self.hidden, Hidden::No) {
+            Hidden::No => {}
+            Hidden::Local(h) => h.restore(),
+            Hidden::Helper(helper) => helper.request(Request::Unhide),
         }
     }
 }
@@ -90,8 +133,8 @@ fn build_virtual(real: &Device) -> anyhow::Result<VirtualDevice> {
     let mut builder = VirtualDevice::builder()?
         .name(&name)
         .input_id(real.input_id())
-        // Pas de with_phys : evdev 0.13 encode mal UI_SET_PHYS (taille 1 au lieu
-        // d'un pointeur) et le noyau le refuse. Aucun jeu ne lit le phys.
+        // No with_phys: evdev 0.13 encodes UI_SET_PHYS with a 1-byte size instead
+        // of a pointer and the kernel rejects it. No game reads phys anyway.
         .with_ff(&FF_CODES.iter().copied().collect::<AttributeSet<_>>())
         .context("ff")?
         .with_ff_effects_max(real.max_ff_effects().max(1) as u32);
@@ -105,7 +148,7 @@ fn build_virtual(real: &Device) -> anyhow::Result<VirtualDevice> {
             let info = AbsInfo::new(a.value, a.minimum, a.maximum, a.fuzz, a.flat, a.resolution);
             builder = builder
                 .with_absolute_axis(&UinputAbsSetup::new(axis, info))
-                .with_context(|| format!("axe {axis:?}"))?;
+                .with_context(|| format!("axis {axis:?}"))?;
         }
     }
     builder.build().context("UI_DEV_CREATE")
@@ -114,7 +157,8 @@ fn build_virtual(real: &Device) -> anyhow::Result<VirtualDevice> {
 struct Proxy {
     real: Device,
     virt: VirtualDevice,
-    /// id de l'effet côté manette virtuelle -> effet téléversé sur la vraie.
+    ranges: AxisRanges,
+    /// Effect id on the virtual gamepad -> effect uploaded to the real one.
     real_effects: HashMap<i16, FFEffect>,
     passthrough: bool,
     tx: EventSender,
@@ -139,7 +183,7 @@ impl Proxy {
                 return Err(err.into());
             }
             if fds[0].revents & (libc::POLLERR | libc::POLLHUP) != 0 {
-                anyhow::bail!("manette réelle déconnectée");
+                anyhow::bail!("real gamepad disconnected");
             }
             if fds[0].revents & libc::POLLIN != 0 {
                 self.forward_inputs(&mut pending)?;
@@ -151,7 +195,7 @@ impl Proxy {
         Ok(())
     }
 
-    /// Vraie manette -> manette virtuelle, trame par trame (SYN_REPORT).
+    /// Real gamepad -> virtual gamepad, one frame (SYN_REPORT) at a time.
     fn forward_inputs(&mut self, pending: &mut Vec<InputEvent>) -> anyhow::Result<()> {
         let events: Vec<InputEvent> = match self.real.fetch_events() {
             Ok(it) => it.collect(),
@@ -161,13 +205,15 @@ impl Proxy {
         for ev in events {
             match ev.event_type() {
                 EventType::SYNCHRONIZATION if ev.code() == SynchronizationCode::SYN_REPORT.0 => {
-                    self.virt.emit(pending)?; // ajoute lui-même le SYN_REPORT
+                    self.virt.emit(pending)?; // appends the SYN_REPORT itself
                     pending.clear();
                 }
                 EventType::SYNCHRONIZATION | EventType::FORCEFEEDBACK => {}
                 _ => {
                     pending.push(ev);
-                    if let Some(kind @ (SourceKind::Button { .. } | SourceKind::Axis { .. })) = translate_input(ev) {
+                    if let Some(kind @ (SourceKind::Button { .. } | SourceKind::Axis { .. })) =
+                        translate_input(ev, &self.ranges)
+                    {
                         self.send(kind);
                     }
                 }
@@ -176,7 +222,7 @@ impl Proxy {
         Ok(())
     }
 
-    /// Jeu -> manette virtuelle : uploads, effacements, play/stop, gain.
+    /// Game -> virtual gamepad: uploads, erasures, play/stop, gain.
     fn handle_game_ff(&mut self) -> anyhow::Result<()> {
         let events: Vec<InputEvent> = match self.virt.fetch_events() {
             Ok(it) => it.collect(),
@@ -197,22 +243,22 @@ impl Proxy {
                             }),
                         };
                         if let Err(e) = result {
-                            log::warn!("upload sur la vraie manette échoué : {e}");
+                            log::warn!("upload to the real gamepad failed: {e}");
                         }
                     }
                     upload.set_retval(0);
-                    drop(upload); // UI_END_FF_UPLOAD : débloque le jeu
+                    drop(upload); // UI_END_FF_UPLOAD: unblocks the game
                     self.send(SourceKind::Upload { id, effect: Effect::from_evdev(&data) });
                 }
                 EventSummary::UInput(ev, UInputCode::UI_FF_ERASE, _) => {
                     let erase = self.virt.process_ff_erase(ev)?;
                     let id = erase.effect_id() as i16;
                     drop(erase);
-                    self.real_effects.remove(&id); // Drop de FFEffect = effacement
+                    self.real_effects.remove(&id); // dropping an FFEffect erases it
                     self.send(SourceKind::Erase { id });
                 }
                 _ => {
-                    let Some(kind) = translate_input(ev) else { continue };
+                    let Some(kind) = translate_input(ev, &self.ranges) else { continue };
                     if self.passthrough {
                         self.passthrough_ff(&kind);
                     }
@@ -238,7 +284,7 @@ impl Proxy {
             _ => Ok(()),
         };
         if let Err(e) = result {
-            log::warn!("passthrough FF échoué : {e}");
+            log::warn!("FF passthrough failed: {e}");
         }
     }
 
@@ -253,55 +299,4 @@ fn set_nonblocking(fd: i32) -> io::Result<()> {
         return Err(io::Error::last_os_error());
     }
     Ok(())
-}
-
-/// Rend la vraie manette invisible aux jeux (root requis) : chmod 0600 et
-/// suppression des ACL uaccess de ses nœuds eventX / jsX, restaurés à la sortie.
-struct DeviceHider {
-    saved: Vec<(String, u32, String)>, // (nœud, mode, sortie getfacl)
-}
-
-impl DeviceHider {
-    fn hide(event_path: &str) -> anyhow::Result<Self> {
-        use std::os::unix::fs::PermissionsExt;
-        anyhow::ensure!(unsafe { libc::geteuid() } == 0, "--hide nécessite root (sudo)");
-        let event = Path::new(event_path).file_name().context("chemin de manette invalide")?;
-        let sysdir = Path::new("/sys/class/input").join(event).join("device");
-        let mut me = Self { saved: Vec::new() };
-        for entry in std::fs::read_dir(&sysdir)? {
-            let name = entry?.file_name().to_string_lossy().into_owned();
-            if !(name.starts_with("event") || name.starts_with("js")) {
-                continue;
-            }
-            let node = format!("/dev/input/{name}");
-            let mode = std::fs::metadata(&node)?.permissions().mode() & 0o7777;
-            let acl = Command::new("getfacl").args(["-p", &node]).output()?;
-            anyhow::ensure!(acl.status.success(), "getfacl {node} a échoué");
-            me.saved.push((node.clone(), mode, String::from_utf8_lossy(&acl.stdout).into_owned()));
-            anyhow::ensure!(Command::new("setfacl").args(["-b", &node]).status()?.success(), "setfacl -b {node} a échoué");
-            std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o600))?;
-            log::info!("Manette réelle masquée : {node}");
-        }
-        Ok(me)
-    }
-
-    fn restore(self) {
-        use std::io::Write;
-        use std::os::unix::fs::PermissionsExt;
-        for (node, mode, acl) in self.saved {
-            if let Err(e) = std::fs::set_permissions(&node, std::fs::Permissions::from_mode(mode)) {
-                log::warn!("restauration des droits de {node} échouée : {e}");
-            }
-            let child = Command::new("setfacl").arg("--restore=-").stdin(std::process::Stdio::piped()).spawn();
-            match child {
-                Ok(mut child) => {
-                    if let Some(mut stdin) = child.stdin.take() {
-                        let _ = stdin.write_all(acl.as_bytes());
-                    }
-                    let _ = child.wait();
-                }
-                Err(e) => log::warn!("restauration des ACL de {node} échouée : {e}"),
-            }
-        }
-    }
 }

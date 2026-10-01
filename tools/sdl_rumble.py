@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Simule un jeu SDL3 : liste les manettes vues par SDL et envoie un rumble à chacune."""
+"""Simulates an SDL3 game: lists the gamepads SDL sees and rumbles each of them."""
 import ctypes
 import time
 
@@ -18,7 +18,7 @@ count = ctypes.c_int()
 ids = sdl.SDL_GetGamepads(ctypes.byref(count))
 for i in range(count.value):
     path = sdl.SDL_GetGamepadPathForID(ids[i]).decode()
-    print(f"SDL voit : {sdl.SDL_GetGamepadNameForID(ids[i]).decode()} ({path})")
+    print(f"SDL sees: {sdl.SDL_GetGamepadNameForID(ids[i]).decode()} ({path})")
     pad = sdl.SDL_OpenGamepad(ids[i])
     ok = sdl.SDL_RumbleGamepad(pad, 0x8000, 0x4000, 400)
     print(f"  rumble 0x8000/0x4000 400 ms -> {'ok' if ok else sdl.SDL_GetError().decode()}")

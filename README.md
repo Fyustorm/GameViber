@@ -1,22 +1,65 @@
 # GameViber
 
 Équivalent Linux de l'Intiface Game Haptics Router : intercepte le rumble
-envoyé par les jeux à la manette et le relaie vers Intiface Central.
+envoyé par les jeux à la manette, le transforme via un **mode scriptable en
+Lua** et pilote les jouets connectés à Intiface Central.
+
+## Utilisation
+
+Démarrer Intiface Central (« Start Server ») puis, **avant le jeu** :
+
+```sh
+./target/release/gameviber                      # GUI
+./target/release/gameviber --headless -v        # sans GUI, logs seulement
+```
+
+Ne pas lancer GameViber avec `sudo` : la source eBPF et le masquage de la
+manette passent par un **helper privilégié** démarré via `pkexec` à la
+demande (une seule demande de mot de passe par session).
+
+La GUI propose :
+
+- une barre d'état avec **STOP ALL** (aussi : BACK + START maintenus 0,5 s sur
+  la manette), l'intensité maximale globale, le **choix de la source**
+  (proxy / eBPF / aucune) et la case « masquer la vraie manette » ;
+- la liste des modes et leurs paramètres, générés à partir du script ;
+- **Monitor** : graphes du rumble, des sorties et des valeurs `plot()` ;
+- **Editor** : édition des modes avec rechargement à chaud (Ctrl+S) ;
+- **Routing** : quels jouets chaque canal du mode pilote ;
+- **Simulator** : faux rumble et faux boutons pour tester sans jeu ;
+- **Log**.
+
+Les modes utilisateur sont des fichiers `.luau` dans `~/.config/gameviber/modes/`
+(modifiables aussi dans un éditeur externe : ils sont rechargés à la sauvegarde).
+API : [`docs/spec-modes.md`](docs/spec-modes.md). Modes fournis :
+[`gameviber/modes/`](gameviber/modes/).
+
+Options : `--source proxy|ebpf|none` (mémorisée ensuite), `--device /dev/input/eventX`,
+`--hide`, `--no-passthrough`, `--url`, `--no-intiface`, `--mode <fichier ou nom>`, `-v`.
 
 ## Sources d'interception
 
 | `--source` | Principe | Root | Le jeu voit |
 |---|---|---|---|
-| `proxy` (défaut) | Manette virtuelle uinput ; la vraie est grab, les inputs relayés, le rumble capturé puis renvoyé à la vraie manette | seulement pour `--hide` | une copie (même nom, VID/PID) — et la vraie si pas `--hide` |
-| `ebpf` | Sonde eBPF sur les ioctl `EVIOCSFF`/`EVIOCRMFF` + lecture evdev passive des play/stop | oui | la vraie manette, rien ne change |
-
-Les deux produisent les mêmes événements (effets, play/stop, gain, boutons,
-axes), traités par le même moteur (`rumble.rs`, sémantique `ff-memless`).
+| `proxy` (défaut) | Manette virtuelle uinput ; la vraie est grab, les inputs relayés, le rumble capturé puis renvoyé à la vraie manette | pour masquer la vraie (helper) | une copie (même nom, VID/PID) et la vraie si elle n'est pas masquée |
+| `ebpf` | Sonde eBPF sur les ioctl `EVIOCSFF`/`EVIOCRMFF` + lecture evdev passive des play/stop | oui (helper) | la vraie manette, rien ne change |
+| `none` | Aucune interception (simulateur seulement) | non | — |
 
 La sonde eBPF est dérivée de
 [linux-game-haptics-router](https://github.com/madrigal-eschat/linux-game-haptics-router)
 (Apache-2.0, voir `LICENSE-APACHE-linux-game-haptics-router`), avec en plus la
 capture du fd de l'ioctl pour savoir quelle manette est visée.
+
+### Helper privilégié
+
+`gameviber helper` est le seul code exécuté en root. Il ne fait que charger
+la sonde eBPF (et transmettre ses événements bruts) et masquer / restaurer les
+nœuds d'une manette (`/dev/input/eventN` uniquement). Il dialogue en JSON par
+stdin/stdout avec le processus utilisateur, ignore Ctrl+C, et restaure tout
+puis s'arrête dès que stdin se ferme (fermeture ou crash de GameViber). La
+résolution des fd, la lecture des manettes et tout le reste tournent sans
+privilège. Lancé directement en root (`sudo ... --headless`), GameViber se
+passe du helper.
 
 ## Build
 
@@ -27,21 +70,7 @@ cargo build --release          # SKIP_EBPF_BUILD=1 pour compiler sans la sonde
 cargo test
 ```
 
-## Utilisation
-
-Démarrer Intiface Central (« Start Server ») puis, **avant le jeu** :
-
-```sh
-./target/release/gameviber                          # proxy
-sudo ./target/release/gameviber --hide              # proxy, vraie manette masquée aux jeux
-sudo ./target/release/gameviber --source ebpf       # observation passive
-./target/release/gameviber --no-intiface -v         # juste logger rumble et boutons
-```
-
-Options : `--multiplier`, `--baseline`, `--combine avg|max`, `--no-passthrough`,
-`--device /dev/input/eventX`, `--url ws://127.0.0.1:12345`, `--interval-ms`.
-
-`tools/sdl_rumble.py` simule un jeu SDL3 (liste les manettes et fait vibrer chacune).
+Luau est compilé depuis les sources (compilateur C++ requis).
 
 ## Limites connues
 
@@ -50,5 +79,4 @@ Options : `--multiplier`, `--baseline`, `--combine avg|max`, `--no-passthrough`,
 - Source ebpf : les effets téléversés avant le lancement de GameViber sont
   invisibles jusqu'au prochain upload du jeu.
 
-Le prototype Python d'origine est dans `prototype/`.
-Spécification des modes scriptables : `docs/spec-modes.md`.
+`tools/sdl_rumble.py` simule un jeu SDL3, `tools/fake_gamepad.py` une manette physique. Le prototype Python d'origine est dans `prototype/`.

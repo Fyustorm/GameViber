@@ -1,9 +1,9 @@
-//! Sonde eBPF : capture les uploads (EVIOCSFF) et effacements (EVIOCRMFF)
-//! d'effets force-feedback faits par n'importe quel process.
+//! eBPF probe: captures force-feedback effect uploads (EVIOCSFF) and
+//! erasures (EVIOCRMFF) made by any process.
 //!
-//! Dérivé de linux-game-haptics-router (Apache-2.0). Les play/stop ne passent
-//! pas par ici : le noyau les renvoie à tous les lecteurs evdev, le démon les
-//! lit directement sur les manettes.
+//! Derived from linux-game-haptics-router (Apache-2.0). Play/stop do not go
+//! through here: the kernel echoes them to every evdev reader, the daemon
+//! reads them directly from the gamepads.
 #![no_std]
 #![no_main]
 
@@ -16,12 +16,12 @@ use gameviber_common::{
     PROBE_EVENT_KIND_ERASED, PROBE_EVENT_KIND_UPLOADED,
 };
 
-// Offsets des arguments dans le contexte du tracepoint syscalls:sys_enter_ioctl.
+// Argument offsets in the syscalls:sys_enter_ioctl tracepoint context.
 const ARG_FD: usize = 16;
 const ARG_CMD: usize = 24;
 const ARG_PTR: usize = 32;
 
-/// tgid<<32|pid -> upload en cours. LRU : un thread tué n'atteint jamais sys_exit.
+/// tgid<<32|pid -> pending upload. LRU: a killed thread never reaches sys_exit.
 #[map]
 static ENTER_SCRATCH: LruHashMap<u64, EnterScratch> = LruHashMap::with_max_entries(1024, 0);
 
@@ -50,12 +50,12 @@ fn try_enter(ctx: &TracePointContext) -> Result<(), i64> {
     let tgid_pid = bpf_get_current_pid_tgid();
 
     if cmd == EVIOCRMFF_NR {
-        // L'argument est directement l'id de l'effet.
+        // The argument is the effect id itself.
         submit(PROBE_EVENT_KIND_ERASED, (tgid_pid >> 32) as u32, fd, arg as i32 as i16, FfEffect::default());
         return Ok(());
     }
 
-    // struct ff_effect (LP64) : 0 type, 2 id, 4 direction, 6-8 trigger,
+    // struct ff_effect (LP64): 0 type, 2 id, 4 direction, 6-8 trigger,
     // 10 replay.length, 12 replay.delay, 16 union u.
     let mut raw = [0u8; 16 + FF_UNION_WORDS * 2];
     unsafe { bpf_probe_read_user_buf(arg as *const u8, &mut raw)? };
@@ -63,7 +63,7 @@ fn try_enter(ctx: &TracePointContext) -> Result<(), i64> {
 
     let mut effect = FfEffect {
         kind: u16_at(0),
-        id: 0, // attribué par le noyau, relu à la sortie du syscall
+        id: 0, // assigned by the kernel, read back on syscall exit
         direction: u16_at(4),
         replay_length: u16_at(10),
         replay_delay: u16_at(12),

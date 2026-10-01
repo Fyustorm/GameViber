@@ -1,7 +1,7 @@
-//! Reconstitue l'état des moteurs à partir de la sémantique force-feedback
-//! evdev (upload / play / stop / erase / gain), à la manière de `ff-memless`
-//! dans le noyau : chaque effet actif contribue au moteur fort et au faible,
-//! les contributions sont additionnées puis bornées.
+//! Rebuilds the motor state from evdev force-feedback semantics (upload /
+//! play / stop / erase / gain), like the kernel's `ff-memless`: every active
+//! effect contributes to the strong and weak motors, contributions are summed
+//! then clamped.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -22,7 +22,7 @@ pub enum EffectKind {
     Periodic { magnitude: i16, envelope: Envelope },
     Constant { level: i16, envelope: Envelope },
     Ramp { start: i16, end: i16, envelope: Envelope },
-    /// Effets conditionnels (spring, damper...) : sans équivalent vibration.
+    /// Condition effects (spring, damper...): no vibration equivalent.
     Unsupported,
 }
 
@@ -34,7 +34,7 @@ pub struct Effect {
 }
 
 impl Effect {
-    /// Convertit la capture brute de la sonde eBPF (union aux offsets noyau).
+    /// Converts the raw eBPF probe capture (union at kernel offsets).
     pub fn from_probe(raw: &FfEffect) -> Self {
         let u = &raw.u;
         let env = |at: usize| Envelope {
@@ -45,18 +45,18 @@ impl Effect {
         };
         let kind = match raw.kind {
             FF_RUMBLE => EffectKind::Rumble { strong: u[0], weak: u[1] },
-            // ff_periodic_effect : waveform, period, magnitude, offset, phase, envelope
+            // ff_periodic_effect: waveform, period, magnitude, offset, phase, envelope
             FF_PERIODIC => EffectKind::Periodic { magnitude: u[2] as i16, envelope: env(5) },
-            // ff_constant_effect : level, envelope
+            // ff_constant_effect: level, envelope
             FF_CONSTANT => EffectKind::Constant { level: u[0] as i16, envelope: env(1) },
-            // ff_ramp_effect : start_level, end_level, envelope
+            // ff_ramp_effect: start_level, end_level, envelope
             FF_RAMP => EffectKind::Ramp { start: u[0] as i16, end: u[1] as i16, envelope: env(2) },
             _ => EffectKind::Unsupported,
         };
         Self { kind, length_ms: raw.replay_length, delay_ms: raw.replay_delay }
     }
 
-    /// Convertit un effet reçu par la manette virtuelle uinput.
+    /// Converts an effect received by the uinput virtual gamepad.
     pub fn from_evdev(data: &evdev::FFEffectData) -> Self {
         use evdev::FFEffectKind as K;
         let env = |e: &evdev::FFEnvelope| Envelope {
@@ -81,7 +81,7 @@ impl Effect {
         Self { kind, length_ms: data.replay.length, delay_ms: data.replay.delay }
     }
 
-    /// (fort, faible) en 0..0xFFFF, `elapsed` depuis le début effectif de l'effet.
+    /// (strong, weak) in 0..0xFFFF, `elapsed` since the effect actually started.
     fn motors_at(&self, elapsed: Duration) -> (u32, u32) {
         let t = elapsed.as_millis() as u32;
         let length = self.length_ms as u32;
@@ -99,13 +99,13 @@ impl Effect {
     }
 }
 
-/// Effets à un seul niveau (0..0x7FFF) : ff-memless les étend à 0..0xFFFF sur les deux moteurs.
+/// Single-level effects (0..0x7FFF): ff-memless scales them to 0..0xFFFF on both motors.
 fn both(level: u16) -> (u32, u32) {
     let v = (level as u32 * 2).min(0xFFFF);
     (v, v)
 }
 
-/// Même calcul que `apply_envelope` de drivers/input/ff-memless.c.
+/// Same computation as `apply_envelope` in drivers/input/ff-memless.c.
 fn apply_envelope(value: u16, t: u32, length: u32, env: Envelope) -> u16 {
     let value = value as i64;
     if env.attack_length > 0 && t < env.attack_length as u32 {
@@ -129,11 +129,11 @@ struct Playing {
     count: i32,
 }
 
-/// Délai max pendant lequel un play peut attendre l'upload de son effet
-/// (source eBPF : les deux arrivent par des chemins différents).
+/// How long a play may wait for its effect's upload (eBPF source: both
+/// arrive through different paths).
 const PENDING_PLAY_TIMEOUT: Duration = Duration::from_secs(1);
 
-/// État force-feedback d'une manette.
+/// Force-feedback state of one gamepad.
 #[derive(Debug)]
 pub struct RumbleState {
     effects: HashMap<i16, Effect>,
@@ -157,7 +157,7 @@ impl RumbleState {
         self.playing.remove(&id);
     }
 
-    /// `count` = nombre de répétitions demandé par EV_FF (0 = stop).
+    /// `count` = repetitions requested by EV_FF (0 = stop).
     pub fn play(&mut self, id: i16, count: i32, now: Instant) {
         if count <= 0 {
             self.playing.remove(&id);
@@ -170,12 +170,12 @@ impl RumbleState {
         self.gain = gain;
     }
 
-    /// (fort, faible) en 0..0xFFFF à l'instant `now`. Purge les effets terminés.
+    /// (strong, weak) in 0..0xFFFF at `now`. Drops finished effects.
     pub fn motors(&mut self, now: Instant) -> (u16, u16) {
         let (mut strong, mut weak) = (0u32, 0u32);
         self.playing.retain(|id, p| {
             let Some(effect) = self.effects.get(id) else {
-                // Play arrivé avant son upload : on patiente un peu.
+                // Play received before its upload: wait a little.
                 return now.duration_since(p.since) < PENDING_PLAY_TIMEOUT;
             };
             let start = p.since + Duration::from_millis(effect.delay_ms as u64);
@@ -184,7 +184,7 @@ impl RumbleState {
             }
             let elapsed = now - start;
             let (s, w) = if effect.length_ms == 0 {
-                effect.motors_at(elapsed) // durée infinie
+                effect.motors_at(elapsed) // infinite length
             } else {
                 let length = Duration::from_millis(effect.length_ms as u64);
                 if elapsed >= length * p.count as u32 {

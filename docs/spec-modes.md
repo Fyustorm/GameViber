@@ -1,6 +1,6 @@
 # GameViber — Spécification des modes (API v1)
 
-Statut : brouillon · Version de l'API : `1`
+Statut : implémentée (v1) · Version de l'API : `1`
 
 ## 1. Objectif et périmètre
 
@@ -74,7 +74,8 @@ params = {
 }
 ```
 
-- Les valeurs sont sauvegardées par mode dans `~/.config/gameviber/params/<nom>.toml`.
+- Les valeurs sont sauvegardées par mode dans `~/.config/gameviber/params/<clé>.toml`
+  (clé = nom du mode fourni, ou nom du fichier sans extension).
 - Au rechargement, une valeur est conservée si le paramètre garde le même nom et le même
   type. Sinon, elle est remise à son défaut.
 - Toute modification depuis la GUI appelle `on_param_changed(name, value)`, si ce callback
@@ -105,8 +106,8 @@ Tous les callbacks sont optionnels, sauf `tick`.
 
 ## 6. Événements
 
-Tous les événements ont un champ `ev.t`, le temps du moteur en secondes (le même que
-`input.time`).
+Tous les événements ont un champ `ev.t` : le temps du mode en secondes au tick où
+l'événement est distribué (le même que `input.time`).
 
 ### 6.1 Rumble
 
@@ -191,8 +192,9 @@ stop_all()                    -- remet le niveau de base à 0 et annule pulses e
 - `channel` vaut `"main"` par défaut, ou `"*"` pour tous les canaux.
 - Les valeurs hors de 0..1 sont bornées silencieusement.
 - **Valeur finale d'un canal** = `max(niveau de base, pulses actifs, motifs actifs)`.
-- Le type d'actionneur (vibration, rotation, oscillation) est choisi dans la GUI au moment
-  du routage. Pour le script, c'est toujours une intensité entre 0 et 1.
+- v1 : un canal pilote tous les actionneurs (vibration, rotation, oscillation) des jouets
+  qui lui sont associés. Pour le script, c'est toujours une intensité entre 0 et 1.
+- Sans réglage de routage, `main` pilote tous les jouets et les autres canaux aucun.
 
 ### 8.3 Motifs
 
@@ -213,7 +215,7 @@ play(heartbeat, { channel = "main", loops = 3, scale = 0.5 })  -- loops = 0 : bo
 | `after(seconds, fn)` | appelle `fn` une fois après le délai, renvoie un handle `:cancel()` |
 | `every(seconds, fn)` | appelle `fn` périodiquement, renvoie un handle `:cancel()` |
 | `clamp(x, a, b)`, `lerp(a, b, t)`, `map(x, a1, b1, a2, b2)` | maths courantes |
-| `random([a, b])` | aléatoire, graine réinitialisée à chaque `on_start` |
+| `random([a, b])` | flottant aléatoire dans [0, 1[, [0, a[ ou [a, b[ ; graine réinitialisée à chaque `on_start` |
 | `persist` | table conservée entre deux rechargements à chaud (pas entre deux lancements) |
 
 Les minuteurs (`after`, `every`) sont évalués au début de chaque tick, avant les événements.
@@ -223,10 +225,12 @@ Leur résolution est donc de 20 ms.
 
 - Moteur : **Luau** via `mlua`, en mode sandbox.
 - Bibliothèques disponibles : `math`, `string`, `table`, `bit32`, `utf8`.
-- Bibliothèques absentes : `io`, `os`, `require`, `load`, `debug`, et tout accès fichier ou
-  réseau.
-- Budget par appel de callback : 100 000 instructions, contrôlées par l'interruption Luau.
-  Un dépassement compte comme une erreur d'exécution.
+- Bibliothèques absentes : `io`, `os`, `debug`, `coroutine`, `require`, `loadstring`,
+  `getfenv` / `setfenv`, et tout accès fichier ou réseau. Les bibliothèques présentes sont en
+  lecture seule.
+- Budget par appel de callback : 10 ms de temps réel, contrôlé par l'interruption Luau
+  (200 ms pour l'exécution du fichier au chargement). Un dépassement compte comme une
+  erreur d'exécution.
 - Mémoire du mode : 16 Mo maximum.
 - Les variables globales du script sont réinitialisées à chaque (re)chargement, sauf
   `persist`.
@@ -248,7 +252,7 @@ Leur résolution est donc de 20 ms.
 - **Plafond global** d'intensité, réglable dans la GUI : défaut 1.0, appliqué après le mode.
 - **Bouton panique** : BACK + START maintenus 0.5 s (combo configurable).
   - Il coupe tous les jouets et suspend le mode jusqu'à la réactivation depuis la GUI.
-  - Le combo n'est pas transmis aux callbacks tant qu'il est maintenu.
+  - v1 : les appuis sur BACK et START restent transmis aux callbacks.
 - **Perte de source** : si la manette est déconnectée ou le proxy arrêté, toutes les
   sorties passent à 0.
 - **Débit de sortie** : 20 envois/s maximum par jouet. Un changement de moins de 0.01
@@ -263,6 +267,8 @@ Leur résolution est donc de 20 ms.
 - **Éditeur par blocs** qui générerait du Luau.
 
 ## 14. Exemples
+
+Les versions de référence, livrées avec l'application, sont dans `gameviber/modes/`.
 
 ### 14.1 Simple (parité GHR, mode par défaut)
 

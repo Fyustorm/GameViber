@@ -10,12 +10,18 @@ buttplug = "12"
 buttplug_core = "11"
 futures = "0.3"
 clap = { version = "4", features = ["derive"] }
+eframe = "0.36"
+egui_plot = "0.37"
 env_logger = "0.11"
 evdev = "0.13"
 gameviber-common = { path = "../gameviber-common", features = ["user"] }
 libc = "0.2"
 log = "0.4"
+mlua = { version = "0.12", features = ["luau"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 tokio = { version = "1", features = ["full"] }
+toml = "1"
 
 [build-dependencies]
 aya-build = "0.2"

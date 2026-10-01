@@ -1,0 +1,224 @@
+//! Gamepad normalization: evdev key/axis codes to the Xbox-layout names
+//! exposed to modes (A, B, LB, DPAD_UP, LX, LT...), plus idle tracking and
+//! panic-combo detection.
+
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+
+use evdev::{AbsoluteAxisCode as Abs, KeyCode as Key};
+
+pub const BUTTONS: [&str; 17] = [
+    "A", "B", "X", "Y", "LB", "RB", "BACK", "START", "GUIDE", "LS", "RS", "DPAD_UP", "DPAD_DOWN",
+    "DPAD_LEFT", "DPAD_RIGHT", "LT", "RT",
+];
+pub const AXES: [&str; 6] = ["LX", "LY", "RX", "RY", "LT", "RT"];
+
+/// Normalized sticks below this magnitude count as centered.
+pub const DEADZONE: f64 = 0.1;
+/// Analog triggers also generate button events around this value.
+const TRIGGER_PRESS: f64 = 0.5;
+/// BACK + START held this long triggers the panic stop.
+pub const PANIC_HOLD_SECS: f64 = 0.5;
+
+fn button_name(code: u16) -> Option<&'static str> {
+    Some(match Key(code) {
+        Key::BTN_SOUTH => "A",
+        Key::BTN_EAST => "B",
+        // xpad reports the Xbox X/Y buttons as BTN_X/BTN_Y (aliases of NORTH/WEST).
+        Key::BTN_NORTH => "X",
+        Key::BTN_WEST => "Y",
+        Key::BTN_TL => "LB",
+        Key::BTN_TR => "RB",
+        Key::BTN_SELECT => "BACK",
+        Key::BTN_START => "START",
+        Key::BTN_MODE => "GUIDE",
+        Key::BTN_THUMBL => "LS",
+        Key::BTN_THUMBR => "RS",
+        Key::BTN_DPAD_UP | Key::BTN_TRIGGER_HAPPY3 => "DPAD_UP",
+        Key::BTN_DPAD_DOWN | Key::BTN_TRIGGER_HAPPY4 => "DPAD_DOWN",
+        Key::BTN_DPAD_LEFT | Key::BTN_TRIGGER_HAPPY1 => "DPAD_LEFT",
+        Key::BTN_DPAD_RIGHT | Key::BTN_TRIGGER_HAPPY2 => "DPAD_RIGHT",
+        Key::BTN_TL2 => "LT",
+        Key::BTN_TR2 => "RT",
+        _ => return None,
+    })
+}
+
+/// Axis value range of one device, read from its absinfo.
+#[derive(Debug, Clone, Default)]
+pub struct AxisRanges(HashMap<u16, (i32, i32)>);
+
+impl AxisRanges {
+    pub fn from_device(dev: &evdev::Device) -> Self {
+        let ranges = dev
+            .get_absinfo()
+            .map(|it| it.map(|(code, info)| (code.0, (info.minimum(), info.maximum()))).collect())
+            .unwrap_or_default();
+        Self(ranges)
+    }
+
+    /// Sticks and hats to -1..1, triggers to 0..1.
+    pub fn normalize(&self, code: u16, value: i32) -> f64 {
+        let (min, max) = self.0.get(&code).copied().unwrap_or((-32768, 32767));
+        if max <= min {
+            return 0.0;
+        }
+        let unit = (value - min) as f64 / (max - min) as f64;
+        match Abs(code) {
+            Abs::ABS_Z | Abs::ABS_RZ | Abs::ABS_GAS | Abs::ABS_BRAKE => unit.clamp(0.0, 1.0),
+            _ => (unit * 2.0 - 1.0).clamp(-1.0, 1.0),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ButtonEvent {
+    pub name: &'static str,
+    pub pressed: bool,
+}
+
+/// Current state of the (merged) gamepad as seen by modes.
+#[derive(Debug, Default)]
+pub struct PadState {
+    held: BTreeSet<&'static str>,
+    axes: BTreeMap<&'static str, f64>,
+    last_input: f64,
+    panic_since: Option<f64>,
+}
+
+impl PadState {
+    pub fn held(&self) -> &BTreeSet<&'static str> {
+        &self.held
+    }
+
+    pub fn axes(&self) -> &BTreeMap<&'static str, f64> {
+        &self.axes
+    }
+
+    /// Seconds since the last player input at `time`.
+    pub fn input_idle(&self, time: f64) -> f64 {
+        (time - self.last_input).max(0.0)
+    }
+
+    pub fn key(&mut self, code: u16, pressed: bool, time: f64) -> Option<ButtonEvent> {
+        self.button(button_name(code)?, pressed, time)
+    }
+
+    /// Named button (from a key code or the simulator). Returns an event on state change.
+    pub fn button(&mut self, name: &'static str, pressed: bool, time: f64) -> Option<ButtonEvent> {
+        let changed = if pressed { self.held.insert(name) } else { self.held.remove(name) };
+        if !changed {
+            return None;
+        }
+        self.last_input = time;
+        self.update_panic(time);
+        Some(ButtonEvent { name, pressed })
+    }
+
+    /// Normalized axis value. Hats and analog triggers also produce button events.
+    pub fn axis(&mut self, code: u16, value: f64, time: f64) -> Vec<ButtonEvent> {
+        let mut events = Vec::new();
+        let mut hat = |this: &mut Self, neg: &'static str, pos: &'static str| {
+            events.extend(this.button(neg, value < -0.5, time));
+            events.extend(this.button(pos, value > 0.5, time));
+        };
+        let name = match Abs(code) {
+            Abs::ABS_X => "LX",
+            Abs::ABS_Y => "LY",
+            Abs::ABS_RX => "RX",
+            Abs::ABS_RY => "RY",
+            Abs::ABS_Z => "LT",
+            Abs::ABS_RZ => "RT",
+            Abs::ABS_HAT0X => {
+                hat(self, "DPAD_LEFT", "DPAD_RIGHT");
+                return events;
+            }
+            Abs::ABS_HAT0Y => {
+                hat(self, "DPAD_UP", "DPAD_DOWN");
+                return events;
+            }
+            _ => return events,
+        };
+        self.axes.insert(name, value);
+        if value.abs() > DEADZONE {
+            self.last_input = time;
+        }
+        if name == "LT" || name == "RT" {
+            events.extend(self.button(name, value > TRIGGER_PRESS, time));
+        }
+        events
+    }
+
+    fn update_panic(&mut self, time: f64) {
+        let combo = self.held.contains("BACK") && self.held.contains("START");
+        self.panic_since = match (combo, self.panic_since) {
+            (true, None) => Some(time),
+            (true, since) => since,
+            (false, _) => None,
+        };
+    }
+
+    /// True once BACK + START have been held for `PANIC_HOLD_SECS`.
+    pub fn panic_combo(&self, time: f64) -> bool {
+        self.panic_since.is_some_and(|since| time - since >= PANIC_HOLD_SECS)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn key_press_and_release_emit_named_events_once() {
+        let mut pad = PadState::default();
+        assert_eq!(pad.key(Key::BTN_SOUTH.0, true, 1.0), Some(ButtonEvent { name: "A", pressed: true }));
+        assert_eq!(pad.key(Key::BTN_SOUTH.0, true, 1.1), None);
+        assert!(pad.held().contains("A"));
+        assert_eq!(pad.key(Key::BTN_SOUTH.0, false, 1.2), Some(ButtonEvent { name: "A", pressed: false }));
+        assert_eq!(pad.input_idle(3.2), 2.0);
+    }
+
+    #[test]
+    fn hat_axis_becomes_dpad_buttons() {
+        let mut pad = PadState::default();
+        let ev = pad.axis(Abs::ABS_HAT0X.0, -1.0, 0.0);
+        assert_eq!(ev, vec![ButtonEvent { name: "DPAD_LEFT", pressed: true }]);
+        let ev = pad.axis(Abs::ABS_HAT0X.0, 0.0, 0.1);
+        assert_eq!(ev, vec![ButtonEvent { name: "DPAD_LEFT", pressed: false }]);
+    }
+
+    #[test]
+    fn trigger_is_axis_and_button() {
+        let mut pad = PadState::default();
+        let ev = pad.axis(Abs::ABS_RZ.0, 0.8, 0.0);
+        assert_eq!(pad.axes()["RT"], 0.8);
+        assert_eq!(ev, vec![ButtonEvent { name: "RT", pressed: true }]);
+    }
+
+    #[test]
+    fn stick_inside_deadzone_is_not_input() {
+        let mut pad = PadState::default();
+        pad.axis(Abs::ABS_X.0, 0.05, 5.0);
+        assert_eq!(pad.input_idle(5.0), 5.0);
+        pad.axis(Abs::ABS_X.0, 0.5, 5.0);
+        assert_eq!(pad.input_idle(5.0), 0.0);
+    }
+
+    #[test]
+    fn normalize_uses_device_ranges() {
+        let ranges = AxisRanges([(Abs::ABS_Z.0, (0, 255)), (Abs::ABS_X.0, (-32768, 32767))].into_iter().collect());
+        assert_eq!(ranges.normalize(Abs::ABS_Z.0, 255), 1.0);
+        assert!(ranges.normalize(Abs::ABS_X.0, 0).abs() < 0.001);
+        assert_eq!(ranges.normalize(Abs::ABS_X.0, -32768), -1.0);
+    }
+
+    #[test]
+    fn panic_combo_needs_hold_time() {
+        let mut pad = PadState::default();
+        pad.button("BACK", true, 0.0);
+        pad.button("START", true, 0.1);
+        assert!(!pad.panic_combo(0.5));
+        assert!(pad.panic_combo(0.6));
+        pad.button("START", false, 0.7);
+        assert!(!pad.panic_combo(1.0));
+    }
+}

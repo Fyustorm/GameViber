@@ -1,11 +1,11 @@
-//! Types partagés entre la sonde eBPF et le démon.
+//! Types shared between the eBPF probe and the daemon.
 //!
-//! Dérivé de linux-game-haptics-router (Apache-2.0, voir
-//! LICENSE-APACHE-linux-game-haptics-router) : on capture en plus le fd de
-//! l'ioctl (pour savoir quelle manette est visée) et l'union complète de
-//! `struct ff_effect` (enveloppes des effets périodiques comprises).
+//! Derived from linux-game-haptics-router (Apache-2.0, see
+//! LICENSE-APACHE-linux-game-haptics-router). Additions: the ioctl's fd is
+//! captured (to know which gamepad is targeted), as well as the whole
+//! `struct ff_effect` union (periodic effect envelopes included).
 #![cfg_attr(not(feature = "user"), no_std)]
-// `bpf_target_arch` est un cfg posé par aya-build lors de la compilation eBPF.
+// `bpf_target_arch` is a cfg set by aya-build when compiling the eBPF program.
 #![allow(unexpected_cfgs)]
 
 pub const FF_RUMBLE: u16 = 0x50;
@@ -13,11 +13,11 @@ pub const FF_PERIODIC: u16 = 0x51;
 pub const FF_CONSTANT: u16 = 0x52;
 pub const FF_RAMP: u16 = 0x57;
 
-/// Nombre de mots u16 capturés dans l'union de `struct ff_effect` (offset 16).
-/// 12 mots = 24 octets, assez pour periodic (waveform..envelope), constant, ramp et rumble.
+/// Number of u16 words captured from `struct ff_effect`'s union (offset 16).
+/// 12 words = 24 bytes: enough for periodic (waveform..envelope), constant, ramp and rumble.
 pub const FF_UNION_WORDS: usize = 12;
 
-/// Copie compacte de `struct ff_effect` telle que lue par la sonde.
+/// Compact copy of `struct ff_effect` as read by the probe.
 #[derive(Debug, Clone, Copy, Default)]
 #[repr(C)]
 pub struct FfEffect {
@@ -26,11 +26,11 @@ pub struct FfEffect {
     pub direction: u16,
     pub replay_length: u16,
     pub replay_delay: u16,
-    /// Union brute, en mots u16 aux offsets noyau (16, 18, 20, ...).
+    /// Raw union, as u16 words at the kernel offsets (16, 18, 20, ...).
     pub u: [u16; FF_UNION_WORDS],
 }
 
-/// Données conservées entre sys_enter et sys_exit d'un EVIOCSFF.
+/// Data kept between sys_enter and sys_exit of an EVIOCSFF.
 #[derive(Clone, Copy)]
 #[repr(C)]
 pub struct EnterScratch {
@@ -43,13 +43,13 @@ pub struct EnterScratch {
 pub const PROBE_EVENT_KIND_UPLOADED: u8 = 0;
 pub const PROBE_EVENT_KIND_ERASED: u8 = 1;
 
-/// Événement poussé dans le ring buffer vers le démon.
+/// Event pushed to the daemon through the ring buffer.
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct ProbeEvent {
     pub kind: u8,
     pub tgid: u32,
-    /// fd sur lequel l'ioctl a été fait : `/proc/<tgid>/fd/<fd>` donne la manette.
+    /// fd the ioctl was issued on: `/proc/<tgid>/fd/<fd>` gives the gamepad.
     pub fd: i32,
     pub effect_id: i16,
     pub _pad: u16,
@@ -57,15 +57,15 @@ pub struct ProbeEvent {
 }
 
 #[cfg(all(feature = "user", not(any(target_arch = "x86_64", target_arch = "aarch64"))))]
-compile_error!("KERNEL_FF_EFFECT_SIZE=48 n'est vérifié que pour x86_64/aarch64 (LP64)");
+compile_error!("KERNEL_FF_EFFECT_SIZE=48 is only verified for x86_64/aarch64 (LP64)");
 #[cfg(all(
     not(feature = "user"),
     not(any(bpf_target_arch = "x86_64", bpf_target_arch = "aarch64"))
 ))]
-compile_error!("KERNEL_FF_EFFECT_SIZE=48 n'est vérifié que pour x86_64/aarch64 (LP64)");
+compile_error!("KERNEL_FF_EFFECT_SIZE=48 is only verified for x86_64/aarch64 (LP64)");
 
-/// Taille réelle de `struct ff_effect` en LP64 : l'union contient un pointeur
-/// (`custom_data`) qui l'aligne sur 8 octets. Encodée dans le numéro d'ioctl.
+/// Real size of `struct ff_effect` on LP64: the union holds a pointer
+/// (`custom_data`) that aligns it on 8 bytes. Encoded in the ioctl number.
 pub const KERNEL_FF_EFFECT_SIZE: u32 = 48;
 
 const IOC_WRITE: u32 = 1 << 30;
@@ -82,7 +82,7 @@ mod tests {
 
     #[test]
     fn ioctl_numbers_match_kernel() {
-        // Valeur vérifiée par strace dans linux-game-haptics-router.
+        // Value verified with strace in linux-game-haptics-router.
         assert_eq!(EVIOCSFF_NR, 0x4030_4580);
         assert_eq!(EVIOCRMFF_NR, 0x4004_4581);
     }
