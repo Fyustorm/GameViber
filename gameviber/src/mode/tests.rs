@@ -2,6 +2,13 @@ use super::*;
 
 const SIMPLE: &str = include_str!("../../modes/simple.luau");
 const ACCUMULATION: &str = include_str!("../../modes/accumulation.luau");
+const COMBO: &str = include_str!("../../modes/combo.luau");
+const OVERHEAT: &str = include_str!("../../modes/overheat.luau");
+const TENSION: &str = include_str!("../../modes/tension.luau");
+const ENGINE: &str = include_str!("../../modes/engine.luau");
+const HEARTBEAT: &str = include_str!("../../modes/heartbeat.luau");
+const ALL_OR_NOTHING: &str = include_str!("../../modes/all_or_nothing.luau");
+const AMBIENT: &str = include_str!("../../modes/ambient.luau");
 const DT: f64 = 0.02;
 
 fn load(source: &str) -> ModeRuntime {
@@ -28,6 +35,24 @@ fn step(rt: &mut ModeRuntime, r: RumbleLevels) -> TickOutput {
 
 fn main_out(rt: &mut ModeRuntime, r: RumbleLevels) -> f64 {
     step(rt, r).channels["main"]
+}
+
+fn plot_value(out: &TickOutput, name: &str) -> f64 {
+    out.plots.iter().find(|(n, _)| n == name).unwrap_or_else(|| panic!("no plot '{name}'")).1
+}
+
+/// Steps `secs` seconds with the given rumble, pad and input idle time.
+fn run(rt: &mut ModeRuntime, secs: f64, r: RumbleLevels, pad: &PadState, input_idle: f64) -> TickOutput {
+    let mut out = TickOutput::default();
+    for _ in 0..(secs / DT).round() as usize {
+        out = rt.step(DT, r, pad, input_idle, &[]).expect("step");
+    }
+    out
+}
+
+fn press(rt: &mut ModeRuntime, name: &'static str) -> TickOutput {
+    let ev = ModeEvent::Button(ButtonEvent { name, pressed: true });
+    rt.step(DT, rumble(0.0, 0.0), &PadState::default(), 0.0, &[ev]).expect("step")
 }
 
 fn wrap(body: &str) -> String {
@@ -262,4 +287,113 @@ fn stop_resets_outputs() {
     assert_eq!(main_out(&mut rt, rumble(0.0, 0.0)), 0.7);
     rt.stop().unwrap();
     assert_eq!(main_out(&mut rt, rumble(0.0, 0.0)), 0.0);
+}
+
+#[test]
+fn builtin_modes_load_and_run() {
+    let mut pad = PadState::default();
+    pad.axis(evdev::AbsoluteAxisCode::ABS_RZ.0, 1.0, 0.0);
+    pad.button("RB", true, 0.0);
+    for src in [COMBO, OVERHEAT, TENSION, ENGINE, HEARTBEAT, ALL_OR_NOTHING, AMBIENT] {
+        let mut rt = load(src);
+        for i in 0..1000 {
+            let level = if i % 50 < 10 { 0.9 } else { 0.0 };
+            let out = rt.step(DT, rumble(level, 0.2), &pad, (i % 300) as f64, &[]).expect("step");
+            let v = out.channels["main"];
+            assert!((0.0..=1.0).contains(&v), "{}: output {v}", rt.info().name);
+        }
+    }
+}
+
+#[test]
+fn combo_hits_grow_and_reset_after_window() {
+    let mut rt = load(COMBO);
+    let hit = |rt: &mut ModeRuntime| {
+        let out = step(rt, rumble(0.2, 0.0));
+        run(rt, 0.2, rumble(0.0, 0.0), &PadState::default(), 1e9);
+        out
+    };
+    let first = hit(&mut rt).channels["main"];
+    let second = hit(&mut rt).channels["main"];
+    assert!(second > first, "{first} -> {second}");
+    let out = run(&mut rt, 1.0, rumble(0.0, 0.0), &PadState::default(), 1e9);
+    assert_eq!(plot_value(&out, "hits"), 0.0);
+}
+
+#[test]
+fn overheat_heats_while_firing_then_resets() {
+    let mut rt = load(OVERHEAT);
+    let mut pad = PadState::default();
+    pad.button("RT", true, 0.0);
+    let out = run(&mut rt, 2.0, rumble(0.0, 0.0), &pad, 0.0);
+    assert!((plot_value(&out, "heat") - 0.3).abs() < 0.01);
+    run(&mut rt, 6.0, rumble(0.0, 0.0), &pad, 0.0);
+    let out = step(&mut rt, rumble(0.0, 0.0));
+    assert!(out.channels["main"] > 0.5, "overheating");
+    let out = run(&mut rt, 3.5, rumble(0.0, 0.0), &PadState::default(), 1e9);
+    assert_eq!(plot_value(&out, "heat"), 0.0);
+}
+
+#[test]
+fn tension_rewards_vibration_right_after_parry() {
+    let mut rt = load(TENSION);
+    press(&mut rt, "RB");
+    let out = step(&mut rt, rumble(0.1, 0.0));
+    assert_eq!(out.channels["main"], 1.0);
+    assert_eq!(plot_value(&out, "parries"), 1.0);
+    // Same vibration without a parry press: plain rumble.
+    run(&mut rt, 1.0, rumble(0.0, 0.0), &PadState::default(), 1e9);
+    let out = step(&mut rt, rumble(0.1, 0.0));
+    assert!(out.channels["main"] < 0.2);
+}
+
+#[test]
+fn engine_revs_with_throttle() {
+    let mut rt = load(ENGINE);
+    let idle = run(&mut rt, 1.0, rumble(0.0, 0.0), &PadState::default(), 0.0);
+    assert_eq!(plot_value(&idle, "rpm"), 0.0);
+    let mut pad = PadState::default();
+    pad.axis(evdev::AbsoluteAxisCode::ABS_RZ.0, 1.0, 0.0);
+    let out = run(&mut rt, 1.0, rumble(0.0, 0.0), &pad, 0.0);
+    assert_eq!(plot_value(&out, "rpm"), 1.0);
+    let off = run(&mut rt, 1.0, rumble(0.0, 0.0), &PadState::default(), 1e9);
+    assert_eq!(off.channels["main"], 0.0, "engine off when idle");
+}
+
+#[test]
+fn heartbeat_speeds_up_with_stress_and_calms_down() {
+    let mut rt = load(HEARTBEAT);
+    let out = step(&mut rt, rumble(0.0, 0.0));
+    assert!((plot_value(&out, "bpm") - 60.0).abs() < 1e-6);
+    for _ in 0..5 {
+        step(&mut rt, rumble(1.0, 0.0));
+        run(&mut rt, 0.2, rumble(0.0, 0.0), &PadState::default(), 0.0);
+    }
+    let out = step(&mut rt, rumble(0.0, 0.0));
+    assert!((plot_value(&out, "stress") - 0.75).abs() < 1e-6);
+    let out = run(&mut rt, 60.0, rumble(0.0, 0.0), &PadState::default(), 0.0);
+    assert_eq!(plot_value(&out, "stress"), 0.0);
+}
+
+#[test]
+fn all_or_nothing_fills_while_playing_and_empties_on_hit() {
+    let mut rt = load(ALL_OR_NOTHING);
+    let out = run(&mut rt, 10.0, rumble(0.0, 0.0), &PadState::default(), 0.0);
+    assert!((plot_value(&out, "gauge") - 0.1).abs() < 1e-6);
+    // `input.idle` also counts rumble idle time, which starts at activation.
+    let out = run(&mut rt, 25.0, rumble(0.0, 0.0), &PadState::default(), 1e9);
+    assert!((plot_value(&out, "gauge") - 0.1).abs() < 1e-6, "frozen while idle");
+    assert_eq!(out.channels["main"], 0.0, "paused while idle");
+    let out = step(&mut rt, rumble(0.9, 0.0));
+    assert_eq!(plot_value(&out, "gauge"), 0.0);
+    assert_eq!(out.channels["main"], 0.8, "punishment pulse");
+}
+
+#[test]
+fn ambient_wave_fades_out_when_idle() {
+    let mut rt = load(AMBIENT);
+    let out = run(&mut rt, 4.0, rumble(0.0, 0.0), &PadState::default(), 0.0);
+    assert!((out.channels["main"] - 0.25).abs() < 1e-3);
+    let out = run(&mut rt, 40.0, rumble(0.0, 0.0), &PadState::default(), 1e9);
+    assert_eq!(out.channels["main"], 0.0);
 }

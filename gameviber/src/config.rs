@@ -15,9 +15,16 @@ use crate::mode::ParamValue;
 pub const BUILTIN_PREFIX: &str = "builtin:";
 pub const MODE_EXTENSION: &str = "luau";
 
-const BUILTIN_MODES: [(&str, &str); 2] = [
+const BUILTIN_MODES: [(&str, &str); 9] = [
     ("simple", include_str!("../modes/simple.luau")),
     ("accumulation", include_str!("../modes/accumulation.luau")),
+    ("combo", include_str!("../modes/combo.luau")),
+    ("overheat", include_str!("../modes/overheat.luau")),
+    ("tension", include_str!("../modes/tension.luau")),
+    ("engine", include_str!("../modes/engine.luau")),
+    ("heartbeat", include_str!("../modes/heartbeat.luau")),
+    ("all_or_nothing", include_str!("../modes/all_or_nothing.luau")),
+    ("ambient", include_str!("../modes/ambient.luau")),
 ];
 
 pub const DEFAULT_MODE: &str = "builtin:simple";

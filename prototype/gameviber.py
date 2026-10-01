@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""GameViber - prototype (approche A : manette virtuelle uinput).
+"""GameViber - prototype (approach A: uinput virtual gamepad).
 
-La vraie manette est "grab" (le jeu ne reçoit plus ses événements) et une
-manette virtuelle avec le même nom / VID / PID est créée. Les inputs sont
-relayés réelle -> virtuelle ; le force-feedback téléversé par le jeu sur la
-virtuelle est relayé vers la vraie manette (passthrough) et converti en
-commandes Buttplug envoyées à Intiface Central.
+The real gamepad is grabbed (the game no longer receives its events) and a
+virtual gamepad with the same name / VID / PID is created. Inputs are
+forwarded real -> virtual; the force feedback uploaded by the game to the
+virtual pad is forwarded to the real pad (passthrough) and converted into
+Buttplug commands sent to Intiface Central.
 """
 import argparse
 import asyncio
@@ -27,7 +27,7 @@ PHYS_TAG = "gameviber"
 FF_CODES = [e.FF_RUMBLE, e.FF_PERIODIC, e.FF_SQUARE, e.FF_TRIANGLE, e.FF_SINE, e.FF_GAIN]
 
 
-# --- ioctl uinput FF (python-evdev ne renseigne pas request_id dans begin_upload/begin_erase)
+# --- uinput FF ioctls (python-evdev does not fill request_id in begin_upload/begin_erase)
 
 def _ioc(direction, nr, struct):
     return (direction << 30) | (ctypes.sizeof(struct) << 16) | (ord("U") << 8) | nr
@@ -39,7 +39,7 @@ UI_END_FF_ERASE = _ioc(1, 203, ff.UInputErase)
 
 
 def effect_motors(effect):
-    """(strong, weak) en 0..65535 pour un effet, périodiques approximés comme ff-memless."""
+    """(strong, weak) in 0..65535 for an effect, periodic effects approximated like ff-memless."""
     if effect.type == e.FF_RUMBLE:
         r = effect.u.ff_rumble_effect
         return r.strong_magnitude, r.weak_magnitude
@@ -60,15 +60,15 @@ def find_gamepad(path):
                 and e.BTN_SOUTH in caps.get(e.EV_KEY, [])):
             return dev
         dev.close()
-    raise SystemExit("Aucune manette avec rumble trouvée")
+    raise SystemExit("No gamepad with rumble found")
 
 
 class RumbleState:
-    """Rejoue la sémantique FF evdev (upload / play / stop / gain) pour connaître l'état des moteurs."""
+    """Replays the evdev FF semantics (upload / play / stop / gain) to track the motor state."""
 
     def __init__(self):
-        self.effects = {}   # id virtuel -> Effect
-        self.active = {}    # id virtuel -> (début, fin ou None)
+        self.effects = {}   # virtual id -> Effect
+        self.active = {}    # virtual id -> (start, end or None)
         self.gain = 0xFFFF
 
     def play(self, eid, count):
@@ -100,8 +100,8 @@ class RumbleState:
 
 
 class DeviceHider:
-    """Rend la vraie manette invisible aux jeux (nécessite root) : chmod 0600 et
-    suppression des ACL uaccess sur ses nœuds eventX / jsX, restaurés à la sortie."""
+    """Hides the real gamepad from games (requires root): chmod 0600 and
+    removal of the uaccess ACLs on its eventX / jsX nodes, restored on exit."""
 
     def __init__(self, real):
         sysdir = f"/sys/class/input/{os.path.basename(real.path)}/device"
@@ -114,7 +114,7 @@ class DeviceHider:
             self.saved[node] = (os.stat(node).st_mode & 0o7777, acl)
             subprocess.run(["setfacl", "-b", node], check=True)
             os.chmod(node, 0o600)
-            log.info("Manette réelle masquée: %s", node)
+            log.info("Real gamepad hidden: %s", node)
 
     def restore(self):
         for node, (mode, acl) in self.saved.items():
@@ -122,7 +122,7 @@ class DeviceHider:
                 os.chmod(node, mode)
                 subprocess.run(["setfacl", "--restore=-"], input=acl, text=True, check=True)
             except (OSError, subprocess.CalledProcessError) as err:
-                log.warning("Restauration de %s échouée: %s", node, err)
+                log.warning("Restoring %s failed: %s", node, err)
 
 
 class GamepadProxy:
@@ -130,7 +130,7 @@ class GamepadProxy:
         self.real = real
         self.passthrough = passthrough
         self.state = RumbleState()
-        self.real_ids = {}  # id virtuel -> id sur la vraie manette
+        self.real_ids = {}  # virtual id -> id on the real gamepad
 
         caps = real.capabilities(absinfo=True)
         caps.pop(e.EV_SYN, None)
@@ -146,7 +146,7 @@ class GamepadProxy:
             max_effects=real.ff_effects_count or 16,
         )
         real.grab()
-        log.info("Manette virtuelle '%s' créée sur %s (réelle %s grab)", real.name, self.ui.device.path, real.path)
+        log.info("Virtual gamepad '%s' created on %s (real %s grabbed)", real.name, self.ui.device.path, real.path)
 
     def close(self):
         for rid in self.real_ids.values():
@@ -160,13 +160,13 @@ class GamepadProxy:
             pass
         self.ui.close()
 
-    # --- réelle -> virtuelle
+    # --- real -> virtual
     def on_real_readable(self):
         for ev in self.real.read():
             if ev.type != e.EV_FF:
                 self.ui.write(ev.type, ev.code, ev.value)
 
-    # --- jeu -> virtuelle (FF)
+    # --- game -> virtual (FF)
     def on_virtual_readable(self):
         for ev in self.ui.read():
             if ev.type == e.EV_UINPUT:
@@ -191,7 +191,7 @@ class GamepadProxy:
             try:
                 self.real_ids[vid] = self.real.upload_effect(real_effect)
             except OSError as err:
-                log.warning("Upload sur la vraie manette échoué: %s", err)
+                log.warning("Upload to the real gamepad failed: %s", err)
         fcntl.ioctl(self.ui.fd, UI_END_FF_UPLOAD, up)
         s, w = effect_motors(effect)
         log.debug("upload id=%d type=%#x strong=%d weak=%d len=%dms", vid, effect.type, s, w, effect.ff_replay.length)
@@ -224,7 +224,7 @@ class GamepadProxy:
 
 
 class IntifaceClient:
-    """Client Buttplug minimal (protocole v3, JSON sur websocket)."""
+    """Minimal Buttplug client (protocol v3, JSON over websocket)."""
 
     def __init__(self, url):
         self.url = url
@@ -245,20 +245,20 @@ class IntifaceClient:
             try:
                 async with websockets.connect(self.url) as ws:
                     self.ws = ws
-                    # Handshake : rien d'autre ne doit partir avant la réponse ServerInfo.
+                    # Handshake: nothing else may be sent before the ServerInfo reply.
                     await self._send("RequestServerInfo", ClientName="GameViber", MessageVersion=3)
                     for msg in json.loads(await ws.recv()):
                         self._handle(msg)
                     if self.server is None:
-                        raise websockets.WebSocketException("handshake refusé")
+                        raise websockets.WebSocketException("handshake refused")
                     await self._send("RequestDeviceList")
                     await self._send("StartScanning")
-                    log.info("Connecté à Intiface '%s' (%s)", self.server, self.url)
+                    log.info("Connected to Intiface '%s' (%s)", self.server, self.url)
                     async for raw in ws:
                         for msg in json.loads(raw):
                             self._handle(msg)
             except (OSError, websockets.WebSocketException) as err:
-                log.warning("Intiface indisponible (%s), nouvelle tentative dans 5 s", err)
+                log.warning("Intiface unavailable (%s), retrying in 5 s", err)
             self.ws = None
             self.server = None
             self.devices.clear()
@@ -277,13 +277,13 @@ class IntifaceClient:
             self._add(body)
         elif name == "DeviceRemoved":
             self.devices.pop(body["DeviceIndex"], None)
-            log.info("Appareil retiré: %d", body["DeviceIndex"])
+            log.info("Device removed: %d", body["DeviceIndex"])
         elif name == "Error":
-            log.warning("Erreur Intiface: %s", body.get("ErrorMessage"))
+            log.warning("Intiface error: %s", body.get("ErrorMessage"))
 
     def _add(self, dev):
         self.devices[dev["DeviceIndex"]] = dev["DeviceMessages"]
-        log.info("Appareil: [%d] %s", dev["DeviceIndex"], dev["DeviceName"])
+        log.info("Device: [%d] %s", dev["DeviceIndex"], dev["DeviceName"])
 
     async def _ping_loop(self, period):
         while self.ws is not None:
@@ -312,7 +312,7 @@ class IntifaceClient:
 
 
 def to_speed(strong, weak, args):
-    """Même logique que GHR (MainWindow.xaml.cs) : moyenne (ou max) x multiplicateur, plancher baseline."""
+    """Same logic as GHR (MainWindow.xaml.cs): average (or max) x multiplier, baseline floor."""
     level = max(strong, weak) if args.mode == "max" else (strong + weak) / 2
     if level == 0 and args.baseline == 0:
         return 0.0
@@ -337,7 +337,7 @@ async def main(args):
             strong, weak = proxy.state.motors()
             speed = round(to_speed(strong, weak, args), 2)
             if speed != last:
-                log.info("rumble strong=%5d weak=%5d -> vitesse %.2f", strong, weak, speed)
+                log.info("rumble strong=%5d weak=%5d -> speed %.2f", strong, weak, speed)
                 if intiface:
                     await intiface.set_speed(speed)
                 last = speed
@@ -356,20 +356,20 @@ async def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--device", help="chemin /dev/input/eventX de la manette (auto sinon)")
-    parser.add_argument("--url", default="ws://127.0.0.1:12345", help="URL du serveur Intiface")
-    parser.add_argument("--no-intiface", action="store_true", help="ne fait que logger le rumble")
-    parser.add_argument("--no-passthrough", action="store_true", help="ne pas faire vibrer la vraie manette")
+    parser.add_argument("--device", help="/dev/input/eventX path of the gamepad (auto-detected otherwise)")
+    parser.add_argument("--url", default="ws://127.0.0.1:12345", help="Intiface server URL")
+    parser.add_argument("--no-intiface", action="store_true", help="only log the rumble")
+    parser.add_argument("--no-passthrough", action="store_true", help="do not rumble the real gamepad")
     parser.add_argument("--hide", action="store_true",
-                        help="masquer la vraie manette aux jeux pendant l'exécution (root requis)")
+                        help="hide the real gamepad from games while running (requires root)")
     parser.add_argument("--multiplier", type=float, default=1.0)
-    parser.add_argument("--baseline", type=float, default=0.0, help="vitesse minimale 0..1")
-    parser.add_argument("--mode", choices=["avg", "max"], default="avg", help="combinaison des 2 moteurs")
-    parser.add_argument("--interval", type=float, default=0.05, help="période d'envoi vers Intiface (s)")
+    parser.add_argument("--baseline", type=float, default=0.0, help="minimum speed 0..1")
+    parser.add_argument("--mode", choices=["avg", "max"], default="avg", help="how the 2 motors are combined")
+    parser.add_argument("--interval", type=float, default=0.05, help="Intiface send period (s)")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
     if args.hide and os.geteuid() != 0:
-        parser.error("--hide nécessite root (sudo)")
+        parser.error("--hide requires root (sudo)")
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(asctime)s %(levelname)-7s %(message)s", datefmt="%H:%M:%S")
     logging.getLogger("websockets").setLevel(logging.INFO)

@@ -1,82 +1,96 @@
 # GameViber
 
-Équivalent Linux de l'Intiface Game Haptics Router : intercepte le rumble
-envoyé par les jeux à la manette, le transforme via un **mode scriptable en
-Lua** et pilote les jouets connectés à Intiface Central.
+Linux equivalent of the Intiface Game Haptics Router: intercepts the rumble
+games send to the gamepad, transforms it through a **Lua-scriptable mode** and
+drives the toys connected to Intiface Central.
 
-## Utilisation
+## Usage
 
-Démarrer Intiface Central (« Start Server ») puis, **avant le jeu** :
+Start Intiface Central ("Start Server"), then, **before the game**:
 
 ```sh
 ./target/release/gameviber                      # GUI
-./target/release/gameviber --headless -v        # sans GUI, logs seulement
+./target/release/gameviber --headless -v        # no GUI, logs only
 ```
 
-Ne pas lancer GameViber avec `sudo` : la source eBPF et le masquage de la
-manette passent par un **helper privilégié** démarré via `pkexec` à la
-demande (une seule demande de mot de passe par session).
+Do not run GameViber with `sudo`: the eBPF source and gamepad hiding go
+through a **privileged helper** started on demand via `pkexec` (one password
+prompt per session).
 
-La GUI propose :
+The GUI provides:
 
-- une barre d'état avec **STOP ALL** (aussi : BACK + START maintenus 0,5 s sur
-  la manette), l'intensité maximale globale, le **choix de la source**
-  (proxy / eBPF / aucune) et la case « masquer la vraie manette » ;
-- la liste des modes et leurs paramètres, générés à partir du script ;
-- **Monitor** : graphes du rumble, des sorties et des valeurs `plot()` ;
-- **Editor** : édition des modes avec rechargement à chaud (Ctrl+S) ;
-- **Routing** : quels jouets chaque canal du mode pilote ;
-- **Simulator** : faux rumble et faux boutons pour tester sans jeu ;
+- a status bar with **STOP ALL** (also: BACK + START held for 0.5 s on the
+  gamepad), the global maximum intensity, the **source selector**
+  (proxy / eBPF / none) and the "hide the real gamepad" checkbox;
+- the list of modes and their parameters, generated from the script;
+- **Monitor**: graphs of the rumble, the outputs and `plot()` values;
+- **Editor**: mode editing with hot reload (Ctrl+S);
+- **Routing**: which toys each mode channel drives;
+- **Simulator**: fake rumble and fake buttons to test without a game;
 - **Log**.
 
-Les modes utilisateur sont des fichiers `.luau` dans `~/.config/gameviber/modes/`
-(modifiables aussi dans un éditeur externe : ils sont rechargés à la sauvegarde).
-API : [`docs/spec-modes.md`](docs/spec-modes.md). Modes fournis :
-[`gameviber/modes/`](gameviber/modes/).
+User modes are `.luau` files in `~/.config/gameviber/modes/` (they can also be
+edited in an external editor: they are reloaded on save).
+API: [`docs/spec-modes.md`](docs/spec-modes.md). Built-in modes
+([`gameviber/modes/`](gameviber/modes/)), designed per game genre:
 
-Options : `--source proxy|ebpf|none` (mémorisée ensuite), `--device /dev/input/eventX`,
-`--hide`, `--no-passthrough`, `--url`, `--no-intiface`, `--mode <fichier ou nom>`, `-v`.
+| Mode | For | Idea |
+|---|---|---|
+| Simple | anything | forwards the rumble (GHR parity) |
+| Accumulation | anything | points earned per vibration, draining while idle |
+| Combo | fighting (Tekken, SF6) | chained hits grow stronger, final burst |
+| Overheat | action / shooter (Ratchet & Clank, Doom) | compressed rumble, peaks stand out, overheat gauge |
+| Tension | turn-based with QTEs (Clair Obscur) | wave building up during fights, parries rewarded |
+| Engine | racing (Forza, GT) | trigger = engine RPM, rumble = road and impacts |
+| Heartbeat | horror (RE, Silent Hill) | heart speeding up with every vibration |
+| All or Nothing | souls-like (Elden Ring, Sekiro) | gauge rising while you survive, emptied by a big hit |
+| Ambient | exploration, platformer, cosy | slow wave under the rumble, fading out when idle |
 
-## Sources d'interception
+The heuristics (parry window, "hit" threshold) need tuning per game: the
+rumble does not tell who took the hit.
 
-| `--source` | Principe | Root | Le jeu voit |
+Options: `--source proxy|ebpf|none` (remembered afterwards), `--device /dev/input/eventX`,
+`--hide`, `--no-passthrough`, `--url`, `--no-intiface`, `--mode <file or name>`, `-v`.
+
+## Interception sources
+
+| `--source` | How it works | Root | The game sees |
 |---|---|---|---|
-| `proxy` (défaut) | Manette virtuelle uinput ; la vraie est grab, les inputs relayés, le rumble capturé puis renvoyé à la vraie manette | pour masquer la vraie (helper) | une copie (même nom, VID/PID) et la vraie si elle n'est pas masquée |
-| `ebpf` | Sonde eBPF sur les ioctl `EVIOCSFF`/`EVIOCRMFF` + lecture evdev passive des play/stop | oui (helper) | la vraie manette, rien ne change |
-| `none` | Aucune interception (simulateur seulement) | non | — |
+| `proxy` (default) | uinput virtual gamepad; the real one is grabbed, inputs are forwarded, rumble is captured then sent back to the real gamepad | to hide the real one (helper) | a copy (same name, VID/PID), and the real one unless hidden |
+| `ebpf` | eBPF probe on the `EVIOCSFF`/`EVIOCRMFF` ioctls + passive evdev reading of play/stop | yes (helper) | the real gamepad, nothing changes |
+| `none` | No interception (simulator only) | no | — |
 
-La sonde eBPF est dérivée de
+The eBPF probe is derived from
 [linux-game-haptics-router](https://github.com/madrigal-eschat/linux-game-haptics-router)
-(Apache-2.0, voir `LICENSE-APACHE-linux-game-haptics-router`), avec en plus la
-capture du fd de l'ioctl pour savoir quelle manette est visée.
+(Apache-2.0, see `LICENSE-APACHE-linux-game-haptics-router`), with the addition
+of capturing the ioctl's fd to know which gamepad is targeted.
 
-### Helper privilégié
+### Privileged helper
 
-`gameviber helper` est le seul code exécuté en root. Il ne fait que charger
-la sonde eBPF (et transmettre ses événements bruts) et masquer / restaurer les
-nœuds d'une manette (`/dev/input/eventN` uniquement). Il dialogue en JSON par
-stdin/stdout avec le processus utilisateur, ignore Ctrl+C, et restaure tout
-puis s'arrête dès que stdin se ferme (fermeture ou crash de GameViber). La
-résolution des fd, la lecture des manettes et tout le reste tournent sans
-privilège. Lancé directement en root (`sudo ... --headless`), GameViber se
-passe du helper.
+`gameviber helper` is the only code running as root. It only loads the eBPF
+probe (and forwards its raw events) and hides / restores a gamepad's nodes
+(`/dev/input/eventN` only). It talks JSON over stdin/stdout with the user
+process, ignores Ctrl+C, and restores everything then exits as soon as stdin
+closes (GameViber exiting or crashing). Fd resolution, gamepad reading and
+everything else run unprivileged. When started directly as root
+(`sudo ... --headless`), GameViber does without the helper.
 
 ## Build
 
 ```sh
-rustup toolchain install nightly --component rust-src   # pour la sonde eBPF
-# bpf-linker : binaire précompilé sur https://github.com/aya-rs/bpf-linker/releases
-cargo build --release          # SKIP_EBPF_BUILD=1 pour compiler sans la sonde
+rustup toolchain install nightly --component rust-src   # for the eBPF probe
+# bpf-linker: prebuilt binary at https://github.com/aya-rs/bpf-linker/releases
+cargo build --release          # SKIP_EBPF_BUILD=1 to build without the probe
 cargo test
 ```
 
-Luau est compilé depuis les sources (compilateur C++ requis).
+Luau is built from source (a C++ compiler is required).
 
-## Limites connues
+## Known limitations
 
-- Seul le chemin evdev force-feedback est couvert : les manettes pilotées en
-  hidraw par SDL (DualShock/DualSense/Switch) nécessitent `SDL_JOYSTICK_HIDAPI=0`.
-- Source ebpf : les effets téléversés avant le lancement de GameViber sont
-  invisibles jusqu'au prochain upload du jeu.
+- Only the evdev force-feedback path is covered: gamepads driven through
+  hidraw by SDL (DualShock/DualSense/Switch) need `SDL_JOYSTICK_HIDAPI=0`.
+- ebpf source: effects uploaded before GameViber started are invisible until
+  the game's next upload.
 
-`tools/sdl_rumble.py` simule un jeu SDL3, `tools/fake_gamepad.py` une manette physique. Le prototype Python d'origine est dans `prototype/`.
+`tools/sdl_rumble.py` simulates an SDL3 game, `tools/fake_gamepad.py` a physical gamepad. The original Python prototype is in `prototype/`.

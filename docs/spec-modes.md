@@ -1,286 +1,284 @@
-# GameViber — Spécification des modes (API v1)
+# GameViber — Mode specification (API v1)
 
-Statut : implémentée (v1) · Version de l'API : `1`
+Status: implemented (v1) · API version: `1`
 
-## 1. Objectif et périmètre
+## 1. Goal and scope
 
-Un **mode** est un script Lua qui transforme ce qui se passe dans le jeu (rumble envoyé
-à la manette, inputs du joueur, temps) en consignes pour les jouets connectés à Intiface.
-Les modes se créent et se modifient à la volée depuis l'éditeur intégré, sans recompilation.
+A **mode** is a Lua script that turns what happens in the game (rumble sent to the
+gamepad, player inputs, time) into commands for the toys connected to Intiface.
+Modes are created and edited on the fly from the built-in editor, without recompiling.
 
-**Inclus en v1**
+**Included in v1**
 
-- Un seul mode actif à la fois.
-- Une seule manette interceptée.
-- Sorties Buttplug de type scalaire : `Vibrate`, `Rotate`, `Oscillate`.
-- Rechargement à chaud, paramètres réglables depuis la GUI, graphes de debug, simulateur.
+- A single active mode at a time.
+- A single intercepted gamepad.
+- Scalar Buttplug outputs: `Vibrate`, `Rotate`, `Oscillate`.
+- Hot reload, parameters adjustable from the GUI, debug graphs, simulator.
 
-**Hors v1** (voir §13) : chaînage de modes, mode par jeu automatique, sorties linéaires
-(strokers), multi-manettes, éditeur par blocs.
+**Not in v1** (see §13): mode chaining, automatic per-game mode, linear outputs
+(strokers), multiple gamepads, block editor.
 
 ## 2. Architecture
 
 ```
-Proxy manette ──► file d'événements ──► Runtime Lua (mode actif) ──► Couche sécurité ──► Sortie Buttplug
- (uinput, FF,        (horodatés)          tick fixe 50 Hz               (non scriptable)     (débit limité)
-  boutons, axes)
+Gamepad proxy ──► event queue ──► Lua runtime (active mode) ──► Safety layer ──► Buttplug output
+ (uinput, FF,     (timestamped)     fixed 50 Hz tick               (not scriptable)   (rate limited)
+  buttons, axes)
 ```
 
-- Le **proxy** produit des événements bruts : effets FF (upload, lecture, arrêt), boutons, axes.
-- Le **runtime** normalise ces événements, les distribue aux callbacks du mode, puis appelle
-  `tick`. Il tourne dans son propre thread.
-- La **couche sécurité** applique le plafond global et le bouton panique, et gère les pertes
-  de connexion. Un script ne peut pas la contourner.
-- La **sortie** relaie les canaux logiques vers les actionneurs réels, supprime les doublons
-  et limite le débit envoyé à Intiface.
+- The **proxy** produces raw events: FF effects (upload, play, stop), buttons, axes.
+- The **runtime** normalizes these events, dispatches them to the mode's callbacks, then
+  calls `tick`. It runs in its own thread.
+- The **safety layer** applies the global cap and the panic button, and handles connection
+  losses. A script cannot bypass it.
+- The **output** forwards logical channels to the real actuators, drops duplicates and
+  limits the rate sent to Intiface.
 
-## 3. Fichier de mode
+## 3. Mode file
 
-- Un fichier = un mode, extension `.luau`, encodage UTF-8.
-- Emplacements :
-  - modes utilisateur : `~/.config/gameviber/modes/`
-  - modes fournis : embarqués dans le binaire, en lecture seule et duplicables depuis l'éditeur.
-- Le fichier doit appeler **une seule fois**, au niveau racine, la fonction `mode { ... }` :
+- One file = one mode, `.luau` extension, UTF-8 encoding.
+- Locations:
+  - user modes: `~/.config/gameviber/modes/`
+  - built-in modes: embedded in the binary, read-only and duplicable from the editor.
+- The file must call the `mode { ... }` function **exactly once**, at the top level:
 
 ```lua
 mode {
-  api         = 1,                          -- obligatoire
-  name        = "Accumulation",             -- obligatoire, affiché dans la GUI
-  description = "Chaque vibration ajoute des points...",
-  author      = "moi",
+  api         = 1,                          -- required
+  name        = "Accumulation",             -- required, shown in the GUI
+  description = "Vibrations and bonus presses add points...",
+  author      = "me",
   version     = "1.0",
-  channels    = { "main" },                 -- canaux de sortie, défaut { "main" }
-  params      = { ... },                    -- voir §4
+  channels    = { "main" },                 -- output channels, default { "main" }
+  params      = { ... },                    -- see §4
 }
 ```
 
-## 4. Paramètres
+## 4. Parameters
 
-Chaque paramètre déclaré dans `params` est affiché automatiquement dans la GUI et lu dans
-le script via la table en lecture seule `P`.
+Every parameter declared in `params` is shown automatically in the GUI and read in the
+script through the read-only table `P`.
 
-| Constructeur | Contrôle GUI | Valeur dans `P` |
+| Constructor | GUI control | Value in `P` |
 |---|---|---|
-| `number(default, min, max, label [, step])` | curseur | nombre |
-| `bool(default, label)` | case à cocher | booléen |
-| `choice(default, { "a", "b", ... }, label)` | liste déroulante | chaîne |
-| `button_param(default, label)` | sélecteur de bouton manette | nom de bouton (§6.2) |
+| `number(default, min, max, label [, step])` | slider | number |
+| `bool(default, label)` | checkbox | boolean |
+| `choice(default, { "a", "b", ... }, label)` | drop-down list | string |
+| `button_param(default, label)` | gamepad button selector | button name (§6.2) |
 
 ```lua
 params = {
-  per_hit = number(5, 0, 50, "Points par vibration"),
-  source  = choice("any", { "any", "rumble", "input" }, "Inactivité ="),
-  bonus   = button_param("A", "Bouton bonus"),
+  per_hit = number(5, 0, 50, "Points per vibration"),
+  source  = choice("any", { "any", "rumble", "input" }, "Idle means no..."),
+  bonus   = button_param("A", "Bonus button"),
 }
 ```
 
-- Les valeurs sont sauvegardées par mode dans `~/.config/gameviber/params/<clé>.toml`
-  (clé = nom du mode fourni, ou nom du fichier sans extension).
-- Au rechargement, une valeur est conservée si le paramètre garde le même nom et le même
-  type. Sinon, elle est remise à son défaut.
-- Toute modification depuis la GUI appelle `on_param_changed(name, value)`, si ce callback
-  est défini.
+- Values are saved per mode in `~/.config/gameviber/params/<key>.toml`
+  (key = built-in mode name, or file name without extension).
+- On reload, a value is kept if the parameter keeps the same name and type. Otherwise it
+  is reset to its default.
+- Any change from the GUI calls `on_param_changed(name, value)`, if that callback is
+  defined.
 
 ## 5. Callbacks
 
-Tous les callbacks sont optionnels, sauf `tick`.
+All callbacks are optional, except `tick`.
 
-| Callback | Appelé quand |
+| Callback | Called when |
 |---|---|
-| `on_start()` | le mode est activé, ou rechargé |
-| `on_stop()` | le mode est désactivé, rechargé, ou suspendu après une erreur |
-| `tick(dt, input)` | à chaque tick (50 Hz), après la distribution des événements |
-| `on_rumble(ev)` | à chaque changement de niveau de rumble |
-| `on_rumble_start(ev)` | début d'une vibration (§6.1) |
-| `on_rumble_end(ev)` | fin d'une vibration (§6.1) |
-| `on_button(ev)` | un bouton est pressé ou relâché |
-| `on_param_changed(name, value)` | un paramètre a été modifié dans la GUI |
-| `on_device(ev)` | un jouet est connecté ou déconnecté (`ev.connected`, `ev.name`) |
+| `on_start()` | the mode is activated, or reloaded |
+| `on_stop()` | the mode is deactivated, reloaded, or suspended after an error |
+| `tick(dt, input)` | on every tick (50 Hz), after events are dispatched |
+| `on_rumble(ev)` | on every rumble level change |
+| `on_rumble_start(ev)` | a vibration starts (§6.1) |
+| `on_rumble_end(ev)` | a vibration ends (§6.1) |
+| `on_button(ev)` | a button is pressed or released |
+| `on_param_changed(name, value)` | a parameter was changed in the GUI |
+| `on_device(ev)` | a toy is connected or disconnected (`ev.connected`, `ev.name`) |
 
-**Ordre d'exécution à chaque tick :**
+**Execution order on every tick:**
 
-1. Les événements accumulés depuis le tick précédent sont distribués aux callbacks, dans
-   l'ordre chronologique.
-2. `tick(dt, input)` est appelé.
-3. Les sorties sont figées, puis transmises à la couche sécurité.
+1. Events accumulated since the previous tick are dispatched to the callbacks, in
+   chronological order.
+2. `tick(dt, input)` is called.
+3. Outputs are frozen, then handed to the safety layer.
 
-## 6. Événements
+## 6. Events
 
-Tous les événements ont un champ `ev.t` : le temps du mode en secondes au tick où
-l'événement est distribué (le même que `input.time`).
+Every event has an `ev.t` field: the mode time in seconds at the tick where the event is
+dispatched (the same as `input.time`).
 
 ### 6.1 Rumble
 
-Le rumble du jeu est normalisé en 0..1 :
+The game's rumble is normalized to 0..1:
 
-- `strong` : moteur lourd, gauche ;
-- `weak` : moteur léger, droit ;
+- `strong`: heavy motor, left;
+- `weak`: light motor, right;
 - `level` = `max(strong, weak)`.
 
-Il est calculé à partir de la sémantique force-feedback evdev (effets, durées, gain), comme
-dans le prototype.
+It is computed from evdev force-feedback semantics (effects, durations, gain), as in the
+prototype.
 
-| Champ | `on_rumble` | `on_rumble_start` | `on_rumble_end` |
+| Field | `on_rumble` | `on_rumble_start` | `on_rumble_end` |
 |---|---|---|---|
-| `strong`, `weak`, `level` | ✓ | ✓ | valeurs à 0 |
-| `peak` : level max de la vibration | | | ✓ |
-| `duration` : durée en s | | | ✓ |
+| `strong`, `weak`, `level` | ✓ | ✓ | values at 0 |
+| `peak`: max level of the vibration | | | ✓ |
+| `duration`: duration in s | | | ✓ |
 
-**Découpage en vibrations**
+**Splitting into vibrations**
 
-- Une vibration commence quand `level` passe au-dessus de `rumble_threshold` (défaut 0.05).
-- Elle se termine quand `level` reste sous ce seuil pendant `rumble_release` (défaut 80 ms).
-  Ce délai évite de découper en plusieurs vibrations une rafale d'effets très courts.
-- Ces deux réglages sont globaux dans la GUI. Un mode peut les surcharger dans `mode { }` :
+- A vibration starts when `level` goes above `rumble_threshold` (default 0.05).
+- It ends when `level` stays below that threshold for `rumble_release` (default 80 ms).
+  This delay avoids splitting a burst of very short effects into several vibrations.
+- Both settings are global in the GUI. A mode can override them in `mode { }`:
   `rumble_threshold = 0.1`, `rumble_release = 0.15`.
 
-### 6.2 Boutons
+### 6.2 Buttons
 
-`on_button(ev)` reçoit :
+`on_button(ev)` receives:
 
-- `ev.button` : nom normalisé, disposition Xbox ;
-- `ev.pressed` : `true` à l'appui, `false` au relâchement.
+- `ev.button`: normalized name, Xbox layout;
+- `ev.pressed`: `true` on press, `false` on release.
 
-Boutons disponibles :
+Available buttons:
 
 ```
 A B X Y  LB RB  BACK START GUIDE  LS RS  DPAD_UP DPAD_DOWN DPAD_LEFT DPAD_RIGHT
 ```
 
-Le d-pad est converti en boutons même quand le driver l'expose en axes (hat). Les
-gâchettes restent des axes (§7), mais `LT` et `RT` génèrent aussi un événement bouton
-quand elles passent au-dessus ou en dessous de 0.5.
+The d-pad is converted to buttons even when the driver exposes it as axes (hat). Triggers
+stay axes (§7), but `LT` and `RT` also generate a button event when they cross 0.5 up or
+down.
 
-Les mouvements d'axes ne génèrent pas de callback, pour éviter un flot d'événements. Leur
-état courant se lit dans `input.axes` à chaque tick.
+Axis movements do not generate callbacks, to avoid a flood of events. Their current state
+is read from `input.axes` on every tick.
 
-## 7. La table `input` (état courant, lecture seule)
+## 7. The `input` table (current state, read-only)
 
 ```lua
-input.time               -- s depuis l'activation du mode
+input.time               -- s since the mode was activated
 input.rumble.strong      -- 0..1
 input.rumble.weak        -- 0..1
 input.rumble.level       -- max(strong, weak)
 input.rumble.avg         -- (strong + weak) / 2
-input.rumble.active      -- true pendant une vibration (§6.1)
-input.buttons.A          -- true si maintenu (idem pour chaque bouton §6.2)
-input.axes.LX, LY, RX, RY  -- -1..1 (zone morte 0.1 appliquée)
+input.rumble.active      -- true during a vibration (§6.1)
+input.buttons.A          -- true while held (same for every button in §6.2)
+input.axes.LX, LY, RX, RY  -- -1..1 (0.1 dead zone applied)
 input.axes.LT, RT        -- 0..1
-input.rumble_idle        -- s depuis la fin de la dernière vibration (0 si active)
-input.input_idle         -- s depuis le dernier input joueur (bouton, ou axe hors zone morte)
+input.rumble_idle        -- s since the end of the last vibration (0 while active)
+input.input_idle         -- s since the last player input (button, or axis outside the dead zone)
 input.idle               -- min(rumble_idle, input_idle)
 ```
 
-## 8. Sorties
+## 8. Outputs
 
-### 8.1 Canaux
+### 8.1 Channels
 
-Le script ne connaît pas les jouets. Il écrit sur des **canaux logiques**, déclarés dans
-`channels`. La GUI associe à chaque canal un ou plusieurs actionneurs réels, par exemple
-`main` vers le vibreur 1 du Lush et `aux` vers la rotation du Nora. Un actionneur qui
-n'est associé à aucun canal reste à 0.
+The script does not know the toys. It writes to **logical channels**, declared in
+`channels`. The GUI maps each channel to one or more real actuators, for example `main`
+to the Lush's vibrator 1 and `aux` to the Nora's rotation. An actuator mapped to no
+channel stays at 0.
 
-### 8.2 Fonctions
+### 8.2 Functions
 
 ```lua
-set(x [, channel])            -- niveau de base du canal, 0..1, maintenu jusqu'au prochain set
-pulse(x, seconds [, channel]) -- surimpression temporaire d'intensité x pendant `seconds`
-play(pattern [, opts])        -- joue un motif (§8.3), renvoie un handle avec :stop()
-stop_all()                    -- remet le niveau de base à 0 et annule pulses et motifs
+set(x [, channel])            -- base level of the channel, 0..1, held until the next set
+pulse(x, seconds [, channel]) -- temporary overlay of intensity x for `seconds`
+play(pattern [, opts])        -- plays a pattern (§8.3), returns a handle with :stop()
+stop_all()                    -- resets the base level to 0 and cancels pulses and patterns
 ```
 
-- `channel` vaut `"main"` par défaut, ou `"*"` pour tous les canaux.
-- Les valeurs hors de 0..1 sont bornées silencieusement.
-- **Valeur finale d'un canal** = `max(niveau de base, pulses actifs, motifs actifs)`.
-- v1 : un canal pilote tous les actionneurs (vibration, rotation, oscillation) des jouets
-  qui lui sont associés. Pour le script, c'est toujours une intensité entre 0 et 1.
-- Sans réglage de routage, `main` pilote tous les jouets et les autres canaux aucun.
+- `channel` defaults to `"main"`, or `"*"` for all channels.
+- Values outside 0..1 are silently clamped.
+- **Final channel value** = `max(base level, active pulses, active patterns)`.
+- v1: a channel drives all the actuators (vibration, rotation, oscillation) of the toys
+  mapped to it. For the script, it is always an intensity between 0 and 1.
+- Without routing settings, `main` drives all toys and the other channels none.
 
-### 8.3 Motifs
+### 8.3 Patterns
 
 ```lua
 local heartbeat = pattern {
   { 0.00, 0.8 }, { 0.10, 0.0 }, { 0.20, 0.6 }, { 0.30, 0.0 }, { 0.80, 0.0 },
-}  -- liste de { temps en s, intensité }, interpolée linéairement
+}  -- list of { time in s, intensity }, linearly interpolated
 
-play(heartbeat, { channel = "main", loops = 3, scale = 0.5 })  -- loops = 0 : boucle infinie
+play(heartbeat, { channel = "main", loops = 3, scale = 0.5 })  -- loops = 0: loop forever
 ```
 
-## 9. Utilitaires
+## 9. Utilities
 
-| Fonction | Rôle |
+| Function | Purpose |
 |---|---|
-| `plot(name, value)` | trace une courbe dans le panneau debug de l'éditeur |
-| `log(...)` | écrit dans la console de l'éditeur (`print` est redirigé ici) |
-| `after(seconds, fn)` | appelle `fn` une fois après le délai, renvoie un handle `:cancel()` |
-| `every(seconds, fn)` | appelle `fn` périodiquement, renvoie un handle `:cancel()` |
-| `clamp(x, a, b)`, `lerp(a, b, t)`, `map(x, a1, b1, a2, b2)` | maths courantes |
-| `random([a, b])` | flottant aléatoire dans [0, 1[, [0, a[ ou [a, b[ ; graine réinitialisée à chaque `on_start` |
-| `persist` | table conservée entre deux rechargements à chaud (pas entre deux lancements) |
+| `plot(name, value)` | draws a curve in the editor's debug panel |
+| `log(...)` | writes to the editor console (`print` is redirected here) |
+| `after(seconds, fn)` | calls `fn` once after the delay, returns a handle with `:cancel()` |
+| `every(seconds, fn)` | calls `fn` periodically, returns a handle with `:cancel()` |
+| `clamp(x, a, b)`, `lerp(a, b, t)`, `map(x, a1, b1, a2, b2)` | common maths |
+| `random([a, b])` | float in [0, 1[, [0, a[ or [a, b[; seed reset on every `on_start` |
+| `persist` | table kept across hot reloads (not across application launches) |
 
-Les minuteurs (`after`, `every`) sont évalués au début de chaque tick, avant les événements.
-Leur résolution est donc de 20 ms.
+Timers (`after`, `every`) are evaluated at the start of every tick, before events. Their
+resolution is therefore 20 ms.
 
-## 10. Exécution et sandbox
+## 10. Execution and sandbox
 
-- Moteur : **Luau** via `mlua`, en mode sandbox.
-- Bibliothèques disponibles : `math`, `string`, `table`, `bit32`, `utf8`.
-- Bibliothèques absentes : `io`, `os`, `debug`, `coroutine`, `require`, `loadstring`,
-  `getfenv` / `setfenv`, et tout accès fichier ou réseau. Les bibliothèques présentes sont en
-  lecture seule.
-- Budget par appel de callback : 10 ms de temps réel, contrôlé par l'interruption Luau
-  (200 ms pour l'exécution du fichier au chargement). Un dépassement compte comme une
-  erreur d'exécution.
-- Mémoire du mode : 16 Mo maximum.
-- Les variables globales du script sont réinitialisées à chaque (re)chargement, sauf
-  `persist`.
+- Engine: **Luau** via `mlua`, in sandbox mode.
+- Available libraries: `math`, `string`, `table`, `bit32`, `utf8`.
+- Unavailable libraries: `io`, `os`, `debug`, `coroutine`, `require`, `loadstring`,
+  `getfenv` / `setfenv`, and any file or network access. Available libraries are
+  read-only.
+- Budget per callback call: 10 ms of real time, enforced by the Luau interrupt (200 ms for
+  running the file at load time). Exceeding it counts as a runtime error.
+- Mode memory: 16 MB maximum.
+- Script global variables are reset on every (re)load, except `persist`.
 
-## 11. Erreurs et rechargement à chaud
+## 11. Errors and hot reload
 
-- L'éditeur sauvegarde, et un watcher détecte aussi les modifications faites dans un
-  éditeur externe. Chaque sauvegarde déclenche un rechargement.
-- **Erreur de chargement** (syntaxe, `mode {}` absent ou invalide) : l'ancienne version du
-  mode continue de tourner, et l'erreur s'affiche avec son numéro de ligne.
-- **Rechargement réussi** : `on_stop` est appelé sur l'ancienne version, puis `on_start`
-  sur la nouvelle. Les valeurs de paramètres compatibles et `persist` sont conservées.
-- **Erreur d'exécution** dans un callback : toutes les sorties passent immédiatement à 0,
-  le mode est suspendu, et l'erreur s'affiche avec la trace. Le bouton « Reprendre »
-  relance `on_start`.
+- The editor saves, and a watcher also detects changes made in an external editor. Every
+  save triggers a reload.
+- **Load error** (syntax, missing or invalid `mode {}`): the previous version of the mode
+  keeps running, and the error is shown with its line number.
+- **Successful reload**: `on_stop` is called on the old version, then `on_start` on the
+  new one. Compatible parameter values and `persist` are kept.
+- **Runtime error** in a callback: all outputs go to 0 immediately, the mode is suspended,
+  and the error is shown with the traceback. The "Resume" button calls `on_start` again.
 
-## 12. Sécurité (hors script)
+## 12. Safety (outside the script)
 
-- **Plafond global** d'intensité, réglable dans la GUI : défaut 1.0, appliqué après le mode.
-- **Bouton panique** : BACK + START maintenus 0.5 s (combo configurable).
-  - Il coupe tous les jouets et suspend le mode jusqu'à la réactivation depuis la GUI.
-  - v1 : les appuis sur BACK et START restent transmis aux callbacks.
-- **Perte de source** : si la manette est déconnectée ou le proxy arrêté, toutes les
-  sorties passent à 0.
-- **Débit de sortie** : 20 envois/s maximum par jouet. Un changement de moins de 0.01
-  n'est pas envoyé, sauf le passage à 0, toujours envoyé.
+- **Global intensity cap**, adjustable in the GUI: default 1.0, applied after the mode.
+- **Panic button**: BACK + START held for 0.5 s (configurable combo).
+  - It stops all toys and suspends the mode until it is re-enabled from the GUI.
+  - v1: BACK and START presses are still forwarded to the callbacks.
+- **Source loss**: if the gamepad is disconnected or the proxy stops, all outputs go to 0.
+- **Output rate**: 20 sends/s maximum per toy. A change smaller than 0.01 is not sent,
+  except going to 0, which is always sent.
 
-## 13. Évolutions prévues (hors v1)
+## 13. Planned evolutions (not in v1)
 
-- **Chaînage** : `input.upstream` exposerait la sortie du mode précédent.
-- **Mode par jeu** : détection du process du jeu et association à un mode.
-- **Sorties linéaires** (`LinearCmd`, pour les strokers) : `stroke(speed, range)`.
-- **Multi-manettes** : `ev.pad` et `input.pads[i]`.
-- **Éditeur par blocs** qui générerait du Luau.
+- **Named parameter presets**: several saved parameter sets per mode, to build game
+  profiles (e.g. "Tekken 8" = Combo mode with its own tuning).
+- **Chaining**: `input.upstream` would expose the output of the previous mode.
+- **Per-game mode**: detecting the game process and mapping it to a mode.
+- **Linear outputs** (`LinearCmd`, for strokers): `stroke(speed, range)`.
+- **Multiple gamepads**: `ev.pad` and `input.pads[i]`.
+- **Block editor** generating Luau.
 
-## 14. Exemples
+## 14. Examples
 
-Les versions de référence, livrées avec l'application, sont dans `gameviber/modes/`.
+The reference versions, shipped with the application, are in `gameviber/modes/`.
 
-### 14.1 Simple (parité GHR, mode par défaut)
+### 14.1 Simple (GHR parity, default mode)
 
 ```lua
 mode {
   api = 1,
   name = "Simple",
-  description = "Relaie le rumble du jeu, comme le Game Haptics Router.",
+  description = "Forwards the game's rumble, like the Game Haptics Router.",
   params = {
-    combine    = choice("avg", { "avg", "max" }, "Combinaison des moteurs"),
-    multiplier = number(1, 0, 5, "Multiplicateur", 0.1),
-    baseline   = number(0, 0, 1, "Vibration minimale", 0.01),
+    combine    = choice("avg", { "avg", "max" }, "Motor combination"),
+    multiplier = number(1, 0, 5, "Multiplier", 0.1),
+    baseline   = number(0, 0, 1, "Minimum vibration", 0.01),
   },
 }
 
@@ -301,17 +299,17 @@ end
 mode {
   api = 1,
   name = "Accumulation",
-  description = "Chaque vibration et chaque appui sur le bouton bonus ajoutent des points. "
-             .. "Le rumble du jeu est proportionnel aux points, qui fondent sans action.",
+  description = "Vibrations and bonus presses add points; the rumble is scaled by points, "
+             .. "which drain while idle.",
   params = {
-    per_hit   = number(5, 0, 50, "Points par vibration"),
-    bonus     = button_param("A", "Bouton bonus"),
-    per_press = number(1, 0, 10, "Points par appui bonus"),
-    decay     = number(2, 0, 20, "Perte par seconde"),
-    idle      = number(1.5, 0, 10, "Délai avant perte (s)"),
-    idle_src  = choice("any", { "any", "rumble", "input" }, "Inactivité ="),
-    max       = number(100, 10, 500, "Points max", 5),
-    floor     = number(0.2, 0, 1, "Fond continu à points max", 0.05),
+    per_hit   = number(5, 0, 50, "Points per vibration"),
+    bonus     = button_param("A", "Bonus button"),
+    per_press = number(1, 0, 10, "Points per bonus press"),
+    decay     = number(2, 0, 20, "Points lost per second"),
+    idle      = number(1.5, 0, 10, "Idle delay before draining (s)"),
+    idle_src  = choice("any", { "any", "rumble", "input" }, "Idle means no..."),
+    max       = number(100, 10, 500, "Max points", 5),
+    floor     = number(0.2, 0, 1, "Constant vibration at max points", 0.05),
   },
 }
 
@@ -341,6 +339,21 @@ function tick(dt, input)
   set(math.max(input.rumble.level * ratio, P.floor * ratio))
 
   plot("points", persist.points)
-  plot("sortie", ratio)
+  plot("ratio", ratio)
 end
 ```
+
+### 14.3 Per-genre modes
+
+The other built-in modes target a game genre. Their heuristics (parry window, "hit"
+threshold) need tuning per game: the rumble does not tell who took the hit.
+
+| Mode | File | Genre | Mechanics |
+|---|---|---|---|
+| Combo | `combo.luau` | fighting | vibrations less than `window` apart form a combo; each hit is stronger, a long enough combo ends with a burst; button presses add a light tension |
+| Overheat | `overheat.luau` | action / shooter | continuous rumble scaled down, rising edges above `peak` become pulses; firing heats a gauge, a full gauge triggers an overheat |
+| Tension | `tension.luau` | turn-based with QTEs | a wave builds while rumble happened in the last `combat_timeout` s; a vibration within `window` after a parry/dodge press gets a reward pulse; long strong vibrations are amplified |
+| Engine | `engine.luau` | racing | RT/LT drive an RPM value that sets the rate and strength of a pulsing vibration; rumble adds road texture and impacts |
+| Heartbeat | `heartbeat.luau` | horror | heartbeat whose tempo and strength follow a stress gauge raised by vibrations; optional random jump scares |
+| All or Nothing | `all_or_nothing.luau` | souls-like | gauge rising while the player is active, cut by a vibration above `hit`, with a punishment pulse |
+| Ambient | `ambient.luau` | exploration / cosy | slow wave under the rumble, fading out after `fade_after` s of inactivity |

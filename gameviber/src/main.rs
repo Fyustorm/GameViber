@@ -47,7 +47,8 @@ struct Args {
     /// Do not connect to Intiface
     #[arg(long)]
     no_intiface: bool,
-    /// Mode to activate: a .luau file or a built-in name (simple, accumulation)
+    /// Mode to activate: a .luau file or a built-in name (simple, accumulation, combo, overheat, tension,
+    /// engine, heartbeat, all_or_nothing, ambient)
     #[arg(long)]
     mode: Option<String>,
     /// Verbose logs (effects, buttons)
