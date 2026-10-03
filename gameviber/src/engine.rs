@@ -120,6 +120,8 @@ pub struct Shared {
     pub history: VecDeque<Sample>,
     pub plots: BTreeMap<String, VecDeque<[f64; 2]>>,
     pub held: Vec<&'static str>,
+    /// Sticks (-1..1) and triggers (0..1).
+    pub axes: BTreeMap<&'static str, f64>,
     pub toy_levels: BTreeMap<String, f64>,
     pub time: f64,
     pub stopped: bool,
@@ -720,6 +722,7 @@ impl Engine {
         shared.intiface_enabled = self.intiface.is_some();
         shared.settings = self.settings.clone();
         shared.held = self.pad.held().iter().copied().collect();
+        shared.axes = self.pad.axes().clone();
         shared.toy_levels = toy_levels;
         shared.history.push_back(Sample { t: time, strong: levels.strong, weak: levels.weak, channels });
         while shared.history.front().is_some_and(|s| time - s.t > HISTORY_SECS) {

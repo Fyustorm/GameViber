@@ -107,6 +107,36 @@ pub fn meter(ui: &mut egui::Ui, width: f32, level: f64, color: Color32) {
     }
 }
 
+/// Gamepad control lit by `level` (0..1): a button, or a trigger's travel.
+pub fn pad_chip(ui: &mut egui::Ui, label: &str, level: f64) {
+    let galley = ui.painter().layout_no_wrap(label.to_owned(), egui::FontId::proportional(11.5), TEXT);
+    let size = Vec2::new((galley.size().x + 14.0).max(26.0), 22.0);
+    let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+    let painter = ui.painter();
+    let level = level.clamp(0.0, 1.0) as f32;
+    painter.rect_filled(rect, CornerRadius::same(6), RAISED);
+    if level > 0.0 {
+        let mut filled = rect;
+        filled.set_top(rect.bottom() - rect.height() * level);
+        painter.rect_filled(filled, CornerRadius::same(6), ACCENT);
+    }
+    painter.rect_stroke(rect, CornerRadius::same(6), Stroke::new(1.0, LINE), egui::StrokeKind::Inside);
+    let color = if level >= 0.5 { ON_ACCENT } else { MUTED };
+    painter.text(rect.center(), egui::Align2::CENTER_CENTER, label, egui::FontId::proportional(11.5), color);
+}
+
+/// Stick position (-1..1 on both axes, y down) in a small circle.
+pub fn stick(ui: &mut egui::Ui, label: &str, x: f64, y: f64) {
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(26.0), Sense::hover());
+    let painter = ui.painter();
+    let radius = rect.width() / 2.0 - 1.0;
+    painter.circle(rect.center(), radius, RAISED, Stroke::new(1.0, LINE));
+    let moved = x.abs() > 0.0 || y.abs() > 0.0;
+    let offset = Vec2::new(x.clamp(-1.0, 1.0) as f32, y.clamp(-1.0, 1.0) as f32) * (radius - 4.0);
+    painter.circle_filled(rect.center() + offset, 4.0, if moved { ACCENT } else { MUTED });
+    response.on_hover_text(label);
+}
+
 /// Line chart of `points` ((seconds ago <= 0, value 0..1)) over the last `span` seconds.
 pub fn sparkline(ui: &mut egui::Ui, size: Vec2, span: f64, points: &[(f64, f64)], color: Color32) {
     let (rect, _) = ui.allocate_exact_size(size, Sense::hover());

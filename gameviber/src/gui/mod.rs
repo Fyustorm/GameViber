@@ -134,6 +134,9 @@ impl eframe::App for App {
         if matches!(self.page, Page::Play | Page::Toys) {
             live_strip(ui, &s);
         }
+        if self.page == Page::Play {
+            gamepad_strip(ui, &s);
+        }
         match self.page {
             Page::Play => self.play_ui(ui, &s),
             Page::Toys => self.toys_ui(ui, &s),
@@ -288,6 +291,41 @@ fn live_strip(ui: &mut egui::Ui, s: &Shared) {
                     });
                 }
             });
+        });
+    });
+}
+
+/// Band showing the buttons, triggers and sticks the gamepad sends right now,
+/// so players can check their gamepad reaches GameViber.
+fn gamepad_strip(ui: &mut egui::Ui, s: &Shared) {
+    const LABELS: [(&str, &str); 15] = [
+        ("A", "A"), ("B", "B"), ("X", "X"), ("Y", "Y"), ("LB", "LB"), ("RB", "RB"), ("LS", "LS"), ("RS", "RS"),
+        ("BACK", "Back"), ("START", "Start"), ("GUIDE", "Guide"),
+        ("DPAD_UP", "⏶"), ("DPAD_DOWN", "⏷"), ("DPAD_LEFT", "⏴"), ("DPAD_RIGHT", "⏵"),
+    ];
+    let axis = |name: &str| s.axes.get(name).copied().unwrap_or(0.0);
+    let held = |name: &str| s.held.contains(&name);
+    let frame = egui::Frame::new().fill(SIDEBAR).stroke(egui::Stroke::new(1.0, LINE)).inner_margin(Margin::symmetric(20, 8));
+    egui::Panel::bottom("gamepad").frame(frame).exact_size(42.0).resizable(false).show(ui, |ui| {
+        ui.horizontal_centered(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            eyebrow(ui, "Gamepad");
+            ui.add_space(8.0);
+            // Triggers show their travel; the half-way button press lights them fully.
+            for name in ["LT", "RT"] {
+                pad_chip(ui, name, if held(name) { 1.0 } else { axis(name) });
+            }
+            ui.add_space(4.0);
+            for (name, label) in LABELS {
+                pad_chip(ui, label, if held(name) { 1.0 } else { 0.0 });
+            }
+            ui.add_space(4.0);
+            stick(ui, "Left stick", axis("LX"), axis("LY"));
+            stick(ui, "Right stick", axis("RX"), axis("RY"));
+            ui.add_space(8.0);
+            if !s.buttons_seen {
+                ui.label(muted("Press a button: it lights up when GameViber receives it.").size(11.5));
+            }
         });
     });
 }
