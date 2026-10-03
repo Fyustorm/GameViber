@@ -5,9 +5,11 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use eframe::egui::text::LayoutJob;
 use eframe::egui::{self, Margin, RichText};
 use egui_plot::{Legend, Line, Plot, PlotPoints};
 
+use super::luau;
 use super::theme::*;
 use super::App;
 use crate::config::{self, ModeEntry, NEW_MODE_TEMPLATE};
@@ -33,6 +35,10 @@ struct Editor {
     text: String,
     dirty: bool,
     message: Option<String>,
+    /// Last highlighted text and error line, with its layout.
+    highlighted: Option<(String, Option<usize>, LayoutJob)>,
+    /// Line to scroll to on the next frame.
+    goto: Option<usize>,
 }
 
 /// Fake game rumble and button presses, to test modes without a game.
@@ -154,7 +160,9 @@ impl App {
         let mut reload = false;
         let mut refresh = false;
         ui.horizontal(|ui| {
-            ui.label(RichText::new(&editing.id).monospace());
+            // A full path would widen the page past the tools panel.
+            let name = if editing.builtin { editing.id.clone() } else { editing.chunk_name() };
+            ui.add(egui::Label::new(RichText::new(name).monospace()).truncate()).on_hover_text(&editing.id);
             if editing.builtin {
                 ui.label(muted("built-in modes are read-only"));
                 duplicate = ui.button("Duplicate to edit").clicked();
@@ -192,19 +200,16 @@ impl App {
         } else {
             s.catalog.get(&editing.id).and_then(|info| info.as_ref().err()).map(String::as_str)
         };
+        let error_line = error.and_then(|e| luau::error_line(e, &editing.chunk_name()));
         if let Some(error) = error {
             ui.label(RichText::new(error).color(DANGER_TEXT).monospace());
-        }
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            let edit = egui::TextEdit::multiline(&mut editor.text)
-                .code_editor()
-                .interactive(!editing.builtin)
-                .desired_width(f32::INFINITY)
-                .desired_rows(30);
-            if ui.add(edit).changed() {
-                editor.dirty = true;
+            if let Some(line) = error_line {
+                if ui.small_button(format!("Go to line {line}")).clicked() {
+                    editor.goto = Some(line);
+                }
             }
-        });
+        }
+        code_view(ui, editor, !editing.builtin, error_line);
         if reload {
             self.send(Command::ReloadMode);
         }
@@ -270,18 +275,16 @@ impl App {
             }
             (None, Some(replay)) => {
                 let header = &replay.info.header;
-                ui.label(RichText::new(format!("▶ Replaying {}", title(&replay.info))).strong());
                 ui.horizontal(|ui| {
-                    let progress = if header.duration > 0.0 { replay.position / header.duration } else { 1.0 };
-                    ui.add(
-                        egui::ProgressBar::new(progress as f32)
-                            .desired_width(ui.available_width() - 70.0)
-                            .text(format!("{} / {}", clock(replay.position), clock(header.duration))),
-                    );
+                    ui.label(RichText::new(format!("▶ Replaying {}", title(&replay.info))).strong());
+                    ui.label(muted(format!("{} / {}", clock(replay.position), clock(header.duration))));
                     if ui.button("⏹ Stop").clicked() {
                         self.send(Command::StopReplay);
                     }
                 });
+                let progress = if header.duration > 0.0 { replay.position / header.duration } else { 1.0 };
+                // Sized to the panel, which would otherwise grow with it.
+                meter(ui, ui.available_width(), progress, ACCENT);
                 if !replay.to_toys {
                     ui.label(muted("Toys stay still: watch the Graphs tab.").size(12.0));
                 }
@@ -351,6 +354,61 @@ impl App {
             }
         });
     }
+}
+
+/// The editor: line numbers (the error line in red) next to the highlighted source.
+fn code_view(ui: &mut egui::Ui, editor: &mut Editor, editable: bool, error_line: Option<usize>) {
+    const MARGIN: egui::Margin = Margin { left: 6, right: 6, top: 4, bottom: 4 };
+    let font = egui::TextStyle::Monospace.resolve(ui.style());
+    let Editor { text, dirty, highlighted, goto, .. } = editor;
+    // Lines do not wrap: long ones scroll sideways.
+    let width = ui.available_width();
+    egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            // Line numbers, laid out with the same font as the code so rows match.
+            let lines = text.split('\n').count();
+            let mut numbers = LayoutJob::default();
+            for line in 1..=lines {
+                let color = if Some(line) == error_line { DANGER_TEXT } else { IDLE };
+                let format = egui::TextFormat { font_id: font.clone(), color, ..Default::default() };
+                numbers.append(&format!("{line:>4} {}", if line < lines { "\n" } else { "" }), 0.0, format);
+            }
+            let galley = ui.fonts_mut(|f| f.layout_job(numbers));
+            let gutter_width = galley.size().x;
+            let gutter = ui
+                .vertical(|ui| {
+                    ui.add_space(MARGIN.top as f32);
+                    ui.label(galley.clone())
+                })
+                .inner;
+            if let Some(line) = goto.take() {
+                if let Some(row) = galley.rows.get(line - 1) {
+                    let rect = row.rect().translate(gutter.rect.min.to_vec2());
+                    ui.scroll_to_rect(rect, Some(egui::Align::Center));
+                }
+            }
+            let mut layouter = |ui: &egui::Ui, buffer: &dyn egui::TextBuffer, _wrap: f32| {
+                let source = buffer.as_str();
+                let stale = highlighted.as_ref().is_none_or(|(t, e, _)| t != source || *e != error_line);
+                if stale {
+                    *highlighted = Some((source.to_owned(), error_line, luau::highlight(source, font.clone(), error_line)));
+                }
+                let job = highlighted.as_ref().map(|(_, _, job)| job.clone()).unwrap_or_default();
+                ui.fonts_mut(|f| f.layout_job(job))
+            };
+            let edit = egui::TextEdit::multiline(text)
+                .code_editor()
+                .interactive(editable)
+                .margin(MARGIN)
+                .desired_width(width - gutter_width - 2.0 * MARGIN.left as f32 - 12.0)
+                .desired_rows(30)
+                .layouter(&mut layouter);
+            if ui.add(edit).changed() {
+                *dirty = true;
+            }
+        });
+    });
 }
 
 /// The game a recording comes from, else its mode.

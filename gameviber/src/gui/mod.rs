@@ -8,6 +8,7 @@
 mod connection;
 mod creator;
 mod generator;
+mod luau;
 mod onboarding;
 mod overlay;
 mod play;
