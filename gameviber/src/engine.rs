@@ -16,7 +16,7 @@ use tokio::sync::mpsc;
 pub use crate::config::SourceChoice;
 use crate::config::{self, ModeEntry, OverlaySettings, Presets, Settings};
 use crate::helper::client::Helper;
-use crate::gamepad::{PadState, BUTTONS};
+use crate::gamepad::{self, PadState, BUTTONS};
 use crate::intiface::{Intiface, IntifaceStatus, Toy, ToyOutputs};
 use crate::mode::rumble_events::RumbleLevels;
 use crate::mode::{HudGauge, ModeEvent, ModeInfo, ModeRuntime, ParamValue};
@@ -35,6 +35,8 @@ pub const HISTORY_SECS: f64 = 10.0;
 /// "Buzz" test of a single toy from the GUI.
 const TEST_LEVEL: f64 = 0.5;
 const TEST_LENGTH: Duration = Duration::from_millis(800);
+/// How often a lost gamepad is looked for again (proxy source).
+const SOURCE_RETRY: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone)]
 pub struct EngineOptions {
@@ -70,6 +72,8 @@ pub enum Command {
     Rearm,
     SetCap(f64),
     SetRouting { channel: String, toys: Vec<String> },
+    /// Buttons held together for the panic stop (at least two).
+    SetPanicCombo(Vec<String>),
     SetSource { source: SourceChoice, hide: bool },
     /// Intiface server address; reconnects.
     SetUrl(String),
@@ -172,6 +176,7 @@ impl Source {
 
     fn gamepads(&self) -> Vec<String> {
         match self {
+            Source::Proxy(p) if matches!(p.health(), SourceHealth::Failed(_)) => Vec::new(),
             Source::Proxy(p) => vec![p.gamepad().to_owned()],
             Source::Ebpf(e) => e.gamepads(),
             Source::Failed(_) | Source::None => Vec::new(),
@@ -183,6 +188,15 @@ impl Source {
             Source::Proxy(p) => p.shutdown(),
             Source::Ebpf(e) => e.shutdown(),
             Source::Failed(_) | Source::None => {}
+        }
+    }
+
+    /// A source that was selected cannot see any gamepad (failed, unplugged).
+    fn lost(&self) -> bool {
+        match self.health() {
+            SourceHealth::Failed(_) => true,
+            SourceHealth::Working => self.gamepads().is_empty(),
+            SourceHealth::Off | SourceHealth::Waiting(_) => false,
         }
     }
 }
@@ -205,6 +219,9 @@ struct Engine {
     start: Instant,
     last_tick: Instant,
     last_reload_check: Instant,
+    /// The gamepad is lost: outputs are held at 0 (safety layer).
+    source_lost: bool,
+    last_source_retry: Instant,
     /// Parameter values changed since the last save (saves are batched: sliders send many changes).
     params_dirty: bool,
     last_channels: BTreeMap<String, f64>,
@@ -264,6 +281,8 @@ async fn run_async(
         start: now,
         last_tick: now,
         last_reload_check: now,
+        source_lost: false,
+        last_source_retry: now,
         params_dirty: false,
         last_channels: BTreeMap::new(),
         last_rumble: None,
@@ -274,6 +293,7 @@ async fn run_async(
         overlay_title: (String::new(), None, 0.0),
         ticks: 0,
     };
+    engine.apply_panic_combo();
     engine.start_source();
     engine.refresh_modes();
     let first_mode = engine.opts.mode.clone().unwrap_or_else(|| engine.settings.active_mode.clone());
@@ -308,10 +328,17 @@ impl Engine {
     }
 
     fn start_source(&mut self) {
+        self.source = self.new_source();
+        if let Source::Failed(e) = &self.source {
+            log::error!("source unavailable: {e}");
+        }
+    }
+
+    fn new_source(&self) -> Source {
         let opts = &self.opts;
         let tx = self.source_tx.clone();
         let root = unsafe { libc::geteuid() } == 0;
-        self.source = match self.settings.source {
+        match self.settings.source {
             SourceChoice::Proxy => {
                 let hide = match (self.settings.hide, root) {
                     (false, _) => Hide::No,
@@ -328,10 +355,34 @@ impl Engine {
                 Err(e) => Source::Failed(format!("{e:#}")),
             },
             SourceChoice::None => Source::None,
-        };
-        if let Source::Failed(e) = &self.source {
-            log::error!("source unavailable: {e}");
         }
+    }
+
+    /// Proxy source: once the gamepad is lost, looks for it again every
+    /// `SOURCE_RETRY` (the eBPF source watches for gamepads by itself).
+    fn retry_source(&mut self) {
+        if self.settings.source != SourceChoice::Proxy || self.last_source_retry.elapsed() < SOURCE_RETRY {
+            return;
+        }
+        let SourceHealth::Failed(previous) = self.source.health() else { return };
+        self.last_source_retry = Instant::now();
+        std::mem::replace(&mut self.source, Source::None).shutdown();
+        self.source = self.new_source();
+        match &self.source {
+            Source::Failed(e) if *e == previous => log::debug!("gamepad still unavailable: {e}"),
+            Source::Failed(e) => log::warn!("gamepad unavailable, retrying every {SOURCE_RETRY:?}: {e}"),
+            _ => log::info!("gamepad found again, capture restarted"),
+        }
+    }
+
+    /// Applies the saved panic combo, falling back to the default when it is invalid.
+    fn apply_panic_combo(&mut self) {
+        let combo = gamepad::parse_panic_combo(&self.settings.panic_combo).unwrap_or_else(|| {
+            log::warn!("invalid panic combo {:?}, using the default", self.settings.panic_combo);
+            self.settings.panic_combo = gamepad::DEFAULT_PANIC_COMBO.map(str::to_owned).to_vec();
+            gamepad::DEFAULT_PANIC_COMBO.into_iter().collect()
+        });
+        self.pad.set_panic_combo(combo);
     }
 
     fn switch_source(&mut self, source: SourceChoice, hide: bool) {
@@ -341,7 +392,7 @@ impl Engine {
         log::info!("switching source to {source:?}{}", if hide && source == SourceChoice::Proxy { " (hidden)" } else { "" });
         std::mem::replace(&mut self.source, Source::None).shutdown();
         self.states.clear();
-        self.pad = PadState::default();
+        self.events.extend(self.pad.release_all().into_iter().map(ModeEvent::Button));
         self.buttons_seen = false;
         self.settings.source = source;
         self.settings.hide = hide;
@@ -380,6 +431,11 @@ impl Engine {
                 self.states.entry(ev.device).or_default().play(id, count, now);
             }
             SourceKind::Gain(gain) => self.states.entry(ev.device).or_default().set_gain(gain),
+            SourceKind::Removed => {
+                log::info!("{} unplugged", ev.device);
+                self.states.remove(&ev.device);
+                self.events.extend(self.pad.release_all().into_iter().map(ModeEvent::Button));
+            }
         }
     }
 
@@ -409,6 +465,14 @@ impl Engine {
             Command::SetRouting { channel, toys } => {
                 self.settings.routing.insert(channel, toys);
                 self.settings.save();
+            }
+            Command::SetPanicCombo(combo) => {
+                if gamepad::parse_panic_combo(&combo).is_some() {
+                    log::info!("panic combo set to {}", gamepad::combo_text(&combo));
+                    self.settings.panic_combo = combo;
+                    self.apply_panic_combo();
+                    self.settings.save();
+                }
             }
             Command::SetSource { source, hide } => self.switch_source(source, hide),
             Command::SetUrl(url) => self.set_url(url),
@@ -652,6 +716,19 @@ impl Engine {
         self.last_tick = now;
         let time = self.time();
         self.check_reload();
+        self.retry_source();
+        let lost = self.source.lost();
+        if lost != self.source_lost {
+            self.source_lost = lost;
+            if lost {
+                log::warn!("gamepad lost: toys held at 0 until it is back");
+                // Effects still playing would never be stopped by the game.
+                self.states.clear();
+                self.events.extend(self.pad.release_all().into_iter().map(ModeEvent::Button));
+            } else {
+                log::info!("gamepad back: toys follow the mode again");
+            }
+        }
 
         let (strong, weak) = self
             .states
@@ -666,7 +743,7 @@ impl Engine {
             weak: (weak as f64 / 65535.0).max(self.sim.weak),
         };
         if self.pad.panic_combo(time) {
-            self.trigger_panic("BACK + START");
+            self.trigger_panic(&gamepad::combo_text(&self.settings.panic_combo));
         }
 
         let toys = self.intiface.as_ref().map(|i| i.status()).unwrap_or_default();
@@ -708,8 +785,9 @@ impl Engine {
                 }
             }
         }
-        // Safety layer: panic / suspension output 0 (channels stay empty), global cap.
-        let cap = self.settings.global_cap;
+        // Safety layer: panic / suspension output 0 (channels stay empty), lost gamepad 0,
+        // global cap. The mode keeps running so that its state follows the game.
+        let cap = if self.source_lost { 0.0 } else { self.settings.global_cap };
         channels.values_mut().for_each(|v| *v = v.min(cap));
         if channels != self.last_channels {
             let text: Vec<String> = channels.iter().map(|(c, v)| format!("{c}={v:.2}")).collect();
@@ -725,7 +803,7 @@ impl Engine {
         for toy in &toys.toys {
             let mut level = channels.iter().filter(|(c, _)| self.routed(c, &toy.name)).map(|(_, v)| *v).fold(0.0, f64::max);
             if !self.panic && self.test.as_ref().is_some_and(|(name, _)| *name == toy.name) {
-                level = level.max(TEST_LEVEL.min(cap));
+                level = level.max(TEST_LEVEL.min(self.settings.global_cap));
             }
             toy_outputs.insert(toy.index, level);
             toy_levels.insert(toy.name.clone(), level);
@@ -790,10 +868,11 @@ impl Engine {
         if self.mode.as_ref().is_some_and(|m| m.suspended || m.runtime.is_none()) {
             alerts.push("Mode error: see GameViber".to_owned());
         }
-        match &self.source.health() {
-            SourceHealth::Failed(_) => alerts.push("Gamepad capture stopped".to_owned()),
-            SourceHealth::Working if self.source.gamepads().is_empty() => alerts.push("No gamepad found".to_owned()),
-            _ => {}
+        if self.source_lost {
+            alerts.push(match self.settings.source {
+                SourceChoice::Ebpf if matches!(self.source.health(), SourceHealth::Failed(_)) => "Gamepad capture stopped",
+                _ => "No gamepad: toys stopped",
+            }.to_owned());
         }
         if self.intiface.is_some() && !toys.connected {
             alerts.push("Intiface Central not connected".to_owned());

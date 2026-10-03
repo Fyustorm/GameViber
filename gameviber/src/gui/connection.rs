@@ -7,6 +7,7 @@ use super::theme::*;
 use super::{capture_status, gamepad_status, intiface_status, App, RECENT_RUMBLE_SECS};
 use crate::config::SourceChoice;
 use crate::engine::{Command, Shared, SourceHealth};
+use crate::gamepad::{combo_text, BUTTONS, PANIC_COMBO_MIN};
 
 pub const INTIFACE_DOWNLOAD: &str = "https://intiface.com/central/";
 
@@ -53,7 +54,12 @@ impl App {
                         ui.set_width(ui.available_width());
                         ui.label(RichText::new("The rumble cannot be captured").strong().color(DANGER_TEXT));
                         ui.label(RichText::new(e).monospace().size(12.0));
-                        ui.label(muted("Check the gamepad is plugged in, or try the other method below."));
+                        ui.label(muted(if s.settings.source == SourceChoice::Proxy {
+                            "Toys are stopped until it comes back: GameViber reconnects as soon as the gamepad is \
+                             plugged in or wakes up. Still nothing? Try the other method below."
+                        } else {
+                            "Check the gamepad is plugged in, or try the other method below."
+                        }));
                     });
                 }
 
@@ -84,6 +90,11 @@ impl App {
                 ui.add_space(12.0);
                 ui.label(RichText::new("Intiface Central").strong().size(15.0));
                 self.intiface_address(ui, s);
+                ui.add_space(12.0);
+                ui.label(RichText::new("Panic stop").strong().size(15.0));
+                if let Some(command) = panic_combo(ui, s) {
+                    self.send(command);
+                }
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
                     if ui.button("Run the setup guide again").clicked() {
@@ -119,6 +130,34 @@ impl App {
         });
         ui.label(muted("Intiface Central shows it on its main screen. The default is ws://127.0.0.1:12345.").size(12.0));
     }
+}
+
+/// Picker of the buttons held together for the panic stop; returns the new combo.
+fn panic_combo(ui: &mut egui::Ui, s: &Shared) -> Option<Command> {
+    let combo = &s.settings.panic_combo;
+    let mut command = None;
+    ui.label(muted(format!(
+        "Hold {} on the gamepad for half a second to stop every toy. Pick buttons the game does not \
+         use together, at least {PANIC_COMBO_MIN}.",
+        combo_text(combo)
+    )));
+    ui.horizontal_wrapped(|ui| {
+        for button in BUTTONS {
+            let on = combo.iter().any(|b| b == button);
+            let mut new: Vec<String> = combo.iter().filter(|b| *b != button).cloned().collect();
+            if !on {
+                new.push(button.to_owned());
+            }
+            let allowed = new.len() >= PANIC_COMBO_MIN;
+            let response = ui
+                .add_enabled(allowed, egui::Button::selectable(on, button))
+                .on_disabled_hover_text(format!("The combo needs at least {PANIC_COMBO_MIN} buttons"));
+            if response.clicked() {
+                command = Some(Command::SetPanicCombo(new));
+            }
+        }
+    });
+    command
 }
 
 /// The two capture methods as tiles with their pros and cons; returns the

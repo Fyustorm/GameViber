@@ -24,6 +24,8 @@ pub enum SourceKind {
     Button { code: u16, pressed: bool },
     /// Axis (evdev ABS_* code), normalized with the device's range.
     Axis { code: u16, value: f64 },
+    /// The gamepad was unplugged: its effects are gone.
+    Removed,
 }
 
 #[derive(Debug, Clone)]

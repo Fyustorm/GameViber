@@ -210,9 +210,12 @@ input.idle               -- min(rumble_idle, input_idle)
 ### 8.1 Channels
 
 The script does not know the toys. It writes to **logical channels**, declared in
-`channels`. The GUI maps each channel to one or more real actuators, for example `main`
-to the Lush's vibrator 1 and `aux` to the Nora's rotation. An actuator mapped to no
-channel stays at 0.
+`channels`. The GUI maps each channel to one or more toys, for example `main` to the
+Lush and `aux` to the Nora. A toy mapped to several channels plays the strongest of
+them; a toy mapped to no channel stays at 0.
+
+Toys are identified by the name given in Intiface Central, or else by their device
+name; identical toys are numbered (`Lush 3`, `Lush 3 #2`) in the order they connect.
 
 ### 8.2 Functions
 
@@ -300,10 +303,15 @@ resolution is therefore 20 ms.
 ## 12. Safety (outside the script)
 
 - **Global intensity cap**, adjustable in the GUI: default 1.0, applied after the mode.
-- **Panic button**: BACK + START held for 0.5 s (configurable combo).
+- **Panic button**: BACK + START held for 0.5 s. The combo is configurable on the
+  Connection page (any 2 or more buttons of §6.2).
   - It stops all toys and suspends the mode until it is re-enabled from the GUI.
-  - v1: BACK and START presses are still forwarded to the callbacks.
-- **Source loss**: if the gamepad is disconnected or the proxy stops, all outputs go to 0.
+  - v1: the combo's presses are still forwarded to the callbacks.
+- **Source loss**: if the gamepad is disconnected or the capture stops, all outputs go to
+  0 until a gamepad is back. The mode keeps running: held buttons get a release event
+  and the effects the game was playing are dropped, so the rumble reads 0. The standard
+  (proxy) source looks for the gamepad again every 2 s; the kernel probe picks up
+  gamepads by itself.
 - **Output rate**: 20 sends/s maximum per toy. A change smaller than 0.01 is not sent,
   except going to 0, which is always sent.
 

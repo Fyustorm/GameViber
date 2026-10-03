@@ -47,6 +47,17 @@ impl App {
                     });
                 });
                 ui.add_space(8.0);
+                if s.intiface.toys.iter().any(|t| t.numbered) {
+                    card(RAISED).inner_margin(Margin::same(12)).show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.label(
+                            "ℹ Several toys have the same name, so GameViber numbers them in the order they \
+                             connect. Give each one its own name in Intiface Central to keep their settings \
+                             attached to the right toy.",
+                        );
+                    });
+                    ui.add_space(8.0);
+                }
                 if channels.len() > 1 {
                     card(RAISED).inner_margin(Margin::same(12)).show(ui, |ui| {
                         ui.set_width(ui.available_width());

@@ -23,13 +23,14 @@ again from the Connection page. Then the GUI provides:
 
 - a status bar with the gamepad / rumble capture / Intiface state, the global
   maximum intensity and **STOP ALL** (also: BACK + START held for 0.5 s on the
-  gamepad);
+  gamepad, configurable on the Connection page);
 - **Play**: the modes as tiles, and the active mode's explanation, its main
   settings, all its settings and named **presets** (e.g. one per game);
 - **Toys**: the toys Intiface found, a test buzz, and which mode channels each
   one plays;
 - **Connection**: status, capture method (standard proxy or kernel probe) with
-  their pros and cons, gamepad hiding, Intiface address, troubleshooting;
+  their pros and cons, gamepad hiding, Intiface address, panic combo,
+  troubleshooting;
 - **Creator**: mode editing with hot reload (Ctrl+S), graphs of the rumble,
   outputs and `plot()` values, a simulator (fake rumble and buttons) and the log.
 

@@ -16,8 +16,25 @@ pub const AXES: [&str; 6] = ["LX", "LY", "RX", "RY", "LT", "RT"];
 pub const DEADZONE: f64 = 0.1;
 /// Analog triggers also generate button events around this value.
 const TRIGGER_PRESS: f64 = 0.5;
-/// BACK + START held this long triggers the panic stop.
+/// The panic combo held this long triggers the panic stop.
 pub const PANIC_HOLD_SECS: f64 = 0.5;
+/// Default panic combo.
+pub const DEFAULT_PANIC_COMBO: [&str; 2] = ["BACK", "START"];
+/// A combo needs at least this many buttons, so that no single press stops the toys.
+pub const PANIC_COMBO_MIN: usize = 2;
+
+/// Known button names of a panic combo, or None if it has fewer than
+/// `PANIC_COMBO_MIN` distinct buttons.
+pub fn parse_panic_combo(names: &[String]) -> Option<BTreeSet<&'static str>> {
+    let combo: BTreeSet<&'static str> =
+        names.iter().filter_map(|n| BUTTONS.iter().find(|b| **b == n.as_str()).copied()).collect();
+    (combo.len() >= PANIC_COMBO_MIN && combo.len() == names.len()).then_some(combo)
+}
+
+/// "BACK + START"
+pub fn combo_text(names: &[String]) -> String {
+    names.join(" + ")
+}
 
 fn button_name(code: u16) -> Option<&'static str> {
     Some(match Key(code) {
@@ -77,15 +94,42 @@ pub struct ButtonEvent {
 }
 
 /// Current state of the (merged) gamepad as seen by modes.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct PadState {
     held: BTreeSet<&'static str>,
     axes: BTreeMap<&'static str, f64>,
     last_input: f64,
+    panic_combo: BTreeSet<&'static str>,
     panic_since: Option<f64>,
 }
 
+impl Default for PadState {
+    fn default() -> Self {
+        Self {
+            held: BTreeSet::new(),
+            axes: BTreeMap::new(),
+            last_input: 0.0,
+            panic_combo: DEFAULT_PANIC_COMBO.into_iter().collect(),
+            panic_since: None,
+        }
+    }
+}
+
 impl PadState {
+    /// Buttons to hold together for the panic stop (see `parse_panic_combo`).
+    pub fn set_panic_combo(&mut self, combo: BTreeSet<&'static str>) {
+        self.panic_combo = combo;
+        self.panic_since = None;
+    }
+
+    /// The gamepad is gone: releases every held button (returning the events)
+    /// and centers the axes. This is not player input: idle time keeps counting.
+    pub fn release_all(&mut self) -> Vec<ButtonEvent> {
+        self.axes.values_mut().for_each(|v| *v = 0.0);
+        self.panic_since = None;
+        std::mem::take(&mut self.held).into_iter().map(|name| ButtonEvent { name, pressed: false }).collect()
+    }
+
     pub fn held(&self) -> &BTreeSet<&'static str> {
         &self.held
     }
@@ -149,7 +193,7 @@ impl PadState {
     }
 
     fn update_panic(&mut self, time: f64) {
-        let combo = self.held.contains("BACK") && self.held.contains("START");
+        let combo = self.panic_combo.is_subset(&self.held);
         self.panic_since = match (combo, self.panic_since) {
             (true, None) => Some(time),
             (true, since) => since,
@@ -157,7 +201,7 @@ impl PadState {
         };
     }
 
-    /// True once BACK + START have been held for `PANIC_HOLD_SECS`.
+    /// True once the panic combo has been held for `PANIC_HOLD_SECS`.
     pub fn panic_combo(&self, time: f64) -> bool {
         self.panic_since.is_some_and(|since| time - since >= PANIC_HOLD_SECS)
     }
@@ -220,5 +264,37 @@ mod tests {
         assert!(pad.panic_combo(0.6));
         pad.button("START", false, 0.7);
         assert!(!pad.panic_combo(1.0));
+    }
+
+    #[test]
+    fn panic_combo_is_configurable() {
+        let mut pad = PadState::default();
+        pad.set_panic_combo(parse_panic_combo(&["LB".into(), "RB".into(), "Y".into()]).unwrap());
+        pad.button("BACK", true, 0.0);
+        pad.button("START", true, 0.0);
+        assert!(!pad.panic_combo(1.0));
+        pad.button("LB", true, 1.0);
+        pad.button("RB", true, 1.0);
+        pad.button("Y", true, 1.0);
+        assert!(pad.panic_combo(1.5));
+    }
+
+    #[test]
+    fn panic_combo_needs_two_known_buttons() {
+        assert!(parse_panic_combo(&["A".into()]).is_none());
+        assert!(parse_panic_combo(&["A".into(), "A".into()]).is_none());
+        assert!(parse_panic_combo(&["A".into(), "FOO".into()]).is_none());
+        assert!(parse_panic_combo(&["A".into(), "B".into()]).is_some());
+    }
+
+    #[test]
+    fn release_all_emits_releases_and_centers_axes() {
+        let mut pad = PadState::default();
+        pad.button("A", true, 0.0);
+        pad.axis(Abs::ABS_X.0, 0.8, 0.0);
+        let released = pad.release_all();
+        assert_eq!(released, vec![ButtonEvent { name: "A", pressed: false }]);
+        assert!(pad.held().is_empty());
+        assert_eq!(pad.axes()["LX"], 0.0);
     }
 }

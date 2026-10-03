@@ -71,6 +71,8 @@ pub struct Settings {
     pub global_cap: f64,
     /// Channel -> toy names. A missing "main" entry means every toy.
     pub routing: BTreeMap<String, Vec<String>>,
+    /// Gamepad buttons held together for the panic stop (at least two).
+    pub panic_combo: Vec<String>,
     /// The first-launch setup was completed or skipped.
     pub onboarded: bool,
     pub overlay: OverlaySettings,
@@ -105,6 +107,7 @@ impl Default for Settings {
             active_mode: DEFAULT_MODE.into(),
             global_cap: 1.0,
             routing: BTreeMap::new(),
+            panic_combo: crate::gamepad::DEFAULT_PANIC_COMBO.map(str::to_owned).to_vec(),
             onboarded: false,
             overlay: OverlaySettings::default(),
         }

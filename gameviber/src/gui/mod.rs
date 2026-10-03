@@ -191,7 +191,11 @@ impl App {
                         let stop = egui::Button::new(RichText::new("STOP ALL").strong().color(egui::Color32::WHITE))
                             .fill(DANGER)
                             .min_size(Vec2::new(0.0, 34.0));
-                        if ui.add(stop).on_hover_text("Stops every toy. Also: hold BACK + START on the gamepad").clicked() {
+                        let hint = format!(
+                            "Stops every toy. Also: hold {} on the gamepad",
+                            crate::gamepad::combo_text(&s.settings.panic_combo)
+                        );
+                        if ui.add(stop).on_hover_text(hint).clicked() {
                             self.send(Command::Panic);
                         }
                     }

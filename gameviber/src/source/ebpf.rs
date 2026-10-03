@@ -197,6 +197,7 @@ fn spawn_device_watcher(tx: EventSender, watched: Arc<Mutex<HashMap<String, Stri
                     read_device(&path, dev, &tx, &stop);
                     log::info!("{path} is no longer watched");
                     watched.lock().unwrap().remove(&path);
+                    let _ = tx.send(SourceEvent { device: path, kind: SourceKind::Removed });
                 });
             }
             std::thread::sleep(RESCAN_INTERVAL);

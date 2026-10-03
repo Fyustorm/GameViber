@@ -136,6 +136,7 @@ impl App {
         let save = ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::S));
         let mut duplicate = false;
         let mut reload = false;
+        let mut refresh = false;
         ui.horizontal(|ui| {
             ui.label(RichText::new(&editing.id).monospace());
             if editing.builtin {
@@ -150,6 +151,8 @@ impl App {
                                 editor.dirty = false;
                                 editor.message = None;
                                 reload = editing.id == mode.id;
+                                // Updates the catalog, which holds the load error of other modes.
+                                refresh = !reload;
                             }
                             Err(e) => editor.message = Some(format!("cannot save: {e}")),
                         }
@@ -166,7 +169,14 @@ impl App {
         if let Some(message) = &editor.message {
             ui.label(RichText::new(message).color(DANGER_TEXT));
         }
-        if let Some(error) = &mode.error {
+        // The error of the file being edited: the active mode's runtime error, or
+        // why another mode does not load.
+        let error = if editing.id == mode.id {
+            mode.error.as_deref()
+        } else {
+            s.catalog.get(&editing.id).and_then(|info| info.as_ref().err()).map(String::as_str)
+        };
+        if let Some(error) = error {
             ui.label(RichText::new(error).color(DANGER_TEXT).monospace());
         }
         egui::ScrollArea::vertical().show(ui, |ui| {
@@ -181,6 +191,9 @@ impl App {
         });
         if reload {
             self.send(Command::ReloadMode);
+        }
+        if refresh {
+            self.send(Command::RefreshModes);
         }
         if duplicate {
             let source = self.creator.editor.text.clone();
