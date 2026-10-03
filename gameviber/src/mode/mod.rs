@@ -103,6 +103,17 @@ pub enum ModeEvent {
 pub struct TickOutput {
     pub channels: BTreeMap<String, f64>,
     pub plots: Vec<(String, f64)>,
+    /// In-game overlay gauges set with `hud()`, in the order they were first set.
+    pub hud: Vec<HudGauge>,
+    /// Overlay messages raised with `hud_event()` during this tick.
+    pub hud_events: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct HudGauge {
+    pub label: String,
+    pub value: f64,
+    pub max: f64,
 }
 
 struct Timer {
@@ -118,6 +129,8 @@ struct Ctx {
     time: f64,
     outputs: Option<Outputs>,
     plots: Vec<(String, f64)>,
+    hud: Vec<HudGauge>,
+    hud_events: Vec<String>,
     timers: Vec<Timer>,
     /// Timers cancelled during the current tick, possibly already collected as due.
     cancelled: HashSet<u64>,
@@ -213,6 +226,8 @@ impl ModeRuntime {
             time: 0.0,
             outputs: None,
             plots: Vec::new(),
+            hud: Vec::new(),
+            hud_events: Vec::new(),
             timers: Vec::new(),
             cancelled: HashSet::new(),
             next_timer: 1,
@@ -313,6 +328,7 @@ impl ModeRuntime {
         {
             let mut ctx = self.ctx.borrow_mut();
             ctx.timers.clear();
+            ctx.hud.clear();
             ctx.rng = seed();
             if let Some(o) = ctx.outputs.as_mut() {
                 o.stop_all();
@@ -424,8 +440,10 @@ impl ModeRuntime {
 
         let mut ctx = self.ctx.borrow_mut();
         let plots = std::mem::take(&mut ctx.plots);
+        let hud_events = std::mem::take(&mut ctx.hud_events);
+        let hud = ctx.hud.clone();
         let channels = ctx.outputs().map_err(lua_err)?.evaluate(time);
-        Ok(TickOutput { channels, plots })
+        Ok(TickOutput { channels, plots, hud, hud_events })
     }
 
     fn run_timers(&mut self, time: f64) -> Result<(), String> {

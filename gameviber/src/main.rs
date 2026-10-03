@@ -10,6 +10,7 @@ mod hider;
 mod intiface;
 mod logging;
 mod mode;
+mod overlay;
 mod rumble;
 mod source;
 

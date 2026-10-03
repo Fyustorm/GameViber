@@ -471,6 +471,29 @@ fn ai_answer_script_is_extracted() {
 }
 
 #[test]
+fn hud_gauges_persist_and_events_last_one_tick() {
+    let src = wrap(
+        "function on_start() hud('Gauge', 3, 10) end
+         function on_button(ev)
+           if ev.button == 'A' then hud('Gauge', nil) end
+           if ev.button == 'B' then hud_event('Parry!') end
+           if ev.button == 'X' then for i = 1, 5 do hud('g' .. i, i) end end
+         end
+         function tick() end",
+    );
+    let mut rt = load(&src);
+    let out = step(&mut rt, rumble(0.0, 0.0));
+    assert_eq!(out.hud, [HudGauge { label: "Gauge".into(), value: 3.0, max: 10.0 }]);
+    assert!(step(&mut rt, rumble(0.0, 0.0)).hud.len() == 1, "kept without calling hud again");
+    let out = press(&mut rt, "B");
+    assert_eq!(out.hud_events, ["Parry!"]);
+    assert!(step(&mut rt, rumble(0.0, 0.0)).hud_events.is_empty());
+    assert!(press(&mut rt, "A").hud.is_empty(), "nil removes");
+    let err = rt.step(DT, rumble(0.0, 0.0), &PadState::default(), 0.0, &[ModeEvent::Button(ButtonEvent { name: "X", pressed: true })]);
+    assert!(err.unwrap_err().contains("at most 4 gauges"));
+}
+
+#[test]
 fn apply_params_sets_all_values_and_defaults_the_rest() {
     let src = "mode { api = 1, name = 'T', params = {
                  x = number(1, 0, 2, 'X'), y = number(0.5, 0, 1, 'Y'), c = choice('a', { 'a', 'b' }, 'C') } }

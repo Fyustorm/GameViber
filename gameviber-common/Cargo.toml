@@ -7,4 +7,7 @@ license = "Apache-2.0"
 [features]
 default = []
 # Enabled in userspace; absent when the crate is compiled into the eBPF program.
-user = []
+user = ["dep:serde"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"], optional = true }

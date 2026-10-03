@@ -1,8 +1,8 @@
 [workspace]
-members = ["gameviber-common", "gameviber-ebpf", "gameviber"]
+members = ["gameviber-common", "gameviber-ebpf", "gameviber", "gameviber-overlay"]
 # gameviber-ebpf is no_std/no_main: it is only built through aya-build
 # (gameviber/build.rs), never directly for the host target.
-default-members = ["gameviber-common", "gameviber"]
+default-members = ["gameviber-common", "gameviber", "gameviber-overlay"]
 resolver = "2"
 
 [profile.release]

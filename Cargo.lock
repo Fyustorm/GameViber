@@ -1921,6 +1921,9 @@ dependencies = [
 [[package]]
 name = "gameviber-common"
 version = "0.1.0"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "gameviber-ebpf"
@@ -1928,6 +1931,18 @@ version = "0.1.0"
 dependencies = [
  "aya-ebpf",
  "gameviber-common",
+]
+
+[[package]]
+name = "gameviber-overlay"
+version = "0.1.0"
+dependencies = [
+ "ash",
+ "epaint",
+ "gameviber-common",
+ "libc",
+ "naga",
+ "serde_json",
 ]
 
 [[package]]

@@ -1,14 +1,15 @@
 //! egui front end. A first-launch setup guides players through Intiface
 //! Central, their toys, the gamepad and a first mode; afterwards a status bar
 //! (with the panic stop) sits above four pages: Play (mode tiles and their
-//! settings), Toys, Connection (troubleshooting) and Creator (mode editor,
-//! graphs, simulator, logs). A dialog helps players get a mode made for
+//! settings), Toys, Connection (troubleshooting), Overlay (in-game overlay)
+//! and Creator (mode editor, graphs, simulator, logs). A dialog helps players get a mode made for
 //! their game by an AI assistant.
 
 mod connection;
 mod creator;
 mod generator;
 mod onboarding;
+mod overlay;
 mod play;
 mod theme;
 mod toys;
@@ -33,6 +34,7 @@ enum Page {
     Play,
     Toys,
     Connection,
+    Overlay,
     Creator,
 }
 
@@ -48,6 +50,7 @@ pub struct App {
     onboarding_checked: bool,
     play: play::State,
     connection: connection::State,
+    overlay: overlay::State,
     creator: creator::State,
     generator: generator::State,
 }
@@ -71,6 +74,7 @@ impl App {
             onboarding_checked: false,
             play: play::State::default(),
             connection: connection::State::default(),
+            overlay: overlay::State::default(),
             creator: creator::State::default(),
             generator: generator::State::default(),
         }
@@ -141,6 +145,7 @@ impl eframe::App for App {
             Page::Play => self.play_ui(ui, &s),
             Page::Toys => self.toys_ui(ui, &s),
             Page::Connection => self.connection_ui(ui, &s),
+            Page::Overlay => self.overlay_ui(ui, &s),
             Page::Creator => self.creator_ui(ui, &s),
         }
         self.generator_ui(ui.ctx());
@@ -211,9 +216,14 @@ impl App {
                     (Page::Play, "▶", "Play"),
                     (Page::Toys, "📳", "Toys"),
                     (Page::Connection, "🔌", "Connection"),
+                    (Page::Overlay, "🖵", "Overlay"),
                     (Page::Creator, "🔧", "Creator"),
                 ] {
                     if nav_item(ui, icon, label, self.page == page).clicked() {
+                        if page == Page::Overlay && self.page != page {
+                            // Check the installed files again.
+                            self.overlay.forget_install_state();
+                        }
                         self.page = page;
                     }
                 }

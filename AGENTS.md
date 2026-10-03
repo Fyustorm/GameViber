@@ -32,7 +32,9 @@ Pipeline: **source** (interception) → **mode** (Luau script) → **safety laye
 | `gameviber/src/config.rs` | config files, built-in mode registry (`BUILTIN_MODES`) |
 | `gameviber/modes/` | built-in modes, embedded in the binary |
 | `gameviber/prompts/new-mode.md` | template of the request asking an AI assistant to write a mode for one game |
-| `gameviber-ebpf/`, `gameviber-common/` | eBPF probe and types shared with it |
+| `gameviber-ebpf/`, `gameviber-common/` | eBPF probe and types shared with it; `gameviber-common/src/overlay.rs`: overlay protocol |
+| `gameviber-overlay/` | in-game overlay: implicit Vulkan layer (`layer.rs`), renderer (`render.rs`), panel layout with epaint (`hud.rs`), socket client |
+| `gameviber/src/overlay.rs` | overlay socket server and layer installation |
 | `docs/spec-modes.md` | mode API specification (source of truth for the script API) |
 | `prototype/` | original Python prototype (reference only) |
 | `tools/` | test helpers: fake gamepad, SDL rumble game |
@@ -57,8 +59,9 @@ Run `cargo test` after any change to the runtime or to a mode.
   given a behaviour test in `gameviber/src/mode/tests.rs`, and listed in the README
   table and in `docs/spec-modes.md` §14.3. Follow the style of the existing modes: a
   header comment, `author = "GameViber"`, a `category`, a plain-language `help` and
-  1 to 3 `main_params` for players, parameters with units in their labels, and
-  `plot()` for the internal state worth tuning.
+  1 to 3 `main_params` for players, parameters with units in their labels,
+  `plot()` for the internal state worth tuning, and `hud()` / `hud_event()` for what
+  the in-game overlay should show.
 - **Per-game modes come first**: built-in modes are genre fallbacks; players are steered
   towards a mode written by an AI assistant for their game. The request
   (`gameviber/prompts/new-mode.md`) embeds `docs/spec-modes.md` and `modes/surge.luau`

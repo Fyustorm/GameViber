@@ -10,6 +10,8 @@ use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
+pub use gameviber_common::overlay::Corner;
+
 use crate::mode::ParamValue;
 
 pub const BUILTIN_PREFIX: &str = "builtin:";
@@ -71,6 +73,27 @@ pub struct Settings {
     pub routing: BTreeMap<String, Vec<String>>,
     /// The first-launch setup was completed or skipped.
     pub onboarded: bool,
+    pub overlay: OverlaySettings,
+}
+
+/// In-game overlay preferences.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OverlaySettings {
+    /// Show the overlay in games where the layer is active.
+    pub visible: bool,
+    pub corner: Corner,
+    pub scale: f32,
+    /// Panel background opacity, 0..1.
+    pub opacity: f32,
+    /// The layer is installed for every Vulkan game rather than per game.
+    pub all_games: bool,
+}
+
+impl Default for OverlaySettings {
+    fn default() -> Self {
+        Self { visible: true, corner: Corner::TopLeft, scale: 1.0, opacity: 0.75, all_games: false }
+    }
 }
 
 impl Default for Settings {
@@ -83,12 +106,13 @@ impl Default for Settings {
             global_cap: 1.0,
             routing: BTreeMap::new(),
             onboarded: false,
+            overlay: OverlaySettings::default(),
         }
     }
 }
 
 /// Home of the user who started us: the sudo caller rather than root.
-fn user_home() -> PathBuf {
+pub fn user_home() -> PathBuf {
     if let Ok(user) = std::env::var("SUDO_USER") {
         if let Ok(name) = std::ffi::CString::new(user) {
             // SAFETY: getpwnam returns a pointer to static storage or null.

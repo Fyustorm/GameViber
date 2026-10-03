@@ -54,6 +54,9 @@ way the game actually uses rumble.
 - Keep the game's own rumble perceptible (usually `math.max(effect, rumble * weight)`)
   so the player still feels the game.
 - Call `plot("name", value)` for the internal state worth tuning (gauges, counters).
+- Feed the in-game overlay: `hud(label, value, max)` for the 1 or 2 gauges the player
+  cares about while playing, and `hud_event(text)` when the mode detects something worth
+  telling ("Parry!", "Combo x5", "Overheat!"). Keep texts short.
 - Initialise per-fight state in `on_start()`; use `persist` only for state that should
   survive editing the script.
 - Clamp every gauge to its range; `set()` and `pulse()` already clamp to 0..1.

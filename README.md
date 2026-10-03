@@ -50,6 +50,20 @@ Claude, Gemini, Le Chat...):
 
 The request template is [`gameviber/prompts/new-mode.md`](gameviber/prompts/new-mode.md).
 
+### In-game overlay
+
+Like MangoHud, GameViber can draw a small panel over the game: the active mode
+and preset, how strong the toys run (with the global cap), the mode's gauges
+and what it detects ("Parry!"), and warnings (toy lost, Intiface disconnected,
+mode error, panic stop). Install it from the **Overlay** page, then enable it
+per game with the Steam launch option `GAMEVIBER_OVERLAY=1 %command%` (or for
+every Vulkan game). It is an implicit Vulkan layer
+([`gameviber-overlay/`](gameviber-overlay/)), so it works in native Vulkan
+games and in every Proton game (DXVK / VKD3D), fullscreen or not, on any
+desktop. Not supported yet: OpenGL games, 32-bit games, Flatpak Steam.
+`DISABLE_GAMEVIBER_OVERLAY=1` turns it off for one game;
+`GAMEVIBER_OVERLAY_DEBUG=1` prints its errors on the game's stderr.
+
 ### Modes
 
 User modes are `.luau` files in `~/.config/gameviber/modes/` (they can also be

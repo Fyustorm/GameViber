@@ -5,13 +5,15 @@ use std::rc::Rc;
 
 use mlua::{Function, Lua, Table, Value, Variadic};
 
-use super::{display, Ctx, ParamDef, ParamKind, ParamValue, Timer};
+use super::{display, Ctx, HudGauge, ParamDef, ParamKind, ParamValue, Timer};
 use crate::gamepad::BUTTONS;
 
 const PARAM_TAG: &str = "__param";
 const ORDER_TAG: &str = "__order";
 const PATTERN_TAG: &str = "__pattern";
 const DEFAULT_CHANNEL: &str = "main";
+const MAX_HUD_GAUGES: usize = 4;
+const MAX_HUD_EVENT_CHARS: usize = 40;
 
 /// Base-library functions that could escape the sandbox or load code.
 const REMOVED_GLOBALS: [&str; 5] = ["loadstring", "getfenv", "setfenv", "require", "dofile"];
@@ -197,6 +199,46 @@ pub(super) fn register(lua: &Lua, ctx: &Rc<RefCell<Ctx>>) -> mlua::Result<()> {
             "plot",
             lua.create_function(move |_, (name, value): (String, f64)| {
                 ctx.borrow_mut().plots.push((name, value));
+                Ok(())
+            })?,
+        )?;
+    }
+
+    // --- in-game overlay
+    {
+        let ctx = ctx.clone();
+        g.set(
+            "hud",
+            lua.create_function(move |_, (label, value, max): (String, Option<f64>, Option<f64>)| {
+                let mut c = ctx.borrow_mut();
+                let Some(value) = value else {
+                    c.hud.retain(|h| h.label != label);
+                    return Ok(());
+                };
+                let max = max.unwrap_or(1.0);
+                if !(max > 0.0 && max.is_finite() && value.is_finite()) {
+                    return Err(runtime_err("hud: value must be a number and max a positive number"));
+                }
+                let full = c.hud.len() >= MAX_HUD_GAUGES;
+                match c.hud.iter_mut().find(|h| h.label == label) {
+                    Some(h) => {
+                        h.value = value;
+                        h.max = max;
+                    }
+                    None if full => return Err(runtime_err(format!("hud: at most {MAX_HUD_GAUGES} gauges"))),
+                    None => c.hud.push(HudGauge { label, value, max }),
+                }
+                Ok(())
+            })?,
+        )?;
+    }
+    {
+        let ctx = ctx.clone();
+        g.set(
+            "hud_event",
+            lua.create_function(move |_, text: String| {
+                let text: String = text.chars().take(MAX_HUD_EVENT_CHARS).collect();
+                ctx.borrow_mut().hud_events.push(text);
                 Ok(())
             })?,
         )?;

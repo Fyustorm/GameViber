@@ -8,6 +8,9 @@
 // `bpf_target_arch` is a cfg set by aya-build when compiling the eBPF program.
 #![allow(unexpected_cfgs)]
 
+#[cfg(feature = "user")]
+pub mod overlay;
+
 pub const FF_RUMBLE: u16 = 0x50;
 pub const FF_PERIODIC: u16 = 0x51;
 pub const FF_CONSTANT: u16 = 0x52;

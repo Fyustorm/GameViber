@@ -240,6 +240,25 @@ local heartbeat = pattern {
 play(heartbeat, { channel = "main", loops = 3, scale = 0.5 })  -- loops = 0: loop forever
 ```
 
+### 8.4 In-game overlay
+
+When the player uses the in-game overlay (a small panel drawn over the game), it shows
+the mode's name, the toy output and anything the mode adds with:
+
+```lua
+hud(label, value [, max])   -- gauge shown as a bar with "value / max"; max defaults to 1
+hud(label, nil)             -- removes the gauge
+hud_event(text)             -- short message ("Parry!", "Combo x5") that fades out after ~2 s
+```
+
+- Gauges are kept until changed or removed, so calling `hud()` on every tick or only
+  on changes both work. They are cleared when the mode (re)starts. At most 4 gauges;
+  they are shown in the order they were first set.
+- `hud_event` texts are cut to 40 characters; the overlay shows the last 3.
+- Without the overlay, both functions do nothing visible: they are safe to call always.
+- Use them for what the player wants to see while playing (the main gauge, detected
+  parries or combos); keep `plot()` for tuning curves.
+
 ## 9. Utilities
 
 | Function | Purpose |

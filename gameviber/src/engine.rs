@@ -8,16 +8,19 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
+use gameviber_common::overlay::{Event, Gauge, Hello, OverlayState};
+
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::mpsc;
 
 pub use crate::config::SourceChoice;
-use crate::config::{self, ModeEntry, Presets, Settings};
+use crate::config::{self, ModeEntry, OverlaySettings, Presets, Settings};
 use crate::helper::client::Helper;
 use crate::gamepad::{PadState, BUTTONS};
 use crate::intiface::{Intiface, IntifaceStatus, Toy, ToyOutputs};
 use crate::mode::rumble_events::RumbleLevels;
-use crate::mode::{ModeEvent, ModeInfo, ModeRuntime, ParamValue};
+use crate::mode::{HudGauge, ModeEvent, ModeInfo, ModeRuntime, ParamValue};
+use crate::overlay;
 use crate::rumble::RumbleState;
 use crate::source::ebpf::EbpfSource;
 use crate::source::proxy::{Hide, ProxySource};
@@ -74,6 +77,7 @@ pub enum Command {
     TestToy(String),
     /// First-launch setup done (or skipped).
     SetOnboarded(bool),
+    SetOverlay(OverlaySettings),
     SimRumble { strong: f64, weak: f64 },
     SimButton { name: String, pressed: bool },
     Shutdown,
@@ -123,6 +127,8 @@ pub struct Shared {
     /// Sticks (-1..1) and triggers (0..1).
     pub axes: BTreeMap<&'static str, f64>,
     pub toy_levels: BTreeMap<String, f64>,
+    /// Games currently showing the in-game overlay.
+    pub overlay_clients: Vec<Hello>,
     pub time: f64,
     pub stopped: bool,
 }
@@ -206,6 +212,12 @@ struct Engine {
     buttons_seen: bool,
     /// Toy being buzzed by `Command::TestToy`, until when.
     test: Option<(String, Instant)>,
+    overlay: overlay::Server,
+    /// Overlay messages and when they were raised.
+    overlay_events: Vec<(String, f64)>,
+    /// Mode name and preset shown by the overlay, and since when.
+    overlay_title: (String, Option<String>, f64),
+    ticks: u64,
 }
 
 /// Runs the engine until `Command::Shutdown` or SIGINT/SIGTERM.
@@ -257,6 +269,10 @@ async fn run_async(
         last_rumble: None,
         buttons_seen: false,
         test: None,
+        overlay: overlay::Server::new(),
+        overlay_events: Vec::new(),
+        overlay_title: (String::new(), None, 0.0),
+        ticks: 0,
     };
     engine.start_source();
     engine.refresh_modes();
@@ -397,6 +413,10 @@ impl Engine {
             Command::SetSource { source, hide } => self.switch_source(source, hide),
             Command::SetUrl(url) => self.set_url(url),
             Command::TestToy(name) => self.test = Some((name, Instant::now() + TEST_LENGTH)),
+            Command::SetOverlay(overlay) => {
+                self.settings.overlay = overlay;
+                self.settings.save();
+            }
             Command::SetOnboarded(done) => {
                 self.settings.onboarded = done;
                 self.settings.save();
@@ -658,12 +678,14 @@ impl Engine {
         for toy in &self.last_toys {
             if !toys.toys.iter().any(|t| t.name == toy.name) {
                 self.events.push(ModeEvent::Device { connected: false, name: toy.name.clone() });
+                self.overlay_events.push((format!("Toy lost: {}", toy.name), time));
             }
         }
         self.last_toys = toys.toys.clone();
 
         let mut channels = BTreeMap::new();
         let mut plots = Vec::new();
+        let mut hud = Vec::new();
         let events = std::mem::take(&mut self.events);
         let input_idle = self.pad.input_idle(time);
         if let Some(active) = self.mode.as_mut() {
@@ -673,6 +695,8 @@ impl Engine {
                         Ok(out) => {
                             channels = out.channels;
                             plots = out.plots;
+                            hud = out.hud;
+                            self.overlay_events.extend(out.hud_events.into_iter().map(|e| (e, time)));
                         }
                         Err(e) => {
                             log::error!("mode '{}' suspended: {e}", rt.info().name);
@@ -709,6 +733,13 @@ impl Engine {
         if let Some(i) = &self.intiface {
             i.set_outputs(toy_outputs);
         }
+        let output = toy_levels.values().copied().fold(0.0, f64::max);
+        self.ticks += 1;
+        // 25 updates per second are plenty for the overlay.
+        if self.ticks % 2 == 0 {
+            let state = self.overlay_state(time, output, hud, &toys);
+            self.overlay.update(&state);
+        }
 
         let mut shared = self.shared.lock().unwrap();
         shared.time = time;
@@ -724,6 +755,7 @@ impl Engine {
         shared.held = self.pad.held().iter().copied().collect();
         shared.axes = self.pad.axes().clone();
         shared.toy_levels = toy_levels;
+        shared.overlay_clients = self.overlay.clients();
         shared.history.push_back(Sample { t: time, strong: levels.strong, weak: levels.weak, channels });
         while shared.history.front().is_some_and(|s| time - s.t > HISTORY_SECS) {
             shared.history.pop_front();
@@ -735,6 +767,55 @@ impl Engine {
             while series.front().is_some_and(|p| time - p[0] > HISTORY_SECS) {
                 series.pop_front();
             }
+        }
+    }
+
+    /// What the in-game overlay shows.
+    fn overlay_state(&mut self, time: f64, output: f64, hud: Vec<HudGauge>, toys: &IntifaceStatus) -> OverlayState {
+        const EVENT_KEEP_SECS: f64 = 3.0;
+        let s = &self.settings.overlay;
+        let (name, preset) = match &self.mode {
+            Some(active) => (
+                active.runtime.as_ref().map(|rt| rt.info().name.clone()).unwrap_or_else(|| active.entry.key.clone()),
+                active.presets.active.clone(),
+            ),
+            None => (String::new(), None),
+        };
+        if (&name, &preset) != (&self.overlay_title.0, &self.overlay_title.1) {
+            self.overlay_title = (name.clone(), preset.clone(), time);
+        }
+        self.overlay_events.retain(|(_, t)| time - t < EVENT_KEEP_SECS);
+
+        let mut alerts = Vec::new();
+        if self.mode.as_ref().is_some_and(|m| m.suspended || m.runtime.is_none()) {
+            alerts.push("Mode error: see GameViber".to_owned());
+        }
+        match &self.source.health() {
+            SourceHealth::Failed(_) => alerts.push("Gamepad capture stopped".to_owned()),
+            SourceHealth::Working if self.source.gamepads().is_empty() => alerts.push("No gamepad found".to_owned()),
+            _ => {}
+        }
+        if self.intiface.is_some() && !toys.connected {
+            alerts.push("Intiface Central not connected".to_owned());
+        } else if self.intiface.is_some() && toys.toys.is_empty() {
+            alerts.push("No toy connected".to_owned());
+        }
+
+        OverlayState {
+            visible: s.visible,
+            corner: s.corner,
+            scale: s.scale,
+            opacity: s.opacity,
+            output: output as f32,
+            cap: self.settings.global_cap as f32,
+            panic: self.panic,
+            mode: name,
+            preset,
+            mode_age: (time - self.overlay_title.2) as f32,
+            gauges: hud.into_iter().map(|g| Gauge { label: g.label, value: g.value as f32, max: g.max as f32 }).collect(),
+            events: self.overlay_events.iter().map(|(text, t)| Event { text: text.clone(), age: (time - t) as f32 }).collect(),
+            alerts,
+            ..OverlayState::default()
         }
     }
 

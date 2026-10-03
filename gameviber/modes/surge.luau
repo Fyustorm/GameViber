@@ -69,6 +69,7 @@ function on_button(ev)
       add(-P.surge_cost)
       play(surge_wave, { scale = P.surge_level })
       surges += 1
+      hud_event("Surge!")
     end
   end
 end
@@ -79,6 +80,7 @@ function on_rumble_start(ev)
     pulse(P.parry_level, P.parry_len)
     add(P.per_parry)
     parries += 1
+    hud_event("Parry!")
     last_parry = -1e9
   else
     add(P.per_hit)
@@ -103,6 +105,7 @@ function tick(dt, input)
 
   set(math.max(glow, r.level * P.rumble_weight))
 
+  hud("Surge gauge", math.floor(persist.gauge * 100), 100)
   plot("gauge", persist.gauge)
   plot("fight", fight)
   plot("parries", parries)
