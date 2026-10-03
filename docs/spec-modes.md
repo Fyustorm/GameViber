@@ -302,7 +302,11 @@ resolution is therefore 20 ms.
 
 ## 12. Safety (outside the script)
 
-- **Global intensity cap**, adjustable in the GUI: default 1.0, applied after the mode.
+- **Per-toy response**, adjustable on the Toys page: a channel value below 0.01 leaves
+  the toy off; above, it goes through the toy's curve (`value ^ curve`) and is spread
+  between its weakest and strongest intensity. Defaults: 0, 1 and 1 (unchanged).
+- **Global intensity cap**, adjustable in the GUI: default 1.0, applied last, after the
+  per-toy response.
 - **Panic button**: BACK + START held for 0.5 s. The combo is configurable on the
   Connection page (any 2 or more buttons of §6.2).
   - It stops all toys and suspends the mode until it is re-enabled from the GUI.

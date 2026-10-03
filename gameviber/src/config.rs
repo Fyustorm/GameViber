@@ -73,9 +73,47 @@ pub struct Settings {
     pub routing: BTreeMap<String, Vec<String>>,
     /// Gamepad buttons held together for the panic stop (at least two).
     pub panic_combo: Vec<String>,
+    /// Toy name -> how it renders intensities (missing: `ToySettings::default()`).
+    pub toys: BTreeMap<String, ToySettings>,
     /// The first-launch setup was completed or skipped.
     pub onboarded: bool,
     pub overlay: OverlaySettings,
+}
+
+/// How one toy renders the 0..1 intensity it is asked for (safety layer, after the mode).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ToySettings {
+    /// Intensity the weakest felt vibration is raised to (motors often do nothing below it).
+    pub min: f64,
+    /// Intensity the strongest vibration is lowered to.
+    pub max: f64,
+    /// Response curve exponent: below 1 low levels feel stronger, above 1 softer.
+    pub curve: f64,
+}
+
+impl Default for ToySettings {
+    fn default() -> Self {
+        Self { min: 0.0, max: 1.0, curve: 1.0 }
+    }
+}
+
+impl ToySettings {
+    pub const CURVE_RANGE: std::ops::RangeInclusive<f64> = 0.4..=2.5;
+    /// Requested intensities below this stay off, whatever `min`.
+    pub const SILENT: f64 = 0.01;
+
+    /// Toy intensity for a requested 0..1 intensity: 0 stays 0, anything else is
+    /// shaped by the curve then spread between `min` and `max`.
+    pub fn shape(&self, level: f64) -> f64 {
+        if level < Self::SILENT {
+            return 0.0;
+        }
+        let curve = self.curve.clamp(*Self::CURVE_RANGE.start(), *Self::CURVE_RANGE.end());
+        let max = self.max.clamp(0.0, 1.0);
+        let min = self.min.clamp(0.0, max);
+        min + (max - min) * level.min(1.0).powf(curve)
+    }
 }
 
 /// In-game overlay preferences.
@@ -108,6 +146,7 @@ impl Default for Settings {
             global_cap: 1.0,
             routing: BTreeMap::new(),
             panic_combo: crate::gamepad::DEFAULT_PANIC_COMBO.map(str::to_owned).to_vec(),
+            toys: BTreeMap::new(),
             onboarded: false,
             overlay: OverlaySettings::default(),
         }
@@ -321,6 +360,21 @@ mod tests {
     fn user_entries_use_file_stem() {
         let e = ModeEntry::from_id("/x/modes/combo.luau");
         assert_eq!((e.key.as_str(), e.builtin, e.chunk_name().as_str()), ("combo", false, "combo.luau"));
+    }
+
+    #[test]
+    fn toy_settings_shape_levels() {
+        let default = ToySettings::default();
+        assert_eq!(default.shape(0.0), 0.0);
+        assert_eq!(default.shape(0.42), 0.42);
+        let toy = ToySettings { min: 0.2, max: 0.8, curve: 2.0 };
+        assert_eq!(toy.shape(0.0), 0.0);
+        assert_eq!(toy.shape(0.005), 0.0);
+        assert!((toy.shape(0.5) - (0.2 + 0.6 * 0.25)).abs() < 1e-9);
+        assert!((toy.shape(1.0) - 0.8).abs() < 1e-9);
+        // An inverted range never goes above max.
+        let odd = ToySettings { min: 0.9, max: 0.5, curve: 1.0 };
+        assert!(odd.shape(0.1) <= 0.5);
     }
 
     #[test]

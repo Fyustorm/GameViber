@@ -14,7 +14,7 @@ use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::mpsc;
 
 pub use crate::config::SourceChoice;
-use crate::config::{self, ModeEntry, OverlaySettings, Presets, Settings};
+use crate::config::{self, ModeEntry, OverlaySettings, Presets, Settings, ToySettings};
 use crate::helper::client::Helper;
 use crate::gamepad::{self, PadState, BUTTONS};
 use crate::intiface::{Intiface, IntifaceStatus, Toy, ToyOutputs};
@@ -33,7 +33,7 @@ const RELOAD_CHECK: Duration = Duration::from_secs(1);
 /// Length of the history kept for the GUI graphs.
 pub const HISTORY_SECS: f64 = 10.0;
 /// "Buzz" test of a single toy from the GUI.
-const TEST_LEVEL: f64 = 0.5;
+pub const TEST_LEVEL: f64 = 0.5;
 const TEST_LENGTH: Duration = Duration::from_millis(800);
 /// How often a lost gamepad is looked for again (proxy source).
 const SOURCE_RETRY: Duration = Duration::from_secs(2);
@@ -74,11 +74,13 @@ pub enum Command {
     SetRouting { channel: String, toys: Vec<String> },
     /// Buttons held together for the panic stop (at least two).
     SetPanicCombo(Vec<String>),
+    SetToySettings { toy: String, settings: ToySettings },
     SetSource { source: SourceChoice, hide: bool },
     /// Intiface server address; reconnects.
     SetUrl(String),
-    /// Short vibration of one toy, to identify it.
-    TestToy(String),
+    /// Short vibration of one toy at a 0..1 intensity (shaped by its settings), to
+    /// identify it or feel its settings.
+    TestToy(String, f64),
     /// First-launch setup done (or skipped).
     SetOnboarded(bool),
     SetOverlay(OverlaySettings),
@@ -227,8 +229,8 @@ struct Engine {
     last_channels: BTreeMap<String, f64>,
     last_rumble: Option<f64>,
     buttons_seen: bool,
-    /// Toy being buzzed by `Command::TestToy`, until when.
-    test: Option<(String, Instant)>,
+    /// Toy being buzzed by `Command::TestToy`, at what intensity, until when.
+    test: Option<(String, f64, Instant)>,
     overlay: overlay::Server,
     /// Overlay messages and when they were raised.
     overlay_events: Vec<(String, f64)>,
@@ -466,6 +468,14 @@ impl Engine {
                 self.settings.routing.insert(channel, toys);
                 self.settings.save();
             }
+            Command::SetToySettings { toy, settings } => {
+                if settings == ToySettings::default() {
+                    self.settings.toys.remove(&toy);
+                } else {
+                    self.settings.toys.insert(toy, settings);
+                }
+                self.settings.save();
+            }
             Command::SetPanicCombo(combo) => {
                 if gamepad::parse_panic_combo(&combo).is_some() {
                     log::info!("panic combo set to {}", gamepad::combo_text(&combo));
@@ -476,7 +486,7 @@ impl Engine {
             }
             Command::SetSource { source, hide } => self.switch_source(source, hide),
             Command::SetUrl(url) => self.set_url(url),
-            Command::TestToy(name) => self.test = Some((name, Instant::now() + TEST_LENGTH)),
+            Command::TestToy(name, level) => self.test = Some((name, level.clamp(0.0, 1.0), Instant::now() + TEST_LENGTH)),
             Command::SetOverlay(overlay) => {
                 self.settings.overlay = overlay;
                 self.settings.save();
@@ -786,31 +796,38 @@ impl Engine {
             }
         }
         // Safety layer: panic / suspension output 0 (channels stay empty), lost gamepad 0,
-        // global cap. The mode keeps running so that its state follows the game.
-        let cap = if self.source_lost { 0.0 } else { self.settings.global_cap };
-        channels.values_mut().for_each(|v| *v = v.min(cap));
+        // per-toy shaping, then the global cap. The mode keeps running so that its state
+        // follows the game.
+        let cap = self.settings.global_cap;
+        if self.source_lost {
+            channels.values_mut().for_each(|v| *v = 0.0);
+        }
         if channels != self.last_channels {
             let text: Vec<String> = channels.iter().map(|(c, v)| format!("{c}={v:.2}")).collect();
             log::debug!("output {} (rumble {:.2}/{:.2})", text.join(" "), levels.strong, levels.weak);
             self.last_channels = channels.clone();
         }
 
-        if self.test.as_ref().is_some_and(|(_, until)| now >= *until) {
+        if self.test.as_ref().is_some_and(|(_, _, until)| now >= *until) {
             self.test = None;
         }
         let mut toy_outputs = ToyOutputs::new();
         let mut toy_levels = BTreeMap::new();
         for toy in &toys.toys {
             let mut level = channels.iter().filter(|(c, _)| self.routed(c, &toy.name)).map(|(_, v)| *v).fold(0.0, f64::max);
-            if !self.panic && self.test.as_ref().is_some_and(|(name, _)| *name == toy.name) {
-                level = level.max(TEST_LEVEL.min(self.settings.global_cap));
+            if let Some((_, test, _)) = self.test.as_ref().filter(|(name, ..)| !self.panic && *name == toy.name) {
+                level = level.max(*test);
             }
+            let shape = self.settings.toys.get(&toy.name).copied().unwrap_or_default();
+            let level = shape.shape(level).min(cap);
             toy_outputs.insert(toy.index, level);
             toy_levels.insert(toy.name.clone(), level);
         }
         if let Some(i) = &self.intiface {
             i.set_outputs(toy_outputs);
         }
+        // The graphs show what the mode asks for, within the cap.
+        channels.values_mut().for_each(|v| *v = v.min(cap));
         let output = toy_levels.values().copied().fold(0.0, f64::max);
         self.ticks += 1;
         // 25 updates per second are plenty for the overlay.

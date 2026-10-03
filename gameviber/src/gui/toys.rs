@@ -5,7 +5,8 @@ use eframe::egui::{self, Margin, RichText, Vec2};
 
 use super::theme::*;
 use super::{App, Page};
-use crate::engine::{Command, Shared};
+use crate::config::ToySettings;
+use crate::engine::{Command, Shared, TEST_LEVEL};
 
 impl App {
     pub(super) fn toys_ui(&mut self, ui: &mut egui::Ui, s: &Shared) {
@@ -38,7 +39,7 @@ impl App {
                     return;
                 }
                 let channels = s.mode.info.as_ref().map(|i| i.channels.clone()).unwrap_or_else(|| vec!["main".into()]);
-                tile_grid(ui, s.intiface.toys.len(), 360.0, 150.0, |ui, i, size| {
+                tile_grid(ui, s.intiface.toys.len(), 360.0, 270.0, |ui, i, size| {
                     let toy = &s.intiface.toys[i];
                     card(PANEL).show(ui, |ui| {
                         ui.set_width(size.x - 32.0);
@@ -78,7 +79,7 @@ impl App {
             ui.label(RichText::new(name).size(15.0).strong());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("⚡ Buzz").on_hover_text("Short vibration to find which toy this is").clicked() {
-                    self.send(Command::TestToy(name.to_owned()));
+                    self.send(Command::TestToy(name.to_owned(), TEST_LEVEL));
                 }
             });
         });
@@ -107,7 +108,83 @@ impl App {
                 }
             }
         });
+        ui.separator();
+        let settings = s.settings.toys.get(name).copied().unwrap_or_default();
+        if let Some(settings) = toy_settings(ui, name, settings) {
+            self.send(Command::SetToySettings { toy: name.to_owned(), settings });
+        }
+        ui.horizontal(|ui| {
+            ui.add_sized(Vec2::new(60.0, 18.0), egui::Label::new(muted("Feel")));
+            for (label, level, hint) in [
+                ("Weakest", ToySettings::SILENT, "The gentlest vibration a mode can ask for"),
+                ("Medium", TEST_LEVEL, "A vibration at half strength"),
+                ("Strongest", 1.0, "The strongest vibration a mode can ask for (within Max)"),
+            ] {
+                if ui.button(label).on_hover_text(hint).clicked() {
+                    self.send(Command::TestToy(name.to_owned(), level));
+                }
+            }
+            if settings != ToySettings::default() && ui.button("Defaults").clicked() {
+                self.send(Command::SetToySettings { toy: name.to_owned(), settings: ToySettings::default() });
+            }
+        });
     }
+}
+
+/// Sliders for a toy's weakest and strongest vibration and its curve, next to a
+/// preview of the curve. Returns the new settings when one changed.
+fn toy_settings(ui: &mut egui::Ui, name: &str, settings: ToySettings) -> Option<ToySettings> {
+    let mut new = settings;
+    ui.horizontal(|ui| {
+        ui.vertical(|ui| {
+            ui.spacing_mut().slider_width = (ui.available_width() - 190.0).max(80.0);
+            let mut min = new.min * 100.0;
+            let mut max = new.max * 100.0;
+            labeled(ui, "Weakest", |ui| ui.add(egui::Slider::new(&mut min, 0.0..=100.0).suffix("%").integer()))
+                .on_hover_text("Raise it until the gentlest vibrations are felt: many toys do nothing below 10-20%");
+            labeled(ui, "Strongest", |ui| ui.add(egui::Slider::new(&mut max, 0.0..=100.0).suffix("%").integer()))
+                .on_hover_text("Lower it if this toy is too strong compared to the others");
+            labeled(ui, "Curve", |ui| {
+                ui.add(egui::Slider::new(&mut new.curve, ToySettings::CURVE_RANGE).step_by(0.05).fixed_decimals(2))
+            })
+            .on_hover_text("Below 1: gentle vibrations feel stronger. Above 1: they feel softer and peaks stand out");
+            // Weakest and strongest push each other rather than crossing.
+            if min != new.min * 100.0 {
+                new.min = min / 100.0;
+                new.max = new.max.max(new.min);
+            } else if max != new.max * 100.0 {
+                new.max = max / 100.0;
+                new.min = new.min.min(new.max);
+            }
+        });
+        curve_preview(ui, name, &new);
+    });
+    (new != settings).then_some(new)
+}
+
+fn labeled(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut egui::Ui) -> egui::Response) -> egui::Response {
+    ui.horizontal(|ui| {
+        ui.add_sized(Vec2::new(60.0, 18.0), egui::Label::new(muted(label)));
+        add(ui)
+    })
+    .inner
+}
+
+/// Requested intensity (x) -> toy intensity (y).
+fn curve_preview(ui: &mut egui::Ui, name: &str, settings: &ToySettings) {
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(72.0), egui::Sense::hover());
+    let painter = ui.painter();
+    painter.rect_filled(rect, 6, RAISED);
+    painter.line_segment([rect.left_bottom(), rect.right_top()], egui::Stroke::new(1.0, LINE));
+    let points: Vec<egui::Pos2> = (0..=40)
+        .map(|i| {
+            let x = i as f64 / 40.0;
+            let y = settings.shape(x);
+            egui::pos2(rect.left() + rect.width() * x as f32, rect.bottom() - rect.height() * y as f32)
+        })
+        .collect();
+    painter.add(egui::Shape::line(points, egui::Stroke::new(2.0, ACCENT)));
+    response.on_hover_text(format!("How {name} answers: what the mode asks for (left to right) and what the toy plays (up)"));
 }
 
 pub(super) fn waiting_for_toys(ui: &mut egui::Ui) {

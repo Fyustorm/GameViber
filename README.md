@@ -26,8 +26,9 @@ again from the Connection page. Then the GUI provides:
   gamepad, configurable on the Connection page);
 - **Play**: the modes as tiles, and the active mode's explanation, its main
   settings, all its settings and named **presets** (e.g. one per game);
-- **Toys**: the toys Intiface found, a test buzz, and which mode channels each
-  one plays;
+- **Toys**: the toys Intiface found, a test buzz, which mode channels each
+  one plays, and how it renders them: weakest and strongest intensity and a
+  response curve, with buttons to feel each;
 - **Connection**: status, capture method (standard proxy or kernel probe) with
   their pros and cons, gamepad hiding, Intiface address, panic combo,
   troubleshooting;

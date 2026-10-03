@@ -9,7 +9,7 @@ use super::play::mode_tiles;
 use super::theme::*;
 use super::toys::waiting_for_toys;
 use super::{App, Page};
-use crate::engine::{Command, Shared, SourceHealth};
+use crate::engine::{Command, Shared, SourceHealth, TEST_LEVEL};
 
 const STEPS: [&str; 4] = ["Intiface Central", "Your toys", "Your gamepad", "Pick a mode"];
 
@@ -192,7 +192,7 @@ impl App {
                     ui.label(RichText::new(&toy.name).strong());
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.button("⚡ Buzz to test").clicked() {
-                            self.send(Command::TestToy(toy.name.clone()));
+                            self.send(Command::TestToy(toy.name.clone(), TEST_LEVEL));
                         }
                         pill(ui, "Ready", OK, RAISED);
                     });
