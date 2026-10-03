@@ -71,6 +71,15 @@ Build). Not supported yet: Flatpak Steam.
 `DISABLE_GAMEVIBER_OVERLAY=1` turns it off for one game;
 `GAMEVIBER_OVERLAY_DEBUG=1` prints its errors on the game's stderr.
 
+**Anti-cheats**: the overlay is code loaded into the game's process (a Vulkan
+layer, or `LD_PRELOAD` for OpenGL), the same techniques MangoHud, vkBasalt and
+the Steam overlay use. An anti-cheat could still mistake it for a cheat, so do
+not enable it in online games with an anti-cheat (EasyAntiCheat, BattlEye,
+VAC), and keep it per game rather than on for every Vulkan game. The rest of
+GameViber never touches the game: the eBPF source watches its `ioctl` calls
+from the kernel and the proxy source only exposes a virtual gamepad, as Steam
+Input does.
+
 ### Modes
 
 User modes are `.luau` files in `~/.config/gameviber/modes/` (they can also be

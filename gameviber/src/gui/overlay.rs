@@ -10,6 +10,11 @@ use crate::engine::{Command, Shared};
 use crate::overlay::{self, Arch, InstallState};
 
 const LAUNCH_OPTION: &str = "GAMEVIBER_OVERLAY=1 %command%";
+/// The overlay runs inside the game's process, which anti-cheats watch for;
+/// the rest of GameViber never touches the game.
+const ANTICHEAT_WARNING: &str = "⚠ The overlay runs inside the game, like MangoHud or the Steam overlay. \
+     An anti-cheat could mistake it for a cheat: do not enable it in online games with an anti-cheat \
+     (EasyAntiCheat, BattlEye, VAC). Rumble and toys work without it and never touch the game.";
 
 #[derive(Default)]
 pub struct State {
@@ -86,9 +91,21 @@ impl App {
                 ui.label(muted(format!("{} games: {text}", arch.label())).size(12.0));
             }
             ui.add_space(4.0);
+            ui.label(RichText::new(ANTICHEAT_WARNING).color(WARN).size(12.5));
+            ui.add_space(4.0);
             let mut all_games = settings.all_games;
             ui.radio_value(&mut all_games, false, "Only in games I enable it for (recommended)");
             ui.radio_value(&mut all_games, true, "In every Vulkan game and program");
+            if all_games {
+                ui.label(
+                    RichText::new(
+                        "The overlay then loads into every Vulkan game, including online games with an \
+                         anti-cheat. Set DISABLE_GAMEVIBER_OVERLAY=1 in those games' launch options.",
+                    )
+                    .color(WARN)
+                    .size(12.5),
+                );
+            }
             let scope_changed = all_games != settings.all_games;
             ui.add_space(4.0);
             ui.horizontal(|ui| {
