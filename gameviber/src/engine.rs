@@ -21,6 +21,7 @@ use crate::mode::{ModeEvent, ModeInfo, ModeRuntime, ParamValue};
 use crate::rumble::RumbleState;
 use crate::source::ebpf::EbpfSource;
 use crate::source::proxy::{Hide, ProxySource};
+pub use crate::source::SourceHealth;
 use crate::source::{EventSender, SourceEvent, SourceKind};
 
 const TICK: Duration = Duration::from_millis(20);
@@ -28,6 +29,9 @@ const TICK: Duration = Duration::from_millis(20);
 const RELOAD_CHECK: Duration = Duration::from_secs(1);
 /// Length of the history kept for the GUI graphs.
 pub const HISTORY_SECS: f64 = 10.0;
+/// "Buzz" test of a single toy from the GUI.
+const TEST_LEVEL: f64 = 0.5;
+const TEST_LENGTH: Duration = Duration::from_millis(800);
 
 #[derive(Debug, Clone)]
 pub struct EngineOptions {
@@ -64,6 +68,12 @@ pub enum Command {
     SetCap(f64),
     SetRouting { channel: String, toys: Vec<String> },
     SetSource { source: SourceChoice, hide: bool },
+    /// Intiface server address; reconnects.
+    SetUrl(String),
+    /// Short vibration of one toy, to identify it.
+    TestToy(String),
+    /// First-launch setup done (or skipped).
+    SetOnboarded(bool),
     SimRumble { strong: f64, weak: f64 },
     SimButton { name: String, pressed: bool },
     Shutdown,
@@ -88,12 +98,22 @@ pub struct Sample {
 }
 
 /// Snapshot read by the GUI.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct Shared {
+    /// Technical description of the source.
     pub source: String,
+    pub source_health: SourceHealth,
+    /// Names of the gamepads the source listens to.
+    pub gamepads: Vec<String>,
+    /// Engine time of the last rumble from a game (simulator excluded).
+    pub last_rumble: Option<f64>,
+    /// A real gamepad button or axis was received.
+    pub buttons_seen: bool,
     pub intiface: IntifaceStatus,
     pub intiface_enabled: bool,
     pub modes: Vec<ModeEntry>,
+    /// Declaration of every mode (by id), or why it does not load.
+    pub catalog: BTreeMap<String, Result<ModeInfo, String>>,
     pub mode: ModeView,
     pub panic: bool,
     pub settings: Settings,
@@ -133,6 +153,23 @@ impl Source {
         }
     }
 
+    fn health(&self) -> SourceHealth {
+        match self {
+            Source::Proxy(p) => p.health(),
+            Source::Ebpf(e) => e.health(),
+            Source::Failed(e) => SourceHealth::Failed(e.clone()),
+            Source::None => SourceHealth::Off,
+        }
+    }
+
+    fn gamepads(&self) -> Vec<String> {
+        match self {
+            Source::Proxy(p) => vec![p.gamepad().to_owned()],
+            Source::Ebpf(e) => e.gamepads(),
+            Source::Failed(_) | Source::None => Vec::new(),
+        }
+    }
+
     fn shutdown(self) {
         match self {
             Source::Proxy(p) => p.shutdown(),
@@ -163,6 +200,10 @@ struct Engine {
     /// Parameter values changed since the last save (saves are batched: sliders send many changes).
     params_dirty: bool,
     last_channels: BTreeMap<String, f64>,
+    last_rumble: Option<f64>,
+    buttons_seen: bool,
+    /// Toy being buzzed by `Command::TestToy`, until when.
+    test: Option<(String, Instant)>,
 }
 
 /// Runs the engine until `Command::Shutdown` or SIGINT/SIGTERM.
@@ -211,6 +252,9 @@ async fn run_async(
         last_reload_check: now,
         params_dirty: false,
         last_channels: BTreeMap::new(),
+        last_rumble: None,
+        buttons_seen: false,
+        test: None,
     };
     engine.start_source();
     engine.refresh_modes();
@@ -280,6 +324,7 @@ impl Engine {
         std::mem::replace(&mut self.source, Source::None).shutdown();
         self.states.clear();
         self.pad = PadState::default();
+        self.buttons_seen = false;
         self.settings.source = source;
         self.settings.hide = hide;
         self.settings.save();
@@ -296,12 +341,14 @@ impl Engine {
         let now = Instant::now();
         match ev.kind {
             SourceKind::Button { code, pressed } => {
+                self.buttons_seen = true;
                 if let Some(b) = self.pad.key(code, pressed, time) {
                     log::debug!("button {} {}", b.name, if b.pressed { "pressed" } else { "released" });
                     self.events.push(ModeEvent::Button(b));
                 }
             }
             SourceKind::Axis { code, value } => {
+                self.buttons_seen = true;
                 let buttons = self.pad.axis(code, value, time);
                 self.events.extend(buttons.into_iter().map(ModeEvent::Button));
             }
@@ -346,6 +393,12 @@ impl Engine {
                 self.settings.save();
             }
             Command::SetSource { source, hide } => self.switch_source(source, hide),
+            Command::SetUrl(url) => self.set_url(url),
+            Command::TestToy(name) => self.test = Some((name, Instant::now() + TEST_LENGTH)),
+            Command::SetOnboarded(done) => {
+                self.settings.onboarded = done;
+                self.settings.save();
+            }
             Command::SimRumble { strong, weak } => {
                 self.sim = RumbleLevels { strong: strong.clamp(0.0, 1.0), weak: weak.clamp(0.0, 1.0) }
             }
@@ -371,7 +424,30 @@ impl Engine {
 
     fn refresh_modes(&mut self) {
         let modes = config::list_modes();
-        self.shared.lock().unwrap().modes = modes;
+        let catalog = modes
+            .iter()
+            .map(|entry| {
+                let info = entry.source().map_err(|e| e.to_string()).and_then(|src| ModeRuntime::probe(&entry.chunk_name(), &src));
+                (entry.id.clone(), info)
+            })
+            .collect();
+        let mut shared = self.shared.lock().unwrap();
+        shared.modes = modes;
+        shared.catalog = catalog;
+    }
+
+    fn set_url(&mut self, url: String) {
+        let url = url.trim().to_owned();
+        if url.is_empty() || url == self.settings.url {
+            return;
+        }
+        log::info!("Intiface server address set to {url}");
+        self.settings.url = url.clone();
+        self.settings.save();
+        if let Some(old) = self.intiface.take() {
+            tokio::spawn(old.shutdown());
+            self.intiface = Some(Intiface::spawn(url));
+        }
     }
 
     fn load(entry: &ModeEntry, persist: Option<&crate::mode::PersistValue>) -> Result<ModeRuntime, String> {
@@ -438,6 +514,7 @@ impl Engine {
                 }
                 log::info!("mode '{}' reloaded", rt.info().name);
                 active.runtime = Some(rt);
+                self.refresh_modes();
             }
             Err(e) => {
                 log::error!("reload of {} failed, previous version kept: {e}", active.entry.id);
@@ -559,6 +636,9 @@ impl Engine {
             .values_mut()
             .map(|s| s.motors(now))
             .fold((0u16, 0u16), |(s, w), (s2, w2)| (s.max(s2), w.max(w2)));
+        if strong > 0 || weak > 0 {
+            self.last_rumble = Some(time);
+        }
         let levels = RumbleLevels {
             strong: (strong as f64 / 65535.0).max(self.sim.strong),
             weak: (weak as f64 / 65535.0).max(self.sim.weak),
@@ -611,10 +691,16 @@ impl Engine {
             self.last_channels = channels.clone();
         }
 
+        if self.test.as_ref().is_some_and(|(_, until)| now >= *until) {
+            self.test = None;
+        }
         let mut toy_outputs = ToyOutputs::new();
         let mut toy_levels = BTreeMap::new();
         for toy in &toys.toys {
-            let level = channels.iter().filter(|(c, _)| self.routed(c, &toy.name)).map(|(_, v)| *v).fold(0.0, f64::max);
+            let mut level = channels.iter().filter(|(c, _)| self.routed(c, &toy.name)).map(|(_, v)| *v).fold(0.0, f64::max);
+            if !self.panic && self.test.as_ref().is_some_and(|(name, _)| *name == toy.name) {
+                level = level.max(TEST_LEVEL.min(cap));
+            }
             toy_outputs.insert(toy.index, level);
             toy_levels.insert(toy.name.clone(), level);
         }
@@ -626,6 +712,10 @@ impl Engine {
         shared.time = time;
         shared.panic = self.panic;
         shared.source = self.source.status();
+        shared.source_health = self.source.health();
+        shared.gamepads = self.source.gamepads();
+        shared.last_rumble = self.last_rumble;
+        shared.buttons_seen = self.buttons_seen;
         shared.intiface = toys;
         shared.intiface_enabled = self.intiface.is_some();
         shared.settings = self.settings.clone();

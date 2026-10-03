@@ -27,7 +27,7 @@ Pipeline: **source** (interception) → **mode** (Luau script) → **safety laye
 | `gameviber/src/gamepad.rs` | button/axis normalization (Xbox layout), panic combo |
 | `gameviber/src/mode/` | Luau runtime: `library.rs` (script API), `outputs.rs` (channels, pulses, patterns), `rumble_events.rs`, `tests.rs` |
 | `gameviber/src/engine.rs` | engine thread: sources, mode, safety layer, routing, output |
-| `gameviber/src/gui.rs` | egui GUI |
+| `gameviber/src/gui/` | egui GUI: setup guide (`onboarding`), pages (`play`, `toys`, `connection`, `creator`), `theme` |
 | `gameviber/src/helper/` | privileged helper (`gameviber helper`, started through pkexec) |
 | `gameviber/src/config.rs` | config files, built-in mode registry (`BUILTIN_MODES`) |
 | `gameviber/modes/` | built-in modes, embedded in the binary |
@@ -55,7 +55,8 @@ Run `cargo test` after any change to the runtime or to a mode.
   registered in `BUILTIN_MODES` (`gameviber/src/config.rs`), added to the load test and
   given a behaviour test in `gameviber/src/mode/tests.rs`, and listed in the README
   table and in `docs/spec-modes.md` §14.3. Follow the style of the existing modes: a
-  header comment, `author = "GameViber"`, parameters with units in their labels, and
+  header comment, `author = "GameViber"`, a `category`, a plain-language `help` and
+  1 to 3 `main_params` for players, parameters with units in their labels, and
   `plot()` for the internal state worth tuning.
 - **Safety stays outside scripts**: the global cap, STOP ALL / panic combo and
   zeroing outputs on source loss live in the engine, never in a mode.

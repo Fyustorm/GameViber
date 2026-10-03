@@ -99,6 +99,7 @@ fn main() -> anyhow::Result<()> {
         return engine::run(opts, shared, commands_rx);
     }
 
+    helper::dialog::expect_window();
     let engine = {
         let shared = shared.clone();
         std::thread::Builder::new().name("engine".into()).spawn(move || {
@@ -108,13 +109,16 @@ fn main() -> anyhow::Result<()> {
         })?
     };
     let native = eframe::NativeOptions {
-        viewport: eframe::egui::ViewportBuilder::default().with_title("GameViber").with_inner_size([1100.0, 720.0]),
+        viewport: eframe::egui::ViewportBuilder::default().with_title("GameViber").with_inner_size([1180.0, 760.0]).with_min_inner_size([960.0, 620.0]),
         ..Default::default()
     };
     eframe::run_native(
         "GameViber",
         native,
-        Box::new(move |_cc| Ok(Box::new(gui::App::new(shared, logs, commands, engine)))),
+        Box::new(move |cc| {
+            helper::dialog::set_window(cc);
+            Ok(Box::new(gui::App::new(&cc.egui_ctx, shared, logs, commands, engine)))
+        }),
     )
     .map_err(|e| anyhow::anyhow!("GUI error: {e}"))
 }

@@ -67,6 +67,12 @@ impl ParamDef {
 pub struct ModeInfo {
     pub name: String,
     pub description: String,
+    /// Games the mode suits, shown under its name ("Horror, survival").
+    pub category: String,
+    /// Plain-language explanation of what the player feels.
+    pub help: String,
+    /// Parameters worth showing first; the others sit behind "All settings".
+    pub main_params: Vec<String>,
     pub author: String,
     pub version: String,
     pub channels: Vec<String>,
@@ -175,6 +181,11 @@ fn lua_err(e: mlua::Error) -> String {
 }
 
 impl ModeRuntime {
+    /// Reads a mode's declaration (name, description, parameters...) without running it.
+    pub fn probe(chunk_name: &str, source: &str) -> LoadResult<ModeInfo> {
+        Self::load(chunk_name, source, &BTreeMap::new(), None).map(|rt| rt.info)
+    }
+
     /// Loads and validates a mode. `saved` are the persisted parameter values,
     /// `persist` the state carried over from the previous version on hot reload.
     pub fn load(
@@ -522,6 +533,13 @@ fn parse_info(declared: &Table) -> LoadResult<ModeInfo> {
         }
     }
     params.sort_by_key(|(order, _)| *order);
+    let main_params = match declared.get::<Option<Table>>("main_params").map_err(|e| format!("mode.main_params: {e}"))? {
+        Some(t) => t.sequence_values::<String>().collect::<mlua::Result<Vec<_>>>().map_err(|e| format!("mode.main_params: {e}"))?,
+        None => Vec::new(),
+    };
+    if let Some(unknown) = main_params.iter().find(|name| !params.iter().any(|(_, def)| def.name == **name)) {
+        return Err(format!("mode.main_params: no parameter named '{unknown}'"));
+    }
     let number = |key: &str, default: f64| -> LoadResult<f64> {
         Ok(declared.get::<Option<f64>>(key).map_err(|e| format!("mode.{key}: {e}"))?.unwrap_or(default))
     };
@@ -529,6 +547,9 @@ fn parse_info(declared: &Table) -> LoadResult<ModeInfo> {
     Ok(ModeInfo {
         name,
         description: get_str("description")?.unwrap_or_default(),
+        category: get_str("category")?.unwrap_or_default(),
+        help: get_str("help")?.unwrap_or_default(),
+        main_params,
         author: get_str("author")?.unwrap_or_default(),
         version: get_str("version")?.unwrap_or_default(),
         channels,

@@ -5,6 +5,10 @@ mode {
   api = 1,
   name = "All or Nothing",
   description = "Souls-likes: a gauge fills while you survive and a big hit empties it.",
+  category = "Souls-likes",
+  help = "A reward gauge slowly fills while you play without taking big hits, and the vibration grows "
+      .. "with it. A big hit empties the gauge with a short punishment pulse.",
+  main_params = { "rise", "hit", "max_level" },
   author = "GameViber",
   params = {
     rise          = number(0.01, 0.001, 0.1, "Gauge gained per second of play", 0.001),

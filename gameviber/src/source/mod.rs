@@ -35,6 +35,18 @@ pub struct SourceEvent {
 
 pub type EventSender = UnboundedSender<SourceEvent>;
 
+/// Whether a source is capturing, in terms the GUI can show to players.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub enum SourceHealth {
+    /// No source selected (simulator only).
+    #[default]
+    Off,
+    /// Starting up, e.g. waiting for the user's password.
+    Waiting(String),
+    Working,
+    Failed(String),
+}
+
 /// A gamepad: face buttons and rumble force feedback.
 pub fn is_rumble_gamepad(dev: &Device) -> bool {
     let has_rumble = dev.supported_ff().is_some_and(|ff| ff.contains(FFEffectCode::FF_RUMBLE));

@@ -6,6 +6,10 @@ mode {
   name = "Overheat",
   description = "Action/shooter games: continuous rumble is compressed, peaks stand out, "
              .. "firing heats a gauge until it overheats.",
+  category = "Action, shooters",
+  help = "Constant gunfire is softened into a light texture so that big impacts stand out. Firing heats up "
+      .. "a gauge that adds a growing vibration; when it is full, you overheat.",
+  main_params = { "texture", "trigger", "heat_level" },
   author = "GameViber",
   params = {
     texture      = number(0.3, 0, 1, "Continuous rumble weight", 0.05),

@@ -8,7 +8,7 @@
 //!   reader: each gamepad is read without grabbing it, which also yields
 //!   buttons and axes. No privilege needed for this part.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -22,7 +22,7 @@ use gameviber_common::ProbeEvent;
 use tokio::io::unix::AsyncFd;
 use tokio::sync::mpsc;
 
-use super::{list_ff_devices, translate_input, EventSender, SourceEvent, SourceKind};
+use super::{list_ff_devices, translate_input, EventSender, SourceEvent, SourceHealth, SourceKind};
 use crate::gamepad::AxisRanges;
 use crate::helper::client::{Helper, Phase};
 use crate::helper::{Request, WireProbe};
@@ -56,7 +56,8 @@ enum Probe {
 pub struct EbpfSource {
     probe: Probe,
     stop: Arc<AtomicBool>,
-    watched: Arc<Mutex<HashSet<String>>>,
+    /// Watched device path -> gamepad name.
+    watched: Arc<Mutex<HashMap<String, String>>>,
 }
 
 impl EbpfSource {
@@ -74,14 +75,14 @@ impl EbpfSource {
             Probe::Helper(helper.clone())
         };
         let stop = Arc::new(AtomicBool::new(false));
-        let watched = Arc::new(Mutex::new(HashSet::new()));
+        let watched = Arc::new(Mutex::new(HashMap::new()));
         spawn_device_watcher(tx, watched.clone(), stop.clone());
         Ok(Self { probe, stop, watched })
     }
 
     pub fn status(&self) -> String {
         let watching = || {
-            let mut devices: Vec<_> = self.watched.lock().unwrap().iter().cloned().collect();
+            let mut devices: Vec<_> = self.watched.lock().unwrap().keys().cloned().collect();
             devices.sort();
             format!("ebpf: watching {}", if devices.is_empty() { "no device".into() } else { devices.join(", ") })
         };
@@ -99,6 +100,27 @@ impl EbpfSource {
                     },
                 }
             }
+        }
+    }
+
+    /// Names of the watched gamepads.
+    pub fn gamepads(&self) -> Vec<String> {
+        let mut names: Vec<_> = self.watched.lock().unwrap().values().cloned().collect();
+        names.sort();
+        names
+    }
+
+    pub fn health(&self) -> SourceHealth {
+        let Probe::Helper(helper) = &self.probe else { return SourceHealth::Working };
+        let state = helper.state();
+        match state.phase {
+            Phase::NotStarted | Phase::Authorizing => SourceHealth::Waiting("waiting for your password".into()),
+            Phase::Failed(e) => SourceHealth::Failed(e),
+            Phase::Ready if state.ebpf => SourceHealth::Working,
+            Phase::Ready => match state.last_error {
+                Some(e) => SourceHealth::Failed(e),
+                None => SourceHealth::Waiting("loading the probe".into()),
+            },
         }
     }
 
@@ -161,14 +183,15 @@ fn resolve_fd(tgid: u32, fd: i32) -> Option<String> {
 
 /// Opens a passive reader on every FF device, including those plugged after
 /// startup (gamepads, Steam Input's virtual gamepad...).
-fn spawn_device_watcher(tx: EventSender, watched: Arc<Mutex<HashSet<String>>>, stop: Arc<AtomicBool>) {
+fn spawn_device_watcher(tx: EventSender, watched: Arc<Mutex<HashMap<String, String>>>, stop: Arc<AtomicBool>) {
     let _ = std::thread::Builder::new().name("ff-watcher".into()).spawn(move || {
         while !stop.load(Ordering::Relaxed) {
             for (path, dev) in list_ff_devices() {
-                if !watched.lock().unwrap().insert(path.clone()) {
+                let name = dev.name().unwrap_or("?").to_owned();
+                if watched.lock().unwrap().insert(path.clone(), name.clone()).is_some() {
                     continue;
                 }
-                log::info!("watching {path} ({})", dev.name().unwrap_or("?"));
+                log::info!("watching {path} ({name})");
                 let (tx, watched, stop) = (tx.clone(), watched.clone(), stop.clone());
                 let _ = std::thread::Builder::new().name(format!("read {path}")).spawn(move || {
                     read_device(&path, dev, &tx, &stop);

@@ -6,6 +6,10 @@ mode {
   name = "Engine",
   description = "Racing games: the throttle drives an engine-like pulsing vibration, "
              .. "rumble adds road texture and impacts.",
+  category = "Racing",
+  help = "The throttle (RT) revs an engine-like pulsing vibration that gets faster and stronger; the brake "
+      .. "(LT) slows it down. Bumps and crashes from the game add road texture and impacts.",
+  main_params = { "idle_level", "max_level", "road" },
   author = "GameViber",
   params = {
     idle_level = number(0.1, 0, 0.5, "Idle intensity", 0.01),

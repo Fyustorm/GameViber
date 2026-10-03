@@ -5,6 +5,10 @@ mode {
   name = "Accumulation",
   description = "Vibrations and bonus presses add points; the rumble is scaled by points, "
              .. "which drain while idle.",
+  category = "Any game",
+  help = "Every vibration and every press of the bonus button adds points. The more points, the stronger "
+      .. "the game's rumble feels. Points slowly drain when nothing happens.",
+  main_params = { "per_hit", "bonus", "decay" },
   author = "GameViber",
   params = {
     per_hit   = number(5, 0, 50, "Points per vibration"),

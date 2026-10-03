@@ -7,6 +7,10 @@ mode {
   name = "Tension",
   description = "Turn-based games: a wave builds during fights, parries are rewarded, "
              .. "big attacks are amplified.",
+  category = "Turn-based",
+  help = "A slow wave builds up during fights and fades away while you explore. A successful parry or dodge "
+      .. "is rewarded with a strong pulse, and big enemy attacks are amplified.",
+  main_params = { "parry", "dodge", "wave_max" },
   author = "GameViber",
   params = {
     parry          = button_param("RB", "Parry button"),

@@ -17,18 +17,21 @@ Do not run GameViber with `sudo`: the eBPF source and gamepad hiding go
 through a **privileged helper** started on demand via `pkexec` (one password
 prompt per session).
 
-The GUI provides:
+At first launch, a setup guide walks through Intiface Central, the toys, the
+gamepad (with the choice of capture method) and a first mode. It can be run
+again from the Connection page. Then the GUI provides:
 
-- a status bar with **STOP ALL** (also: BACK + START held for 0.5 s on the
-  gamepad), the global maximum intensity, the **source selector**
-  (proxy / eBPF / none) and the "hide the real gamepad" checkbox;
-- the list of modes and their parameters, generated from the script, with named
-  **presets** per mode (e.g. one per game);
-- **Monitor**: graphs of the rumble, the outputs and `plot()` values;
-- **Editor**: mode editing with hot reload (Ctrl+S);
-- **Routing**: which toys each mode channel drives;
-- **Simulator**: fake rumble and fake buttons to test without a game;
-- **Log**.
+- a status bar with the gamepad / rumble capture / Intiface state, the global
+  maximum intensity and **STOP ALL** (also: BACK + START held for 0.5 s on the
+  gamepad);
+- **Play**: the modes as tiles, and the active mode's explanation, its main
+  settings, all its settings and named **presets** (e.g. one per game);
+- **Toys**: the toys Intiface found, a test buzz, and which mode channels each
+  one plays;
+- **Connection**: status, capture method (standard proxy or kernel probe) with
+  their pros and cons, gamepad hiding, Intiface address, troubleshooting;
+- **Creator**: mode editing with hot reload (Ctrl+S), graphs of the rumble,
+  outputs and `plot()` values, a simulator (fake rumble and buttons) and the log.
 
 User modes are `.luau` files in `~/.config/gameviber/modes/` (they can also be
 edited in an external editor: they are reloaded on save).

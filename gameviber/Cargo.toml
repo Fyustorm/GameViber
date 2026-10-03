@@ -18,10 +18,14 @@ gameviber-common = { path = "../gameviber-common", features = ["user"] }
 libc = "0.2"
 log = "0.4"
 mlua = { version = "0.12", features = ["luau"] }
+raw-window-handle = "0.6"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 toml = "1"
+wayland-client = { version = "0.31", features = ["system"] }
+wayland-protocols = { version = "0.32", features = ["client", "staging"] }
+zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }
 
 [build-dependencies]
 aya-build = "0.2"

@@ -1908,10 +1908,14 @@ dependencies = [
  "libc",
  "log",
  "mlua",
+ "raw-window-handle",
  "serde",
  "serde_json",
  "tokio",
  "toml",
+ "wayland-client",
+ "wayland-protocols",
+ "zbus",
 ]
 
 [[package]]

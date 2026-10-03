@@ -8,6 +8,7 @@
 //! (engine exited or crashed), the helper restores everything and exits.
 
 pub mod client;
+pub mod dialog;
 pub mod server;
 
 use gameviber_common::{FfEffect, ProbeEvent, FF_UNION_WORDS, PROBE_EVENT_KIND_ERASED};

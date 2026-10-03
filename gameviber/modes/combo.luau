@@ -6,6 +6,10 @@ mode {
   name = "Combo",
   description = "Fighting games: chained hits grow stronger and end with a burst; "
              .. "button mashing builds a light tension.",
+  category = "Fighting",
+  help = "Hits that follow each other quickly form a combo: each one feels stronger than the last, and a long "
+      .. "combo ends with a burst. Mashing buttons adds a light tension in the background.",
+  main_params = { "window", "base", "burst" },
   author = "GameViber",
   rumble_release = 0.05,
   params = {

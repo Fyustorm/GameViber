@@ -18,7 +18,7 @@ use evdev::{
     UInputCode, UinputAbsSetup,
 };
 
-use super::{find_gamepad, translate_input, EventSender, SourceEvent, SourceKind};
+use super::{find_gamepad, translate_input, EventSender, SourceEvent, SourceHealth, SourceKind};
 use crate::gamepad::AxisRanges;
 use crate::helper::client::{Helper, Phase};
 use crate::helper::Request;
@@ -53,6 +53,10 @@ pub struct ProxySource {
     thread: Option<JoinHandle<()>>,
     hidden: Hidden,
     status: Arc<Mutex<String>>,
+    /// Name of the real gamepad.
+    name: String,
+    /// Why the proxy thread stopped.
+    error: Arc<Mutex<Option<String>>>,
 }
 
 impl ProxySource {
@@ -81,8 +85,9 @@ impl ProxySource {
         let status = Arc::new(Mutex::new(format!("proxy: {name} ({real_path} → {virt_path})")));
 
         let stop = Arc::new(AtomicBool::new(false));
+        let error = Arc::new(Mutex::new(None));
         let thread = {
-            let (stop, status) = (stop.clone(), status.clone());
+            let (stop, status, error) = (stop.clone(), status.clone(), error.clone());
             let ranges = AxisRanges::from_device(&real);
             std::thread::Builder::new().name("proxy".into()).spawn(move || {
                 let mut proxy =
@@ -90,10 +95,27 @@ impl ProxySource {
                 if let Err(e) = proxy.run(&stop) {
                     log::error!("proxy stopped: {e:#}");
                     *status.lock().unwrap() = format!("proxy stopped: {e:#}");
+                    *error.lock().unwrap() = Some(format!("{e:#}"));
                 }
             })?
         };
-        Ok(Self { stop, thread: Some(thread), hidden, status })
+        Ok(Self { stop, thread: Some(thread), hidden, status, name, error })
+    }
+
+    pub fn gamepad(&self) -> &str {
+        &self.name
+    }
+
+    pub fn health(&self) -> SourceHealth {
+        if let Some(e) = self.error.lock().unwrap().clone() {
+            return SourceHealth::Failed(e);
+        }
+        match &self.hidden {
+            Hidden::Helper(helper) if matches!(helper.state().phase, Phase::NotStarted | Phase::Authorizing) => {
+                SourceHealth::Waiting("waiting for your password to hide the real gamepad".into())
+            }
+            _ => SourceHealth::Working,
+        }
     }
 
     pub fn status(&self) -> String {

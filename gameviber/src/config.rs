@@ -68,6 +68,8 @@ pub struct Settings {
     pub global_cap: f64,
     /// Channel -> toy names. A missing "main" entry means every toy.
     pub routing: BTreeMap<String, Vec<String>>,
+    /// The first-launch setup was completed or skipped.
+    pub onboarded: bool,
 }
 
 impl Default for Settings {
@@ -79,6 +81,7 @@ impl Default for Settings {
             active_mode: DEFAULT_MODE.into(),
             global_cap: 1.0,
             routing: BTreeMap::new(),
+            onboarded: false,
         }
     }
 }

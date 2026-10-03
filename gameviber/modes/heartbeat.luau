@@ -6,6 +6,10 @@ mode {
   name = "Heartbeat",
   description = "Horror games: a heartbeat that speeds up with every vibration and slowly "
              .. "calms down, with optional jump scares.",
+  category = "Horror, survival",
+  help = "A heartbeat plays all the time. Each time the game vibrates, your heart races and beats harder, "
+      .. "then slowly calms down when things get quiet. Optional random jump scares.",
+  main_params = { "rest_bpm", "max_bpm", "jumps" },
   author = "GameViber",
   params = {
     rest_bpm      = number(60, 30, 120, "Resting heart rate (BPM)", 1),

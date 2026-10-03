@@ -306,6 +306,24 @@ fn builtin_modes_load_and_run() {
 }
 
 #[test]
+fn builtin_modes_describe_themselves_for_players() {
+    for src in [SIMPLE, ACCUMULATION, COMBO, OVERHEAT, TENSION, ENGINE, HEARTBEAT, ALL_OR_NOTHING, AMBIENT] {
+        let info = ModeRuntime::probe("test", src).expect("probe");
+        assert!(!info.category.is_empty() && !info.help.is_empty(), "{}: category and help", info.name);
+        assert!((1..=3).contains(&info.main_params.len()), "{}: main_params", info.name);
+    }
+}
+
+#[test]
+fn main_params_must_name_declared_parameters() {
+    let ok = "mode { api = 1, name = 'T', main_params = { 'gain' }, params = { gain = number(1, 0, 2, 'Gain') } }\n\
+              function tick() end";
+    assert_eq!(ModeRuntime::probe("test", ok).unwrap().main_params, ["gain"]);
+    let err = load_err("mode { api = 1, name = 'T', main_params = { 'nope' } }\nfunction tick() end");
+    assert!(err.contains("no parameter named 'nope'"), "{err}");
+}
+
+#[test]
 fn combo_hits_grow_and_reset_after_window() {
     let mut rt = load(COMBO);
     let hit = |rt: &mut ModeRuntime| {

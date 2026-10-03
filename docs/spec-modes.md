@@ -47,6 +47,9 @@ mode {
   api         = 1,                          -- required
   name        = "Accumulation",             -- required, shown in the GUI
   description = "Vibrations and bonus presses add points...",
+  category    = "Any game",                 -- games it suits, shown on the mode tile
+  help        = "Every vibration adds points...", -- plain-language explanation for players
+  main_params = { "per_hit", "bonus" },     -- parameters shown first (see §4)
   author      = "me",
   version     = "1.0",
   channels    = { "main" },                 -- output channels, default { "main" }
@@ -74,6 +77,9 @@ params = {
 }
 ```
 
+- `main_params` lists the few parameters a player is most likely to tune. The GUI shows
+  them next to the mode and keeps the others behind "All settings". Every name must be
+  a declared parameter. Without `main_params`, the GUI shows every parameter.
 - Values are saved per mode in `~/.config/gameviber/params/<key>.toml`
   (key = built-in mode name, or file name without extension).
 - On reload, a value is kept if the parameter keeps the same name and type. Otherwise it

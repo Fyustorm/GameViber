@@ -3,6 +3,10 @@ mode {
   api = 1,
   name = "Simple",
   description = "Forwards the game's rumble, like the Game Haptics Router.",
+  category = "Any game",
+  help = "The game's rumble goes straight to your toys: when the gamepad would vibrate, your toy does. "
+      .. "Use Multiplier to make it stronger and Minimum vibration for a constant background.",
+  main_params = { "multiplier", "baseline" },
   author = "GameViber",
   params = {
     combine    = choice("avg", { "avg", "max" }, "Motor combination"),

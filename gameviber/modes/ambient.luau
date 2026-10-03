@@ -6,6 +6,10 @@ mode {
   name = "Ambient",
   description = "Exploration and cosy games: a slow background wave under the game's "
              .. "rumble, fading out when idle.",
+  category = "Exploration, cosy",
+  help = "A soft, slow wave plays in the background with the game's rumble on top. The wave fades out "
+      .. "in menus or when you pause, and comes back as soon as you play.",
+  main_params = { "wave_max", "period", "rumble_weight" },
   author = "GameViber",
   params = {
     wave_min      = number(0.05, 0, 1, "Wave low", 0.01),
