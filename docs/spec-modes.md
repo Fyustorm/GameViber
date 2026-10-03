@@ -389,3 +389,4 @@ threshold) need tuning per game: the rumble does not tell who took the hit.
 | Heartbeat | `heartbeat.luau` | horror | heartbeat whose tempo and strength follow a stress gauge raised by vibrations; optional random jump scares |
 | All or Nothing | `all_or_nothing.luau` | souls-like | gauge rising while the player is active, cut by a vibration above `hit`, with a punishment pulse |
 | Ambient | `ambient.luau` | exploration / cosy | slow wave under the rumble, fading out after `fade_after` s of inactivity |
+| Surge | `surge.luau` | action metroidvania | quiet outside fights (rumble seen in the last `combat_timeout` s); vibrations fill a gauge, a vibration within `window` after a parry press fills it more and gets a reward pulse; the gauge drives a pulsing glow during fights; parry held + a surge button spends `surge_cost` on a crescendo |

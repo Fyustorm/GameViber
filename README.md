@@ -49,6 +49,7 @@ API: [`docs/spec-modes.md`](docs/spec-modes.md). Built-in modes
 | Heartbeat | horror (RE, Silent Hill) | heart speeding up with every vibration |
 | All or Nothing | souls-like (Elden Ring, Sekiro) | gauge rising while you survive, emptied by a big hit |
 | Ambient | exploration, platformer, cosy | slow wave under the rumble, fading out when idle |
+| Surge | action metroidvania (PoP: The Lost Crown, Hollow Knight) | hits and parries fill a gauge that glows in fights, spent on a crescendo |
 
 The heuristics (parry window, "hit" threshold) need tuning per game: the
 rumble does not tell who took the hit.

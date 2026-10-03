@@ -9,6 +9,7 @@ const ENGINE: &str = include_str!("../../modes/engine.luau");
 const HEARTBEAT: &str = include_str!("../../modes/heartbeat.luau");
 const ALL_OR_NOTHING: &str = include_str!("../../modes/all_or_nothing.luau");
 const AMBIENT: &str = include_str!("../../modes/ambient.luau");
+const SURGE: &str = include_str!("../../modes/surge.luau");
 const DT: f64 = 0.02;
 
 fn load(source: &str) -> ModeRuntime {
@@ -294,7 +295,7 @@ fn builtin_modes_load_and_run() {
     let mut pad = PadState::default();
     pad.axis(evdev::AbsoluteAxisCode::ABS_RZ.0, 1.0, 0.0);
     pad.button("RB", true, 0.0);
-    for src in [COMBO, OVERHEAT, TENSION, ENGINE, HEARTBEAT, ALL_OR_NOTHING, AMBIENT] {
+    for src in [COMBO, OVERHEAT, TENSION, ENGINE, HEARTBEAT, ALL_OR_NOTHING, AMBIENT, SURGE] {
         let mut rt = load(src);
         for i in 0..1000 {
             let level = if i % 50 < 10 { 0.9 } else { 0.0 };
@@ -307,7 +308,7 @@ fn builtin_modes_load_and_run() {
 
 #[test]
 fn builtin_modes_describe_themselves_for_players() {
-    for src in [SIMPLE, ACCUMULATION, COMBO, OVERHEAT, TENSION, ENGINE, HEARTBEAT, ALL_OR_NOTHING, AMBIENT] {
+    for src in [SIMPLE, ACCUMULATION, COMBO, OVERHEAT, TENSION, ENGINE, HEARTBEAT, ALL_OR_NOTHING, AMBIENT, SURGE] {
         let info = ModeRuntime::probe("test", src).expect("probe");
         assert!(!info.category.is_empty() && !info.help.is_empty(), "{}: category and help", info.name);
         assert!((1..=3).contains(&info.main_params.len()), "{}: main_params", info.name);
@@ -414,6 +415,37 @@ fn ambient_wave_fades_out_when_idle() {
     assert!((out.channels["main"] - 0.25).abs() < 1e-3);
     let out = run(&mut rt, 40.0, rumble(0.0, 0.0), &PadState::default(), 1e9);
     assert_eq!(out.channels["main"], 0.0);
+}
+
+#[test]
+fn surge_fills_with_parries_and_spends_on_a_surge() {
+    let mut rt = load(SURGE);
+    for i in 1..=3 {
+        press(&mut rt, "LT");
+        let out = step(&mut rt, rumble(0.1, 0.0));
+        assert_eq!(out.channels["main"], 1.0, "parry pulse");
+        assert_eq!(plot_value(&out, "parries"), i as f64);
+        run(&mut rt, 0.5, rumble(0.0, 0.0), &PadState::default(), 0.0);
+    }
+    // A vibration without a parry press only adds a little.
+    let out = step(&mut rt, rumble(0.1, 0.0));
+    assert!((plot_value(&out, "gauge") - 0.64).abs() < 1e-6);
+    run(&mut rt, 0.5, rumble(0.0, 0.0), &PadState::default(), 0.0);
+    // Hold parry + surge button: the gauge pays for a crescendo.
+    press(&mut rt, "LT");
+    let out = press(&mut rt, "X");
+    assert_eq!(plot_value(&out, "surges"), 1.0);
+    assert!((plot_value(&out, "gauge") - 0.14).abs() < 1e-6);
+    let out = run(&mut rt, 1.0, rumble(0.0, 0.0), &PadState::default(), 0.0);
+    assert!(out.channels["main"] > 0.8, "crescendo");
+    // Not enough gauge left for a second surge.
+    let out = press(&mut rt, "Y");
+    assert_eq!(plot_value(&out, "surges"), 1.0);
+    // Out of combat the glow fades and the gauge drains.
+    let out = run(&mut rt, 20.0, rumble(0.0, 0.0), &PadState::default(), 1e9);
+    assert_eq!(plot_value(&out, "fight"), 0.0);
+    assert_eq!(out.channels["main"], 0.0);
+    assert!(plot_value(&out, "gauge") < 0.14);
 }
 
 #[test]
