@@ -22,6 +22,7 @@ use crate::mode::rumble_events::RumbleLevels;
 use crate::mode::{HudGauge, ModeEvent, ModeInfo, ModeRuntime, ParamValue};
 use crate::overlay;
 use crate::rumble::RumbleState;
+use crate::session::{self, Player, Recorder, RecordingInfo};
 use crate::source::ebpf::EbpfSource;
 use crate::source::proxy::{Hide, ProxySource};
 pub use crate::source::SourceHealth;
@@ -86,6 +87,14 @@ pub enum Command {
     SetOverlay(OverlaySettings),
     SimRumble { strong: f64, weak: f64 },
     SimButton { name: String, pressed: bool },
+    /// Records the game's rumble and the player's inputs until `StopRecording`.
+    StartRecording,
+    StopRecording,
+    /// Restarts the active mode and feeds it a recording instead of the gamepad;
+    /// `to_toys` false keeps the toys still (graphs only).
+    Replay { path: PathBuf, to_toys: bool },
+    StopReplay,
+    DeleteRecording(PathBuf),
     Shutdown,
 }
 
@@ -97,6 +106,15 @@ pub struct ModeView {
     pub presets: Presets,
     pub error: Option<String>,
     pub suspended: bool,
+}
+
+/// The recording being replayed.
+#[derive(Debug, Clone)]
+pub struct ReplayView {
+    pub info: RecordingInfo,
+    /// Seconds into the recording.
+    pub position: f64,
+    pub to_toys: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -135,6 +153,11 @@ pub struct Shared {
     pub toy_levels: BTreeMap<String, f64>,
     /// Games currently showing the in-game overlay.
     pub overlay_clients: Vec<Hello>,
+    /// Seconds recorded so far, while recording.
+    pub recording: Option<f64>,
+    pub replay: Option<ReplayView>,
+    /// Saved recordings, newest first.
+    pub recordings: Vec<RecordingInfo>,
     pub time: f64,
     pub stopped: bool,
 }
@@ -229,6 +252,9 @@ struct Engine {
     last_channels: BTreeMap<String, f64>,
     last_rumble: Option<f64>,
     buttons_seen: bool,
+    recorder: Option<Recorder>,
+    /// Recording being replayed, and whether the toys play it.
+    player: Option<(Player, bool)>,
     /// Toy being buzzed by `Command::TestToy`, at what intensity, until when.
     test: Option<(String, f64, Instant)>,
     overlay: overlay::Server,
@@ -290,6 +316,8 @@ async fn run_async(
         last_rumble: None,
         buttons_seen: false,
         test: None,
+        recorder: None,
+        player: None,
         overlay: overlay::Server::new(),
         overlay_events: Vec::new(),
         overlay_title: (String::new(), None, 0.0),
@@ -298,6 +326,7 @@ async fn run_async(
     engine.apply_panic_combo();
     engine.start_source();
     engine.refresh_modes();
+    engine.refresh_recordings();
     let first_mode = engine.opts.mode.clone().unwrap_or_else(|| engine.settings.active_mode.clone());
     engine.select_mode(&first_mode);
     if let Some(preset) = engine.opts.preset.clone() {
@@ -410,6 +439,11 @@ impl Engine {
         }
         let time = self.time();
         let now = Instant::now();
+        // A replay drives the buttons and axes.
+        if self.player.is_some() && matches!(ev.kind, SourceKind::Button { .. } | SourceKind::Axis { .. }) {
+            self.buttons_seen = true;
+            return;
+        }
         match ev.kind {
             SourceKind::Button { code, pressed } => {
                 self.buttons_seen = true;
@@ -506,6 +540,17 @@ impl Engine {
                     }
                 }
             }
+            Command::StartRecording => self.start_recording(),
+            Command::StopRecording => self.stop_recording(),
+            Command::Replay { path, to_toys } => self.start_replay(&path, to_toys),
+            Command::StopReplay => self.stop_replay(),
+            Command::DeleteRecording(path) => {
+                match std::fs::remove_file(&path) {
+                    Ok(()) => log::info!("recording {} deleted", path.display()),
+                    Err(e) => log::error!("cannot delete {}: {e}", path.display()),
+                }
+                self.refresh_recordings();
+            }
             Command::Shutdown => {}
         }
         self.publish_mode();
@@ -515,6 +560,56 @@ impl Engine {
         if !self.panic {
             log::warn!("PANIC STOP ({from}): all toys stopped, mode suspended until re-armed");
             self.panic = true;
+        }
+    }
+
+    fn refresh_recordings(&mut self) {
+        self.shared.lock().unwrap().recordings = session::list();
+    }
+
+    fn start_recording(&mut self) {
+        if self.recorder.is_some() || self.player.is_some() {
+            return;
+        }
+        let mode = self.mode.as_ref().and_then(|m| m.runtime.as_ref()).map(|rt| rt.info().name.clone()).unwrap_or_default();
+        let game = self.overlay.clients().first().map(|c| c.exe.clone());
+        log::info!("recording started");
+        self.recorder = Some(Recorder::new(self.time(), mode, game));
+    }
+
+    fn stop_recording(&mut self) {
+        let Some(recorder) = self.recorder.take() else { return };
+        match recorder.save(self.time()) {
+            Ok(path) => log::info!("recording saved to {}", path.display()),
+            Err(e) => log::error!("cannot save the recording: {e}"),
+        }
+        self.refresh_recordings();
+    }
+
+    fn start_replay(&mut self, path: &std::path::Path, to_toys: bool) {
+        if self.recorder.is_some() {
+            return;
+        }
+        let player = match Player::open(path, self.time()) {
+            Ok(p) => p,
+            Err(e) => {
+                log::error!("cannot replay {}: {e:#}", path.display());
+                return;
+            }
+        };
+        log::info!("replaying {}{}", path.display(), if to_toys { "" } else { " (toys still)" });
+        // A fresh mode, so that replaying the same session gives the same result.
+        if let Some(id) = self.mode.as_ref().map(|m| m.entry.id.clone()) {
+            self.select_mode(&id);
+        }
+        self.pad.release_all();
+        self.player = Some((player, to_toys));
+    }
+
+    fn stop_replay(&mut self) {
+        if self.player.take().is_some() {
+            log::info!("replay stopped");
+            self.events.extend(self.pad.release_all().into_iter().map(ModeEvent::Button));
         }
     }
 
@@ -727,7 +822,15 @@ impl Engine {
         let time = self.time();
         self.check_reload();
         self.retry_source();
-        let lost = self.source.lost();
+        if self.player.as_ref().is_some_and(|(p, _)| p.finished(time)) {
+            self.stop_replay();
+        }
+        if let Some((player, _)) = self.player.as_mut() {
+            let buttons = player.advance(time, &mut self.pad);
+            self.events.extend(buttons.into_iter().map(ModeEvent::Button));
+        }
+        // While replaying, the recording is the source.
+        let lost = self.player.is_none() && self.source.lost();
         if lost != self.source_lost {
             self.source_lost = lost;
             if lost {
@@ -748,10 +851,20 @@ impl Engine {
         if strong > 0 || weak > 0 {
             self.last_rumble = Some(time);
         }
-        let levels = RumbleLevels {
-            strong: (strong as f64 / 65535.0).max(self.sim.strong),
-            weak: (weak as f64 / 65535.0).max(self.sim.weak),
+        let game = match &self.player {
+            Some((player, _)) => player.rumble,
+            None => RumbleLevels { strong: strong as f64 / 65535.0, weak: weak as f64 / 65535.0 },
         };
+        let levels = RumbleLevels { strong: game.strong.max(self.sim.strong), weak: game.weak.max(self.sim.weak) };
+        if let Some(recorder) = self.recorder.as_mut() {
+            let buttons: Vec<_> =
+                self.events.iter().filter_map(|e| if let ModeEvent::Button(b) = e { Some(b.clone()) } else { None }).collect();
+            recorder.tick(time, levels, &buttons, &self.pad);
+            if recorder.elapsed(time) >= session::MAX_SECS {
+                log::warn!("recording stopped after {:.0} min", session::MAX_SECS / 60.0);
+                self.stop_recording();
+            }
+        }
         if self.pad.panic_combo(time) {
             self.trigger_panic(&gamepad::combo_text(&self.settings.panic_combo));
         }
@@ -813,8 +926,9 @@ impl Engine {
         }
         let mut toy_outputs = ToyOutputs::new();
         let mut toy_levels = BTreeMap::new();
+        let still = self.player.as_ref().is_some_and(|(_, to_toys)| !to_toys);
         for toy in &toys.toys {
-            let mut level = channels.iter().filter(|(c, _)| self.routed(c, &toy.name)).map(|(_, v)| *v).fold(0.0, f64::max);
+            let mut level = channels.iter().filter(|(c, _)| !still && self.routed(c, &toy.name)).map(|(_, v)| *v).fold(0.0, f64::max);
             if let Some((_, test, _)) = self.test.as_ref().filter(|(name, ..)| !self.panic && *name == toy.name) {
                 level = level.max(*test);
             }
@@ -850,6 +964,12 @@ impl Engine {
         shared.held = self.pad.held().iter().copied().collect();
         shared.axes = self.pad.axes().clone();
         shared.toy_levels = toy_levels;
+        shared.recording = self.recorder.as_ref().map(|r| r.elapsed(time));
+        shared.replay = self.player.as_ref().map(|(p, to_toys)| ReplayView {
+            info: p.info.clone(),
+            position: p.position(time),
+            to_toys: *to_toys,
+        });
         shared.overlay_clients = self.overlay.clients();
         shared.history.push_back(Sample { t: time, strong: levels.strong, weak: levels.weak, channels });
         while shared.history.front().is_some_and(|s| time - s.t > HISTORY_SECS) {
@@ -932,6 +1052,7 @@ impl Engine {
 
     async fn shutdown(mut self) {
         log::info!("shutting down");
+        self.stop_recording();
         self.save_params();
         if let Some(active) = self.mode.as_mut() {
             if let Some(rt) = active.runtime.as_mut() {

@@ -2,6 +2,7 @@
 //! reload, and tools to watch and drive the mode (graphs, simulator, logs).
 
 use std::collections::BTreeSet;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Margin, RichText};
@@ -12,6 +13,7 @@ use super::App;
 use crate::config::{self, ModeEntry, NEW_MODE_TEMPLATE};
 use crate::engine::{Command, Sample, Shared, HISTORY_SECS};
 use crate::gamepad::BUTTONS;
+use crate::session::RecordingInfo;
 
 const SIM_HIT: Duration = Duration::from_millis(300);
 
@@ -20,6 +22,7 @@ enum Tool {
     #[default]
     Graphs,
     Simulator,
+    Sessions,
     Log,
 }
 
@@ -64,6 +67,16 @@ pub struct State {
     new_mode_name: String,
     pub sim: Simulator,
     only_mode_logs: bool,
+    /// Replays drive the toys too.
+    replay_to_toys: bool,
+    /// Recording whose deletion is being confirmed.
+    deleting: Option<PathBuf>,
+}
+
+impl State {
+    pub fn show_sessions(&mut self) {
+        self.tool = Tool::Sessions;
+    }
 }
 
 impl App {
@@ -75,7 +88,9 @@ impl App {
         let frame = egui::Frame::new().fill(SIDEBAR).inner_margin(Margin::symmetric(14, 12));
         egui::Panel::right("mode-tools").frame(frame).default_size(380.0).resizable(true).show(ui, |ui| {
             ui.horizontal(|ui| {
-                for (tool, label) in [(Tool::Graphs, "Graphs"), (Tool::Simulator, "Simulator"), (Tool::Log, "Log")] {
+                for (tool, label) in
+                    [(Tool::Graphs, "Graphs"), (Tool::Simulator, "Simulator"), (Tool::Sessions, "Sessions"), (Tool::Log, "Log")]
+                {
                     ui.selectable_value(&mut self.creator.tool, tool, label);
                 }
             });
@@ -83,6 +98,7 @@ impl App {
             match self.creator.tool {
                 Tool::Graphs => graphs(ui, s),
                 Tool::Simulator => self.simulator(ui),
+                Tool::Sessions => self.sessions(ui, s),
                 Tool::Log => self.log(ui),
             }
         });
@@ -236,6 +252,91 @@ impl App {
         }
     }
 
+    /// Recording real play sessions and replaying them into the mode.
+    fn sessions(&mut self, ui: &mut egui::Ui, s: &Shared) {
+        ui.label(muted(
+            "Record the game's rumble and your buttons while you play, then replay them here to tune the mode \
+             on a real fight without playing it again.",
+        ));
+        ui.add_space(4.0);
+        match (s.recording, &s.replay) {
+            (Some(secs), _) => {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(format!("⏺ Recording {}", clock(secs))).strong().color(DANGER_TEXT));
+                    if ui.add(primary("⏹ Stop and save")).clicked() {
+                        self.send(Command::StopRecording);
+                    }
+                });
+            }
+            (None, Some(replay)) => {
+                let header = &replay.info.header;
+                ui.label(RichText::new(format!("▶ Replaying {}", title(&replay.info))).strong());
+                ui.horizontal(|ui| {
+                    let progress = if header.duration > 0.0 { replay.position / header.duration } else { 1.0 };
+                    ui.add(
+                        egui::ProgressBar::new(progress as f32)
+                            .desired_width(ui.available_width() - 70.0)
+                            .text(format!("{} / {}", clock(replay.position), clock(header.duration))),
+                    );
+                    if ui.button("⏹ Stop").clicked() {
+                        self.send(Command::StopReplay);
+                    }
+                });
+                if !replay.to_toys {
+                    ui.label(muted("Toys stay still: watch the Graphs tab.").size(12.0));
+                }
+            }
+            (None, None) => {
+                if ui.add(primary("⏺ Record a session")).on_hover_text("Start it, then play the game").clicked() {
+                    self.send(Command::StartRecording);
+                }
+            }
+        }
+        ui.separator();
+        ui.horizontal(|ui| {
+            eyebrow(ui, "Recordings");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.checkbox(&mut self.creator.replay_to_toys, "Toys play the replay");
+            });
+        });
+        if s.recordings.is_empty() {
+            ui.label(muted("No recording yet."));
+        }
+        let busy = s.recording.is_some();
+        let mut command = None;
+        egui::ScrollArea::vertical().auto_shrink([false, true]).show(ui, |ui| {
+            for info in &s.recordings {
+                card(PANEL).inner_margin(Margin::same(8)).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.label(RichText::new(title(info)).strong());
+                    ui.label(
+                        muted(format!("{} · {} · mode {}", info.header.started, clock(info.header.duration), info.header.mode))
+                            .size(12.0),
+                    );
+                    ui.horizontal(|ui| {
+                        if ui.add_enabled(!busy, egui::Button::new("▶ Replay")).on_hover_text("Restarts the active mode").clicked() {
+                            command = Some(Command::Replay { path: info.path.clone(), to_toys: self.creator.replay_to_toys });
+                        }
+                        if self.creator.deleting.as_ref() == Some(&info.path) {
+                            if ui.button("Cancel").clicked() {
+                                self.creator.deleting = None;
+                            }
+                            if ui.button(RichText::new("Delete").color(DANGER_TEXT)).clicked() {
+                                command = Some(Command::DeleteRecording(info.path.clone()));
+                                self.creator.deleting = None;
+                            }
+                        } else if ui.button("🗑").on_hover_text("Delete this recording").clicked() {
+                            self.creator.deleting = Some(info.path.clone());
+                        }
+                    });
+                });
+            }
+        });
+        if let Some(command) = command {
+            self.send(command);
+        }
+    }
+
     fn log(&mut self, ui: &mut egui::Ui) {
         ui.checkbox(&mut self.creator.only_mode_logs, "Only mode logs (log / print)");
         let lines: Vec<_> = self.logs.lock().unwrap().iter().cloned().collect();
@@ -250,6 +351,17 @@ impl App {
             }
         });
     }
+}
+
+/// The game a recording comes from, else its mode.
+fn title(info: &RecordingInfo) -> &str {
+    info.header.game.as_deref().unwrap_or(&info.header.mode)
+}
+
+/// "1:05"
+fn clock(secs: f64) -> String {
+    let secs = secs.max(0.0) as u64;
+    format!("{}:{:02}", secs / 60, secs % 60)
 }
 
 fn graphs(ui: &mut egui::Ui, s: &Shared) {

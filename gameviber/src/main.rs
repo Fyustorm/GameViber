@@ -12,6 +12,7 @@ mod logging;
 mod mode;
 mod overlay;
 mod rumble;
+mod session;
 mod source;
 
 use std::path::PathBuf;

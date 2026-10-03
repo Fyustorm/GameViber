@@ -33,7 +33,10 @@ again from the Connection page. Then the GUI provides:
   their pros and cons, gamepad hiding, Intiface address, panic combo,
   troubleshooting;
 - **Creator**: mode editing with hot reload (Ctrl+S), graphs of the rumble,
-  outputs and `plot()` values, a simulator (fake rumble and buttons) and the log.
+  outputs and `plot()` values, a simulator (fake rumble and buttons), recorded
+  play **sessions** (the game's rumble and your inputs, replayed into a freshly
+  restarted mode, with or without the toys) and the log. Recordings are saved
+  in `~/.config/gameviber/recordings/`.
 
 ### A mode for your game
 

@@ -192,6 +192,15 @@ impl PadState {
         events
     }
 
+    /// Named axis already normalized (replayed session): no button events, those
+    /// were recorded on their own.
+    pub fn set_axis(&mut self, name: &'static str, value: f64, time: f64) {
+        self.axes.insert(name, value);
+        if value.abs() > DEADZONE {
+            self.last_input = time;
+        }
+    }
+
     fn update_panic(&mut self, time: f64) {
         let combo = self.panic_combo.is_subset(&self.held);
         self.panic_since = match (combo, self.panic_since) {

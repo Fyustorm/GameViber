@@ -180,6 +180,17 @@ impl App {
                 if status_chip(ui, toy_color, "🔌", &toy_text).clicked() {
                     self.page = Page::Toys;
                 }
+                let session = match (s.recording, &s.replay) {
+                    (Some(secs), _) => Some((DANGER_TEXT, "⏺", format!("Recording {:.0} s", secs))),
+                    (None, Some(_)) => Some((WARN, "▶", "Replaying a session".to_owned())),
+                    (None, None) => None,
+                };
+                if let Some((color, icon, text)) = session {
+                    if status_chip(ui, color, icon, &text).on_hover_text("Creator → Sessions").clicked() {
+                        self.page = Page::Creator;
+                        self.creator.show_sessions();
+                    }
+                }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if s.panic {
