@@ -32,6 +32,11 @@ mode {
     drain          = number(0.02, 0, 0.5, "Gauge lost per second outside fights", 0.005),
     rumble_weight  = number(1, 0, 2, "Rumble multiplier", 0.05),
   },
+  feedback = {
+    parry = ask("Parry detection", { "Often missed", "Good", "Also on hits taken" }, "Good", { param = "window" }),
+    glow  = ask("Glow during fights", { "Too weak", "Good", "Too strong" }, "Good", { param = "glow_max" }),
+    surge = ask("Surge crescendo", { "Too weak", "Good", "Too strong" }, "Good", { param = "surge_level" }),
+  },
 }
 
 local FADE_SECS = 2

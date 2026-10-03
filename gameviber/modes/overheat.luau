@@ -22,6 +22,11 @@ mode {
     heat_level   = number(0.5, 0, 1, "Vibration at full heat", 0.05),
     overheat_len = number(3, 0.5, 10, "Overheat duration (s)", 0.5),
   },
+  feedback = {
+    texture = ask("Continuous rumble", { "Too weak", "Good", "Too strong" }, "Good", { param = "texture" }),
+    peaks   = ask("Big hits standing out", { "Too few", "Good", "Too many" }, "Good", { param = "peak", invert = true }),
+    heat    = ask("Overheating", { "Never happens", "Good", "Too often" }, "Good", { param = "heat_rate" }),
+  },
 }
 
 local overheat_wave = pattern { { 0.0, 1.0 }, { 0.15, 0.6 }, { 0.3, 1.0 } }

@@ -27,6 +27,11 @@ mode {
     big_len        = number(0.5, 0.1, 3, "Big attack: lasting longer than (s)", 0.1),
     big_boost      = number(1.5, 1, 3, "Big attack multiplier", 0.1),
   },
+  feedback = {
+    parry = ask("Parry rewards", { "Often missed", "Good", "Also on hits taken" }, "Good", { param = "window" }),
+    wave  = ask("Wave during fights", { "Too weak", "Good", "Too strong" }, "Good", { param = "wave_max" }),
+    build = ask("Wave build-up", { "Too slow", "Good", "Too fast" }, "Good", { param = "build", invert = true }),
+  },
 }
 
 local FADE_SECS = 5

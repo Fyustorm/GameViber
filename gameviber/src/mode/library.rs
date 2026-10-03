@@ -5,12 +5,13 @@ use std::rc::Rc;
 
 use mlua::{Function, Lua, Table, Value, Variadic};
 
-use super::{display, Ctx, HudGauge, ParamDef, ParamKind, ParamValue, Timer};
+use super::{display, Ctx, HudGauge, ParamDef, ParamKind, ParamValue, Question, Timer};
 use crate::gamepad::BUTTONS;
 
 const PARAM_TAG: &str = "__param";
 const ORDER_TAG: &str = "__order";
 const PATTERN_TAG: &str = "__pattern";
+const QUESTION_TAG: &str = "__question";
 const DEFAULT_CHANNEL: &str = "main";
 const MAX_HUD_GAUGES: usize = 4;
 const MAX_HUD_EVENT_CHARS: usize = 40;
@@ -66,6 +67,24 @@ pub(super) fn register(lua: &Lua, ctx: &Rc<RefCell<Ctx>>) -> mlua::Result<()> {
     g.set("bool", param_ctor("bool")?)?;
     g.set("choice", param_ctor("choice")?)?;
     g.set("button_param", param_ctor("button")?)?;
+    {
+        let ctx = ctx.clone();
+        g.set(
+            "ask",
+            lua.create_function(move |lua, (label, options, default, opts): (String, Option<Table>, Option<String>, Option<Table>)| {
+                let t = lua.create_table()?;
+                t.raw_set(QUESTION_TAG, true)?;
+                let mut ctx = ctx.borrow_mut();
+                ctx.param_seq += 1;
+                t.raw_set(ORDER_TAG, ctx.param_seq)?;
+                t.raw_set("label", label)?;
+                t.raw_set("options", options)?;
+                t.raw_set("default", default)?;
+                t.raw_set("opts", opts)?;
+                Ok(t)
+            })?,
+        )?;
+    }
 
     // --- outputs
     {
@@ -278,6 +297,41 @@ pub(super) fn register(lua: &Lua, ctx: &Rc<RefCell<Ctx>>) -> mlua::Result<()> {
         )?;
     }
     Ok(())
+}
+
+/// Parses a `feedback` entry built by ask().
+pub(super) fn parse_question(id: &str, def: &Table) -> Result<(u64, Question), String> {
+    let err = |e: mlua::Error| format!("feedback '{id}': {e}");
+    if !def.raw_get::<Option<bool>>(QUESTION_TAG).map_err(err)?.unwrap_or(false) {
+        return Err(format!("feedback '{id}' must be built with ask()"));
+    }
+    let order: u64 = def.raw_get(ORDER_TAG).map_err(err)?;
+    let label: String = def.raw_get("label").map_err(err)?;
+    let options: Vec<String> = match def.raw_get::<Option<Table>>("options").map_err(err)? {
+        Some(t) => t.sequence_values::<String>().collect::<mlua::Result<_>>().map_err(err)?,
+        None => Vec::new(),
+    };
+    if options.len() == 1 {
+        return Err(format!("feedback '{id}': give at least 2 answers, or none for a checkbox"));
+    }
+    let default = match def.raw_get::<Option<String>>("default").map_err(err)? {
+        Some(d) => options
+            .iter()
+            .position(|o| *o == d)
+            .ok_or_else(|| format!("feedback '{id}': default '{d}' is not one of the answers"))?,
+        None => options.len().saturating_sub(1) / 2,
+    };
+    let (param, invert) = match def.raw_get::<Option<Table>>("opts").map_err(err)? {
+        Some(o) => (
+            o.get::<Option<String>>("param").map_err(err)?,
+            o.get::<Option<bool>>("invert").map_err(err)?.unwrap_or(false),
+        ),
+        None => (None, false),
+    };
+    if param.is_some() && options.is_empty() {
+        return Err(format!("feedback '{id}': a checkbox cannot adjust a parameter"));
+    }
+    Ok((order, Question { id: id.to_owned(), label, options, default, param, invert }))
 }
 
 /// Parses a `params` entry built by number / bool / choice / button_param.

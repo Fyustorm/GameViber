@@ -54,6 +54,11 @@ way the game actually uses rumble.
 - Keep the game's own rumble perceptible (usually `math.max(effect, rumble * weight)`)
   so the player still feels the game.
 - Call `plot("name", value)` for the internal state worth tuning (gauges, counters).
+- Declare 2 to 5 `feedback` questions (§4.2) about the mechanics you designed, so the
+  player can say what feels wrong with a few clicks, e.g.
+  `dash = ask("Dash vibration length", { "Too short", "Good", "Too long" }, "Good", { param = "dash_len" })`.
+  Link a question with `param` to the number parameter that fixes it whenever there is
+  one: answers before the default must call for a larger value (`invert = true` if not).
 - Feed the in-game overlay: `hud(label, value, max)` for the 1 or 2 gauges the player
   cares about while playing, and `hud_event(text)` when the mode detects something worth
   telling ("Parry!", "Combo x5", "Overheat!"). Keep texts short.

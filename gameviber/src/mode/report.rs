@@ -11,7 +11,7 @@ use std::path::Path;
 use super::rumble_events::{RumbleEvent, RumbleTracker};
 use super::{ModeEvent, ModeRuntime, ParamValue};
 use crate::gamepad::PadState;
-use crate::session::{Player, Session};
+use crate::session::{Change, Player, Session};
 
 const DT: f64 = 0.02;
 /// The timeline has at most this many rows (before identical rows are dropped).
@@ -38,6 +38,8 @@ pub struct Simulation {
     /// Press time, button, how long it was held (None: still held at the end).
     presses: Vec<(f64, &'static str, Option<f64>)>,
     hud_events: Vec<(f64, String)>,
+    /// Moments the player marked as feeling wrong.
+    marks: Vec<f64>,
     /// The mode stopped on a runtime error.
     error: Option<(f64, String)>,
 }
@@ -53,6 +55,7 @@ pub fn simulate(
     rt.start()?;
     let info = rt.info().clone();
     let duration = session.header.duration;
+    let marks = session.changes.iter().filter(|(_, c)| *c == Change::Mark).map(|(t, _)| *t).collect();
     let mut player = Player::new(session, Path::new(""), 0.0);
     let mut pad = PadState::default();
     let mut tracker = RumbleTracker::new(info.rumble_threshold, info.rumble_release, 0.0);
@@ -62,6 +65,7 @@ pub fn simulate(
         vibrations: Vec::new(),
         presses: Vec::new(),
         hud_events: Vec::new(),
+        marks,
         error: None,
     };
     let mut vibration_start = 0.0;
@@ -116,6 +120,14 @@ impl Simulation {
             let _ = writeln!(out, "**The mode stopped on an error at {t:.2} s:** `{}`\n", error.trim());
         }
 
+        if !self.marks.is_empty() {
+            let _ = writeln!(out, "### Moments the player marked as feeling wrong ({})\n", self.marks.len());
+            out.push_str("Look at what happened in the seconds before each mark first.\n\n");
+            for t in &self.marks {
+                let _ = writeln!(out, "- {t:.2} s");
+            }
+            out.push('\n');
+        }
         let _ = writeln!(out, "### Vibrations sent by the game ({})\n", self.vibrations.len());
         if self.vibrations.is_empty() {
             out.push_str("None.\n");
@@ -164,7 +176,11 @@ impl Simulation {
              row, held buttons and plot() values are taken at its end. Rows equal to the previous one are left \
              out.\n"
         );
+        let marked = !self.marks.is_empty();
         let mut header = vec!["t (s)".to_owned(), "game rumble".into(), "held".into()];
+        if marked {
+            header.push("marked".into());
+        }
         header.extend(channels.iter().map(|c| format!("out {c}")));
         header.extend(plots.iter().map(|p| format!("plot {p}")));
         let _ = writeln!(out, "| {} |", header.join(" | "));
@@ -182,6 +198,10 @@ impl Simulation {
             let rumble = row.iter().map(|t| t.rumble).fold(0.0, f64::max);
             let held = if end.held.is_empty() { "-".to_owned() } else { end.held.join(" ") };
             let mut values = vec![format!("{rumble:.2}"), held];
+            if marked {
+                let (from, to) = (row[0].t, end.t + DT);
+                values.push(if self.marks.iter().any(|m| (from..to).contains(m)) { "⚑" } else { "" }.to_owned());
+            }
             for c in &channels {
                 let max = row.iter().filter_map(|t| t.channels.get(c)).copied().fold(0.0, f64::max);
                 values.push(format!("{max:.2}"));
@@ -216,7 +236,7 @@ fn more(out: &mut String, total: usize, shown: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::{Change, Header};
+    use crate::session::Header;
 
     #[test]
     fn report_shows_what_the_mode_did() {
@@ -229,12 +249,13 @@ function tick(dt, input)
 end
 "#;
         let session = Session {
-            header: Header { version: 1, started: "now".into(), game: None, mode: "T".into(), duration: 2.0 },
+            header: Header { version: 1, started: "now".into(), game: None, mode: "T".into(), duration: 2.0, marks: 1 },
             changes: vec![
                 (0.5, Change::Button { name: "LT".into(), pressed: true }),
                 (0.6, Change::Rumble { strong: 0.8, weak: 0.0 }),
                 (0.7, Change::Button { name: "LT".into(), pressed: false }),
                 (0.9, Change::Rumble { strong: 0.0, weak: 0.0 }),
+                (1.2, Change::Mark),
             ],
         };
         let params = [("gain".to_owned(), ParamValue::Number(0.5))].into_iter().collect();
@@ -244,16 +265,19 @@ end
         assert!(report.contains("- 0.60 s: 0.30 s long, peak 0.80"), "{report}");
         assert!(report.contains("- 0.50 s: LT (held 0.20 s)"), "{report}");
         assert!(report.contains("- 0.50 s: Press LT"), "{report}");
-        assert!(report.contains("| t (s) | game rumble | held | out main | plot level |"), "{report}");
+        assert!(report.contains("### Moments the player marked as feeling wrong (1)\n"), "{report}");
+        assert!(report.contains("- 1.20 s\n"), "{report}");
+        assert!(report.contains("| t (s) | game rumble | held | marked | out main | plot level |"), "{report}");
         // Gain 0.5 halves the 0.8 rumble.
-        assert!(report.contains("| 0.50 | 0.80 | - | 0.40 | 0.800 |"), "{report}");
+        assert!(report.contains("| 0.50 | 0.80 | - |  | 0.40 | 0.800 |"), "{report}");
+        assert!(report.contains("| 1.00 | 0.00 | - | ⚑ | 0.00 | 0.000 |"), "{report}");
     }
 
     #[test]
     fn runtime_errors_are_reported() {
         let source = "mode { api = 1, name = 'T' } function tick(dt, input) if input.time > 0.1 then error('boom') end end";
         let session = Session {
-            header: Header { version: 1, started: "now".into(), game: None, mode: "T".into(), duration: 1.0 },
+            header: Header { version: 1, started: "now".into(), game: None, mode: "T".into(), duration: 1.0, marks: 0 },
             changes: Vec::new(),
         };
         let report = simulate("t.luau", source, &BTreeMap::new(), session).unwrap().report();

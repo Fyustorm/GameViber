@@ -55,13 +55,21 @@ Claude, Gemini, Le Chat...):
 
 The request template is [`gameviber/prompts/new-mode.md`](gameviber/prompts/new-mode.md).
 
-When a mode does not feel right, **Doesn't feel right?** (Play page) builds a
-follow-up request: tick what feels wrong, pick a recorded session (or save the
-last 2 minutes of play, which GameViber always keeps in memory) and copy the
-request. GameViber replays the session into the mode with your settings, so the
+When a mode does not feel right, **Doesn't feel right?** (Play page) asks the
+mode's own questions ("Parry detection: Often missed | Good | Also on hits
+taken", declared with `ask()`, or generic ones). Many answers come with a
+**quick fix** that adjusts the matching setting in one click. Otherwise pick a
+recorded session (or save the last 2 minutes of play, which GameViber always
+keeps in memory) and copy the request.
+
+While playing, hold **BACK + RS** (configurable on the Connection page) to
+**mark a moment** that felt wrong: the overlay confirms, and the last 2
+minutes are saved 15 s later with the marks, which the request points out. GameViber replays the session into the mode with your settings, so the
 assistant sees when the game vibrated, what you pressed and what the mode
-output. Pasting the answer back updates a user mode in place (the previous
-version is kept as `.luau.bak`) or creates a tuned copy of a built-in one.
+output, along with the earlier rounds (answers, quick fixes, applied fixes) so
+it does not go back and forth. Pasting the answer back updates a user mode in
+place (the previous version is kept as `.luau.bak`) or creates a tuned copy of
+a built-in one.
 Template: [`gameviber/prompts/fix-feel.md`](gameviber/prompts/fix-feel.md).
 
 ### In-game overlay

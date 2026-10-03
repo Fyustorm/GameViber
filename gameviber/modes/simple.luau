@@ -13,6 +13,10 @@ mode {
     multiplier = number(1, 0, 5, "Multiplier", 0.1),
     baseline   = number(0, 0, 1, "Minimum vibration", 0.01),
   },
+  feedback = {
+    strength = ask("Overall strength", { "Too weak", "Good", "Too strong" }, "Good", { param = "multiplier" }),
+    between  = ask("Between the game's vibrations", { "Too empty", "Good", "Never stops" }, "Good", { param = "baseline" }),
+  },
 }
 
 function tick(dt, input)

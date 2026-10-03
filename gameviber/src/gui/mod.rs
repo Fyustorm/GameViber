@@ -89,7 +89,7 @@ impl App {
     }
 
     /// Creates a user mode file, activates it and opens it in the Creator.
-    fn create_mode(&mut self, stem: &str, source: &str) {
+    fn create_mode(&mut self, stem: &str, source: &str) -> Option<ModeEntry> {
         let stem: String = stem
             .trim()
             .chars()
@@ -100,18 +100,25 @@ impl App {
         match config::write_file(&path, source) {
             Ok(()) => {
                 log::info!("created {}", path.display());
+                let id = path.to_string_lossy().into_owned();
                 self.send(Command::RefreshModes);
-                self.send(Command::SelectMode(path.to_string_lossy().into_owned()));
+                self.send(Command::SelectMode(id.clone()));
                 self.page = Page::Creator;
+                Some(ModeEntry::from_id(&id))
             }
-            Err(e) => log::error!("cannot create {}: {e}", path.display()),
+            Err(e) => {
+                log::error!("cannot create {}: {e}", path.display());
+                None
+            }
         }
     }
 
     fn duplicate_mode(&mut self, id: &str) {
         let entry = ModeEntry::from_id(id);
         match entry.source() {
-            Ok(source) => self.create_mode(&format!("{}-copy", entry.key), &source),
+            Ok(source) => {
+                self.create_mode(&format!("{}-copy", entry.key), &source);
+            }
             Err(e) => log::error!("cannot read {}: {e}", entry.id),
         }
     }

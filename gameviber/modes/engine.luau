@@ -25,6 +25,11 @@ mode {
     impact_len = number(0.3, 0.05, 2, "Impact pulse length (s)", 0.05),
     engine_off = number(10, 0, 120, "Engine off after inactivity (s), 0 = never", 1),
   },
+  feedback = {
+    idle     = ask("Engine at idle", { "Too weak", "Good", "Too strong" }, "Good", { param = "idle_level" }),
+    throttle = ask("Full throttle", { "Too weak", "Good", "Too strong" }, "Good", { param = "max_level" }),
+    road     = ask("Road and impacts", { "Too weak", "Good", "Too strong" }, "Good", { param = "road" }),
+  },
 }
 
 local rpm, phase, prev_level = 0, 0, 0

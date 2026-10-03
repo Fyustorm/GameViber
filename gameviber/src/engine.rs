@@ -40,6 +40,8 @@ const TEST_LENGTH: Duration = Duration::from_millis(800);
 const SOURCE_RETRY: Duration = Duration::from_secs(2);
 /// What `Command::SaveRecent` saves: the last seconds of play.
 pub const RECENT_SECS: f64 = 120.0;
+/// A marked moment is saved this long after the (last) mark, to include what followed.
+pub const MARK_SAVE_DELAY: f64 = 15.0;
 
 #[derive(Debug, Clone)]
 pub struct EngineOptions {
@@ -77,6 +79,8 @@ pub enum Command {
     SetRouting { channel: String, toys: Vec<String> },
     /// Buttons held together for the panic stop (at least two).
     SetPanicCombo(Vec<String>),
+    /// Buttons held together to mark a moment that felt wrong (at least two).
+    SetMarkCombo(Vec<String>),
     SetToySettings { toy: String, settings: ToySettings },
     SetSource { source: SourceChoice, hide: bool },
     /// Intiface server address; reconnects.
@@ -259,6 +263,8 @@ struct Engine {
     recorder: Option<Recorder>,
     /// Always on: the last `RECENT_SECS` of play.
     recent: Recorder,
+    /// A moment was marked: when to save the last minutes.
+    mark_save: Option<f64>,
     /// Recording being replayed, and whether the toys play it.
     player: Option<(Player, bool)>,
     /// Toy being buzzed by `Command::TestToy`, at what intensity, until when.
@@ -324,13 +330,14 @@ async fn run_async(
         test: None,
         recorder: None,
         recent: Recorder::rolling(0.0, RECENT_SECS),
+        mark_save: None,
         player: None,
         overlay: overlay::Server::new(),
         overlay_events: Vec::new(),
         overlay_title: (String::new(), None, 0.0),
         ticks: 0,
     };
-    engine.apply_panic_combo();
+    engine.apply_combos();
     engine.start_source();
     engine.refresh_modes();
     engine.refresh_recordings();
@@ -414,13 +421,37 @@ impl Engine {
     }
 
     /// Applies the saved panic combo, falling back to the default when it is invalid.
-    fn apply_panic_combo(&mut self) {
-        let combo = gamepad::parse_panic_combo(&self.settings.panic_combo).unwrap_or_else(|| {
-            log::warn!("invalid panic combo {:?}, using the default", self.settings.panic_combo);
-            self.settings.panic_combo = gamepad::DEFAULT_PANIC_COMBO.map(str::to_owned).to_vec();
-            gamepad::DEFAULT_PANIC_COMBO.into_iter().collect()
-        });
-        self.pad.set_panic_combo(combo);
+    /// Applies the saved panic and mark combos, falling back to the defaults when
+    /// invalid or identical.
+    fn apply_combos(&mut self) {
+        let parse = |names: &mut Vec<String>, default: [&'static str; 2], what: &str| {
+            gamepad::parse_combo(names).unwrap_or_else(|| {
+                log::warn!("invalid {what} combo {names:?}, using the default");
+                *names = default.map(str::to_owned).to_vec();
+                default.into_iter().collect()
+            })
+        };
+        let panic = parse(&mut self.settings.panic_combo, gamepad::DEFAULT_PANIC_COMBO, "panic");
+        let mut mark = parse(&mut self.settings.mark_combo, gamepad::DEFAULT_MARK_COMBO, "mark");
+        if mark == panic {
+            log::warn!("the mark combo is the panic combo, using the default");
+            self.settings.mark_combo = gamepad::DEFAULT_MARK_COMBO.map(str::to_owned).to_vec();
+            mark = gamepad::DEFAULT_MARK_COMBO.into_iter().collect();
+        }
+        self.pad.set_panic_combo(panic);
+        self.pad.set_mark_combo(mark);
+    }
+
+    /// The player marked this moment as feeling wrong: noted in the recordings,
+    /// and the last minutes are saved a little later.
+    fn mark_moment(&mut self, time: f64) {
+        log::info!("moment marked");
+        self.recent.mark(time);
+        if let Some(recorder) = self.recorder.as_mut() {
+            recorder.mark(time);
+        }
+        self.overlay_events.push(("Moment marked".to_owned(), time));
+        self.mark_save = Some(time + MARK_SAVE_DELAY);
     }
 
     fn switch_source(&mut self, source: SourceChoice, hide: bool) {
@@ -518,10 +549,18 @@ impl Engine {
                 self.settings.save();
             }
             Command::SetPanicCombo(combo) => {
-                if gamepad::parse_panic_combo(&combo).is_some() {
+                if gamepad::parse_combo(&combo).is_some_and(|c| Some(c) != gamepad::parse_combo(&self.settings.mark_combo)) {
                     log::info!("panic combo set to {}", gamepad::combo_text(&combo));
                     self.settings.panic_combo = combo;
-                    self.apply_panic_combo();
+                    self.apply_combos();
+                    self.settings.save();
+                }
+            }
+            Command::SetMarkCombo(combo) => {
+                if gamepad::parse_combo(&combo).is_some_and(|c| Some(c) != gamepad::parse_combo(&self.settings.panic_combo)) {
+                    log::info!("mark combo set to {}", gamepad::combo_text(&combo));
+                    self.settings.mark_combo = combo;
+                    self.apply_combos();
                     self.settings.save();
                 }
             }
@@ -895,6 +934,13 @@ impl Engine {
         if self.pad.panic_combo(time) {
             self.trigger_panic(&gamepad::combo_text(&self.settings.panic_combo));
         }
+        if self.pad.take_mark(time) && self.player.is_none() {
+            self.mark_moment(time);
+        }
+        if self.mark_save.is_some_and(|at| time >= at) {
+            self.mark_save = None;
+            self.save_recent();
+        }
 
         let toys = self.intiface.as_ref().map(|i| i.status()).unwrap_or_default();
         for toy in &toys.toys {
@@ -1080,6 +1126,9 @@ impl Engine {
     async fn shutdown(mut self) {
         log::info!("shutting down");
         self.stop_recording();
+        if self.mark_save.take().is_some() {
+            self.save_recent();
+        }
         self.save_params();
         if let Some(active) = self.mode.as_mut() {
             if let Some(rt) = active.runtime.as_mut() {

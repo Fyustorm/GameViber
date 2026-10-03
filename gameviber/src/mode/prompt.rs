@@ -25,6 +25,10 @@ pub struct FeelReport<'a> {
     pub game: &'a str,
     /// Problems ticked in the GUI, then the player's own words.
     pub problems: &'a [String],
+    /// The mode's questions the player answered with the default ("fine") answer.
+    pub fine: &'a [String],
+    /// Earlier rounds of fixing this mode (`FeedbackHistory::lines`).
+    pub history: &'a [String],
     pub params: &'a [ParamDef],
     pub values: &'a BTreeMap<String, ParamValue>,
     pub source: &'a str,
@@ -41,6 +45,14 @@ pub fn feel_prompt(r: &FeelReport) -> String {
     let problems = match r.problems {
         [] => "Nothing specific: it just does not feel right.".to_owned(),
         list => list.iter().map(|p| format!("- {}", p.trim())).collect::<Vec<_>>().join("\n"),
+    };
+    let fine = match r.fine {
+        [] => String::new(),
+        list => format!("\nThey found these fine, keep them as they are: {}.\n", list.join(", ")),
+    };
+    let history = match r.history {
+        [] => "None: this is the first request about this mode.".to_owned(),
+        list => list.iter().map(|l| format!("- {l}")).collect::<Vec<_>>().join("\n"),
     };
     let params = if r.params.is_empty() {
         "(no settings)".to_owned()
@@ -60,7 +72,8 @@ pub fn feel_prompt(r: &FeelReport) -> String {
         Some(report) => format!(
             "The player recorded a session while playing. Below is what the game sent and what they \
              pressed, replayed into a fresh copy of the mode with the settings above (times in seconds \
-             from the start of the session).\n\n{}",
+             from the start of the session). Moments the player marked while playing are the ones that \
+             felt wrong.\n\n{}",
             report.trim_end()
         ),
         None => "No session was recorded.".to_owned(),
@@ -68,6 +81,8 @@ pub fn feel_prompt(r: &FeelReport) -> String {
     FEEL_TEMPLATE
         .replace("{{GAME}}", &game)
         .replace("{{PROBLEMS}}", &problems)
+        .replace("{{FINE}}", &fine)
+        .replace("{{HISTORY}}", &history)
         .replace("{{NAME}}", r.name)
         .replace("{{PARAMS}}", &params)
         .replace("{{SOURCE}}", r.source.trim_end())

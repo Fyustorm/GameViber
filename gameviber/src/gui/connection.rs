@@ -6,8 +6,8 @@ use eframe::egui::{self, Margin, RichText};
 use super::theme::*;
 use super::{capture_status, gamepad_status, intiface_status, App, RECENT_RUMBLE_SECS};
 use crate::config::SourceChoice;
-use crate::engine::{Command, Shared, SourceHealth};
-use crate::gamepad::{combo_text, BUTTONS, PANIC_COMBO_MIN};
+use crate::engine::{Command, Shared, SourceHealth, RECENT_SECS};
+use crate::gamepad::{combo_text, parse_combo, BUTTONS, PANIC_COMBO_MIN};
 
 pub const INTIFACE_DOWNLOAD: &str = "https://intiface.com/central/";
 
@@ -92,8 +92,25 @@ impl App {
                 self.intiface_address(ui, s);
                 ui.add_space(12.0);
                 ui.label(RichText::new("Panic stop").strong().size(15.0));
-                if let Some(command) = panic_combo(ui, s) {
-                    self.send(command);
+                let (panic, mark) = (&s.settings.panic_combo, &s.settings.mark_combo);
+                let text = format!(
+                    "Hold {} on the gamepad for half a second to stop every toy. Pick buttons the game does not \
+                     use together, at least {PANIC_COMBO_MIN}.",
+                    combo_text(panic)
+                );
+                if let Some(combo) = combo_picker(ui, &text, panic, mark) {
+                    self.send(Command::SetPanicCombo(combo));
+                }
+                ui.add_space(12.0);
+                ui.label(RichText::new("Mark a moment").strong().size(15.0));
+                let text = format!(
+                    "Something felt wrong? Hold {} for a moment: GameViber notes when, and saves the last \
+                     {:.0} minutes a few seconds later, to fix the mode from \"Doesn't feel right?\".",
+                    combo_text(mark),
+                    RECENT_SECS / 60.0
+                );
+                if let Some(combo) = combo_picker(ui, &text, mark, panic) {
+                    self.send(Command::SetMarkCombo(combo));
                 }
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
@@ -132,15 +149,11 @@ impl App {
     }
 }
 
-/// Picker of the buttons held together for the panic stop; returns the new combo.
-fn panic_combo(ui: &mut egui::Ui, s: &Shared) -> Option<Command> {
-    let combo = &s.settings.panic_combo;
-    let mut command = None;
-    ui.label(muted(format!(
-        "Hold {} on the gamepad for half a second to stop every toy. Pick buttons the game does not \
-         use together, at least {PANIC_COMBO_MIN}.",
-        combo_text(combo)
-    )));
+/// Picker of the buttons of a combo, which must differ from `other`; returns the new combo.
+fn combo_picker(ui: &mut egui::Ui, text: &str, combo: &[String], other: &[String]) -> Option<Vec<String>> {
+    let mut picked = None;
+    ui.label(muted(text));
+    let same = |a: &[String]| parse_combo(a).is_some() && parse_combo(a) == parse_combo(other);
     ui.horizontal_wrapped(|ui| {
         for button in BUTTONS {
             let on = combo.iter().any(|b| b == button);
@@ -148,16 +161,20 @@ fn panic_combo(ui: &mut egui::Ui, s: &Shared) -> Option<Command> {
             if !on {
                 new.push(button.to_owned());
             }
-            let allowed = new.len() >= PANIC_COMBO_MIN;
-            let response = ui
-                .add_enabled(allowed, egui::Button::selectable(on, button))
-                .on_disabled_hover_text(format!("The combo needs at least {PANIC_COMBO_MIN} buttons"));
+            let (allowed, why) = if new.len() < PANIC_COMBO_MIN {
+                (false, format!("A combo needs at least {PANIC_COMBO_MIN} buttons"))
+            } else if same(&new) {
+                (false, "The panic stop and the mark need different combos".to_owned())
+            } else {
+                (true, String::new())
+            };
+            let response = ui.add_enabled(allowed, egui::Button::selectable(on, button)).on_disabled_hover_text(why);
             if response.clicked() {
-                command = Some(Command::SetPanicCombo(new));
+                picked = Some(new);
             }
         }
     });
-    command
+    picked
 }
 
 /// The two capture methods as tiles with their pros and cons; returns the

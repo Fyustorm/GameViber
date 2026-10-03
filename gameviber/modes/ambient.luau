@@ -19,6 +19,12 @@ mode {
     fade_after    = number(30, 0, 600, "Fade out after inactivity (s), 0 = never", 5),
     fade_len      = number(10, 0.5, 60, "Fade duration (s)", 0.5),
   },
+  feedback = {
+    wave = ask("Background wave", { "Too weak", "Good", "Too strong" }, "Good", { param = "wave_max" }),
+    pace = ask("Wave pace", { "Too slow", "Good", "Too fast" }, "Good", { param = "period", invert = true }),
+    fade = ask("Fading out in menus or pauses", { "Too late", "Good", "Too soon" }, "Good",
+               { param = "fade_after", invert = true }),
+  },
 }
 
 function tick(dt, input)

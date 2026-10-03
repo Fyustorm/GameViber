@@ -23,6 +23,12 @@ mode {
     rumble_weight = number(0.3, 0, 1, "Rumble multiplier", 0.05),
     pause_idle    = number(30, 0, 600, "Pause after inactivity (s), 0 = never", 5),
   },
+  feedback = {
+    rise = ask("Gauge rising while you survive", { "Too slow", "Good", "Too fast" }, "Good", { param = "rise" }),
+    hit  = ask("Hits emptying the gauge", { "Often missed", "Good", "Small bumps too" }, "Good",
+               { param = "hit", invert = true }),
+    top  = ask("Vibration at full gauge", { "Too weak", "Good", "Too strong" }, "Good", { param = "max_level" }),
+  },
 }
 
 persist.gauge = persist.gauge or 0

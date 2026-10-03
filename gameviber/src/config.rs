@@ -73,6 +73,8 @@ pub struct Settings {
     pub routing: BTreeMap<String, Vec<String>>,
     /// Gamepad buttons held together for the panic stop (at least two).
     pub panic_combo: Vec<String>,
+    /// Gamepad buttons held together to mark a moment that felt wrong (at least two).
+    pub mark_combo: Vec<String>,
     /// Toy name -> how it renders intensities (missing: `ToySettings::default()`).
     pub toys: BTreeMap<String, ToySettings>,
     /// The first-launch setup was completed or skipped.
@@ -146,6 +148,7 @@ impl Default for Settings {
             global_cap: 1.0,
             routing: BTreeMap::new(),
             panic_combo: crate::gamepad::DEFAULT_PANIC_COMBO.map(str::to_owned).to_vec(),
+            mark_combo: crate::gamepad::DEFAULT_MARK_COMBO.map(str::to_owned).to_vec(),
             toys: BTreeMap::new(),
             onboarded: false,
             overlay: OverlaySettings::default(),
@@ -246,6 +249,73 @@ pub struct Presets {
     pub presets: BTreeMap<String, BTreeMap<String, ParamValue>>,
 }
 
+/// The rounds of fixing a mode that did not feel right, stored in `feedback/<key>.toml`,
+/// so that the next request tells the AI assistant what was already tried.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FeedbackHistory {
+    pub rounds: Vec<FeedbackRound>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum FeedbackRound {
+    /// A request was sent: what the player answered.
+    Request { date: String, version: String, answers: Vec<String>, words: String },
+    /// A question's quick fix changed a setting.
+    QuickFix { date: String, version: String, question: String, answer: String, setting: String, from: f64, to: f64 },
+    /// The assistant's corrected mode was applied.
+    Fixed { date: String, from_version: String, to_version: String },
+}
+
+impl FeedbackHistory {
+    /// Rounds kept; older ones are dropped.
+    pub const MAX_ROUNDS: usize = 30;
+
+    pub fn push(&mut self, round: FeedbackRound) {
+        // Copying the request again for the same version replaces the previous copy.
+        if let (FeedbackRound::Request { version, .. }, Some(FeedbackRound::Request { version: last, .. })) =
+            (&round, self.rounds.last())
+        {
+            if version == last {
+                self.rounds.pop();
+            }
+        }
+        self.rounds.push(round);
+        let excess = self.rounds.len().saturating_sub(Self::MAX_ROUNDS);
+        self.rounds.drain(..excess);
+    }
+
+    /// One line per round, oldest first, for the AI assistant.
+    pub fn lines(&self) -> Vec<String> {
+        let version = |v: &str| if v.is_empty() { String::new() } else { format!(" (version {v})") };
+        self.rounds
+            .iter()
+            .map(|round| match round {
+                FeedbackRound::Request { date, version: v, answers, words } => {
+                    let mut said = answers.join("; ");
+                    if !words.trim().is_empty() {
+                        if !said.is_empty() {
+                            said.push_str("; ");
+                        }
+                        said.push_str(&format!("\"{}\"", words.trim()));
+                    }
+                    if said.is_empty() {
+                        said = "nothing specific".into();
+                    }
+                    format!("{date}{}: the player reported: {said}", version(v))
+                }
+                FeedbackRound::QuickFix { date, version: v, question, answer, setting, from, to } => {
+                    format!("{date}{}: quick fix for \"{question}: {answer}\": {setting} {from} -> {to}", version(v))
+                }
+                FeedbackRound::Fixed { date, from_version, to_version } => {
+                    format!("{date}: the assistant's corrected mode was applied ({from_version} -> {to_version})")
+                }
+            })
+            .collect()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModeEntry {
     /// "builtin:<name>" or the absolute path of a user mode file.
@@ -312,6 +382,18 @@ impl ModeEntry {
     pub fn save_presets(&self, presets: &Presets) {
         write_toml(&self.presets_path(), presets);
     }
+
+    fn feedback_path(&self) -> PathBuf {
+        config_dir().join("feedback").join(format!("{}.toml", self.key))
+    }
+
+    pub fn load_feedback(&self) -> FeedbackHistory {
+        read_toml(&self.feedback_path())
+    }
+
+    pub fn save_feedback(&self, history: &FeedbackHistory) {
+        write_toml(&self.feedback_path(), history);
+    }
 }
 
 /// Built-in modes first, then `~/.config/gameviber/modes/*.luau` sorted by name.
@@ -360,6 +442,36 @@ mod tests {
     fn user_entries_use_file_stem() {
         let e = ModeEntry::from_id("/x/modes/combo.luau");
         assert_eq!((e.key.as_str(), e.builtin, e.chunk_name().as_str()), ("combo", false, "combo.luau"));
+    }
+
+    #[test]
+    fn feedback_history_round_trips_and_merges_requests() {
+        let mut history = FeedbackHistory::default();
+        let request = |answers: &[&str]| FeedbackRound::Request {
+            date: "2026-10-03 20:00".into(),
+            version: "1.0".into(),
+            answers: answers.iter().map(|a| a.to_string()).collect(),
+            words: String::new(),
+        };
+        history.push(request(&["Dash: Too short"]));
+        history.push(request(&["Dash: Too long"]));
+        history.push(FeedbackRound::QuickFix {
+            date: "d".into(),
+            version: "1.0".into(),
+            question: "Dash".into(),
+            answer: "Too long".into(),
+            setting: "Dash length (s)".into(),
+            from: 0.4,
+            to: 0.3,
+        });
+        history.push(FeedbackRound::Fixed { date: "d".into(), from_version: "1.0".into(), to_version: "1.1".into() });
+        assert_eq!(history.rounds.len(), 3, "the second request replaced the first");
+        let text = toml::to_string(&history).unwrap();
+        assert_eq!(toml::from_str::<FeedbackHistory>(&text).unwrap(), history);
+        let lines = history.lines();
+        assert_eq!(lines[0], "2026-10-03 20:00 (version 1.0): the player reported: Dash: Too long");
+        assert_eq!(lines[1], "d (version 1.0): quick fix for \"Dash: Too long\": Dash length (s) 0.4 -> 0.3");
+        assert_eq!(lines[2], "d: the assistant's corrected mode was applied (1.0 -> 1.1)");
     }
 
     #[test]

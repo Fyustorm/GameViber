@@ -65,6 +65,44 @@ impl ParamDef {
     }
 }
 
+/// A question the GUI asks a player who finds the mode wrong (`ask()`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Question {
+    pub id: String,
+    pub label: String,
+    /// Answers to pick from; empty for a plain checkbox.
+    pub options: Vec<String>,
+    /// Index of the answer meaning "fine" (unused for a checkbox).
+    pub default: usize,
+    /// Number parameter a quick fix adjusts: answers before `default` ask for a
+    /// larger value, after it a smaller one (the reverse with `invert`).
+    pub param: Option<String>,
+    pub invert: bool,
+}
+
+impl Question {
+    /// New value of the linked parameter for `answer`, or None when the answer is
+    /// the default or the value cannot move. Each answer away from the default
+    /// moves it by a quarter of its value, at least 5% of its range.
+    pub fn quick_fix(&self, answer: usize, param: &ParamDef, current: f64) -> Option<f64> {
+        let ParamKind::Number { min, max, step } = param.kind else { return None };
+        let mut distance = self.default as f64 - answer as f64;
+        if self.invert {
+            distance = -distance;
+        }
+        if distance == 0.0 {
+            return None;
+        }
+        let delta = (current.abs() * 0.25).max((max - min) * 0.05);
+        let mut value = current + distance * delta;
+        if let Some(step) = step.filter(|s| *s > 0.0) {
+            value = min + ((value - min) / step).round() * step;
+        }
+        let value = (value.clamp(min, max) * 1e6).round() / 1e6;
+        (value != current).then_some(value)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ModeInfo {
     pub name: String,
@@ -79,6 +117,8 @@ pub struct ModeInfo {
     pub version: String,
     pub channels: Vec<String>,
     pub params: Vec<ParamDef>,
+    /// Questions for the "Doesn't feel right?" dialog, in declaration order.
+    pub feedback: Vec<Question>,
     pub rumble_threshold: f64,
     pub rumble_release: f64,
 }
@@ -560,6 +600,24 @@ fn parse_info(declared: &Table) -> LoadResult<ModeInfo> {
     if let Some(unknown) = main_params.iter().find(|name| !params.iter().any(|(_, def)| def.name == **name)) {
         return Err(format!("mode.main_params: no parameter named '{unknown}'"));
     }
+    let mut feedback = Vec::new();
+    if let Some(table) = declared.get::<Option<Table>>("feedback").map_err(|e| format!("mode.feedback: {e}"))? {
+        for pair in table.pairs::<String, Value>() {
+            let (key, def) = pair.map_err(|e| format!("mode.feedback: {e}"))?;
+            let Value::Table(def) = def else {
+                return Err(format!("feedback '{key}' must be built with ask()"));
+            };
+            let (order, question) = library::parse_question(&key, &def)?;
+            if let Some(param) = &question.param {
+                let def = params.iter().map(|(_, d)| d).find(|d| d.name == *param);
+                if !matches!(def.map(|d| &d.kind), Some(ParamKind::Number { .. })) {
+                    return Err(format!("feedback '{key}': param '{param}' must be a number() parameter"));
+                }
+            }
+            feedback.push((order, question));
+        }
+    }
+    feedback.sort_by_key(|(order, _)| *order);
     let number = |key: &str, default: f64| -> LoadResult<f64> {
         Ok(declared.get::<Option<f64>>(key).map_err(|e| format!("mode.{key}: {e}"))?.unwrap_or(default))
     };
@@ -574,6 +632,7 @@ fn parse_info(declared: &Table) -> LoadResult<ModeInfo> {
         version: get_str("version")?.unwrap_or_default(),
         channels,
         params: params.into_iter().map(|(_, def)| def).collect(),
+        feedback: feedback.into_iter().map(|(_, q)| q).collect(),
         rumble_threshold: number("rumble_threshold", DEFAULT_THRESHOLD)?,
         rumble_release: number("rumble_release", DEFAULT_RELEASE)?,
     })

@@ -20,6 +20,11 @@ mode {
     max       = number(100, 10, 500, "Max points", 5),
     floor     = number(0.2, 0, 1, "Constant vibration at max points", 0.05),
   },
+  feedback = {
+    build = ask("How fast it builds up", { "Too slow", "Good", "Too fast" }, "Good", { param = "per_hit" }),
+    fade  = ask("How fast it fades when idle", { "Too slow", "Good", "Too fast" }, "Good", { param = "decay" }),
+    top   = ask("Vibration at full points", { "Too weak", "Good", "Too strong" }, "Good", { param = "floor" }),
+  },
 }
 
 persist.points = persist.points or 0

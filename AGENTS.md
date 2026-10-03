@@ -63,8 +63,9 @@ Run `cargo test` after any change to the runtime or to a mode.
   table and in `docs/spec-modes.md` §14.3. Follow the style of the existing modes: a
   header comment, `author = "GameViber"`, a `category`, a plain-language `help` and
   1 to 3 `main_params` for players, parameters with units in their labels,
-  `plot()` for the internal state worth tuning, and `hud()` / `hud_event()` for what
-  the in-game overlay should show.
+  `plot()` for the internal state worth tuning, `hud()` / `hud_event()` for what
+  the in-game overlay should show, and 2 to 5 `feedback` questions (`ask()`), each
+  linked to the parameter that fixes it.
 - **Per-game modes come first**: built-in modes are genre fallbacks; players are steered
   towards a mode written by an AI assistant for their game. The requests
   (`gameviber/prompts/new-mode.md`, and `fix-feel.md` for fixes) embed

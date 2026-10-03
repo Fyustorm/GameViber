@@ -34,6 +34,9 @@ pub struct Header {
     /// Name of the mode active while recording.
     pub mode: String,
     pub duration: f64,
+    /// Moments the player marked as feeling wrong.
+    #[serde(default)]
+    pub marks: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -42,6 +45,8 @@ pub enum Change {
     Rumble { strong: f64, weak: f64 },
     Button { name: String, pressed: bool },
     Axis { name: String, value: f64 },
+    /// The player marked this moment as feeling wrong.
+    Mark,
 }
 
 /// A recording file as listed in the GUI.
@@ -162,6 +167,11 @@ impl Recorder {
         time - self.start
     }
 
+    /// The player marked this moment.
+    pub fn mark(&mut self, time: f64) {
+        self.changes.push_back((round(self.elapsed(time), 1000.0), Change::Mark));
+    }
+
     /// Records what changed since the previous tick.
     pub fn tick(&mut self, time: f64, rumble: RumbleLevels, buttons: &[ButtonEvent], pad: &PadState) {
         let t = round(self.elapsed(time), 1000.0);
@@ -187,6 +197,7 @@ impl Recorder {
                     Change::Rumble { .. } => "rumble".to_owned(),
                     Change::Button { name, .. } => format!("button {name}"),
                     Change::Axis { name, .. } => format!("axis {name}"),
+                    Change::Mark => continue,
                 };
                 self.base.insert(key, change);
             }
@@ -203,12 +214,14 @@ impl Recorder {
             Change::Button { pressed, .. } => *pressed,
             Change::Axis { value, .. } => *value != 0.0,
             Change::Rumble { strong, weak } => *strong != 0.0 || *weak != 0.0,
+            Change::Mark => false,
         });
-        let changes = base
+        let changes: Vec<(f64, Change)> = base
             .cloned()
             .map(|c| (0.0, c))
             .chain(self.changes.iter().map(|(t, c)| (round(t - from, 1000.0).max(0.0), c.clone())))
             .collect();
+        let marks = changes.iter().filter(|(_, c)| *c == Change::Mark).count() as u32;
         let started = if self.window.is_some() { local_time() } else { self.started.clone() };
         Session {
             header: Header {
@@ -217,6 +230,7 @@ impl Recorder {
                 game: game.map(str::to_owned).or_else(|| self.game.clone()),
                 mode: mode.map(str::to_owned).unwrap_or_else(|| self.mode.clone()),
                 duration: round(elapsed - from, 1000.0),
+                marks,
             },
             changes,
         }
@@ -277,6 +291,7 @@ impl Player {
                         pad.set_axis(name, *value, time);
                     }
                 }
+                Change::Mark => {}
             }
             self.next += 1;
         }
@@ -289,7 +304,7 @@ fn round(x: f64, scale: f64) -> f64 {
 }
 
 /// "2026-10-03 21:14:05", local time.
-fn local_time() -> String {
+pub fn local_time() -> String {
     // SAFETY: localtime_r only writes the tm struct it is given.
     unsafe {
         let now = libc::time(std::ptr::null_mut());
@@ -358,6 +373,8 @@ mod tests {
         rec.tick(0.6, RumbleLevels { strong: 0.4, weak: 0.0 }, &[press], &pad);
         let release = pad.button("A", false, 0.7).unwrap();
         rec.tick(0.7, RumbleLevels { strong: 0.4, weak: 0.0 }, &[release], &pad);
+        rec.mark(0.8);
+        rec.mark(2.0);
         rec.tick(2.0, RumbleLevels { strong: 0.9, weak: 0.0 }, &[], &pad);
 
         let session = rec.session(2.5, Some("Surge"), Some("Game"));
@@ -368,8 +385,10 @@ mod tests {
             vec![
                 (0.0, Change::Button { name: "LT".into(), pressed: true }),
                 (0.0, Change::Rumble { strong: 0.4, weak: 0.0 }),
+                (0.5, Change::Mark),
                 (0.5, Change::Rumble { strong: 0.9, weak: 0.0 }),
             ]
         );
+        assert_eq!(session.header.marks, 1, "the mark before the window is dropped");
     }
 }

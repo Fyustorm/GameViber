@@ -1,6 +1,6 @@
 //! Gamepad normalization: evdev key/axis codes to the Xbox-layout names
 //! exposed to modes (A, B, LB, DPAD_UP, LX, LT...), plus idle tracking and
-//! panic-combo detection.
+//! detection of the panic and "mark this moment" combos.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -20,12 +20,16 @@ const TRIGGER_PRESS: f64 = 0.5;
 pub const PANIC_HOLD_SECS: f64 = 0.5;
 /// Default panic combo.
 pub const DEFAULT_PANIC_COMBO: [&str; 2] = ["BACK", "START"];
-/// A combo needs at least this many buttons, so that no single press stops the toys.
+/// The mark combo held this long marks the moment (once per hold).
+pub const MARK_HOLD_SECS: f64 = 0.3;
+/// Default combo marking a moment that felt wrong.
+pub const DEFAULT_MARK_COMBO: [&str; 2] = ["BACK", "RS"];
+/// A combo needs at least this many buttons, so that no single press triggers it.
 pub const PANIC_COMBO_MIN: usize = 2;
 
-/// Known button names of a panic combo, or None if it has fewer than
+/// Known button names of a combo, or None if it has fewer than
 /// `PANIC_COMBO_MIN` distinct buttons.
-pub fn parse_panic_combo(names: &[String]) -> Option<BTreeSet<&'static str>> {
+pub fn parse_combo(names: &[String]) -> Option<BTreeSet<&'static str>> {
     let combo: BTreeSet<&'static str> =
         names.iter().filter_map(|n| BUTTONS.iter().find(|b| **b == n.as_str()).copied()).collect();
     (combo.len() >= PANIC_COMBO_MIN && combo.len() == names.len()).then_some(combo)
@@ -101,6 +105,9 @@ pub struct PadState {
     last_input: f64,
     panic_combo: BTreeSet<&'static str>,
     panic_since: Option<f64>,
+    mark_combo: BTreeSet<&'static str>,
+    /// Since when the mark combo is held, and whether this hold already marked.
+    mark_since: Option<(f64, bool)>,
 }
 
 impl Default for PadState {
@@ -111,12 +118,20 @@ impl Default for PadState {
             last_input: 0.0,
             panic_combo: DEFAULT_PANIC_COMBO.into_iter().collect(),
             panic_since: None,
+            mark_combo: DEFAULT_MARK_COMBO.into_iter().collect(),
+            mark_since: None,
         }
     }
 }
 
 impl PadState {
-    /// Buttons to hold together for the panic stop (see `parse_panic_combo`).
+    /// Buttons to hold together to mark a moment (see `parse_combo`).
+    pub fn set_mark_combo(&mut self, combo: BTreeSet<&'static str>) {
+        self.mark_combo = combo;
+        self.mark_since = None;
+    }
+
+    /// Buttons to hold together for the panic stop (see `parse_combo`).
     pub fn set_panic_combo(&mut self, combo: BTreeSet<&'static str>) {
         self.panic_combo = combo;
         self.panic_since = None;
@@ -127,6 +142,7 @@ impl PadState {
     pub fn release_all(&mut self) -> Vec<ButtonEvent> {
         self.axes.values_mut().for_each(|v| *v = 0.0);
         self.panic_since = None;
+        self.mark_since = None;
         std::mem::take(&mut self.held).into_iter().map(|name| ButtonEvent { name, pressed: false }).collect()
     }
 
@@ -202,12 +218,29 @@ impl PadState {
     }
 
     fn update_panic(&mut self, time: f64) {
+        let mark = self.mark_combo.is_subset(&self.held);
+        self.mark_since = match (mark, self.mark_since) {
+            (true, None) => Some((time, false)),
+            (true, since) => since,
+            (false, _) => None,
+        };
         let combo = self.panic_combo.is_subset(&self.held);
         self.panic_since = match (combo, self.panic_since) {
             (true, None) => Some(time),
             (true, since) => since,
             (false, _) => None,
         };
+    }
+
+    /// True once per hold of the mark combo, after `MARK_HOLD_SECS`.
+    pub fn take_mark(&mut self, time: f64) -> bool {
+        match &mut self.mark_since {
+            Some((since, fired)) if !*fired && time - *since >= MARK_HOLD_SECS => {
+                *fired = true;
+                true
+            }
+            _ => false,
+        }
     }
 
     /// True once the panic combo has been held for `PANIC_HOLD_SECS`.
@@ -278,7 +311,7 @@ mod tests {
     #[test]
     fn panic_combo_is_configurable() {
         let mut pad = PadState::default();
-        pad.set_panic_combo(parse_panic_combo(&["LB".into(), "RB".into(), "Y".into()]).unwrap());
+        pad.set_panic_combo(parse_combo(&["LB".into(), "RB".into(), "Y".into()]).unwrap());
         pad.button("BACK", true, 0.0);
         pad.button("START", true, 0.0);
         assert!(!pad.panic_combo(1.0));
@@ -289,11 +322,25 @@ mod tests {
     }
 
     #[test]
+    fn mark_combo_fires_once_per_hold() {
+        let mut pad = PadState::default();
+        pad.button("BACK", true, 0.0);
+        pad.button("RS", true, 0.1);
+        assert!(!pad.take_mark(0.3));
+        assert!(pad.take_mark(0.4));
+        assert!(!pad.take_mark(1.0), "still the same hold");
+        pad.button("RS", false, 1.1);
+        pad.button("RS", true, 1.2);
+        assert!(pad.take_mark(1.5), "new hold");
+        assert!(!pad.panic_combo(2.0));
+    }
+
+    #[test]
     fn panic_combo_needs_two_known_buttons() {
-        assert!(parse_panic_combo(&["A".into()]).is_none());
-        assert!(parse_panic_combo(&["A".into(), "A".into()]).is_none());
-        assert!(parse_panic_combo(&["A".into(), "FOO".into()]).is_none());
-        assert!(parse_panic_combo(&["A".into(), "B".into()]).is_some());
+        assert!(parse_combo(&["A".into()]).is_none());
+        assert!(parse_combo(&["A".into(), "A".into()]).is_none());
+        assert!(parse_combo(&["A".into(), "FOO".into()]).is_none());
+        assert!(parse_combo(&["A".into(), "B".into()]).is_some());
     }
 
     #[test]

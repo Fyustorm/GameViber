@@ -23,6 +23,11 @@ mode {
     jumps         = number(0, 0, 10, "Jump scares per 10 minutes", 0.5),
     pause_idle    = number(60, 0, 600, "Pause after inactivity (s), 0 = never", 5),
   },
+  feedback = {
+    racing   = ask("Heart speeding up", { "Too slowly", "Good", "Too fast" }, "Good", { param = "per_hit" }),
+    calm     = ask("Calming down", { "Too slow", "Good", "Too fast" }, "Good", { param = "calm" }),
+    strength = ask("Heartbeat strength", { "Too weak", "Good", "Too strong" }, "Good", { param = "max_level" }),
+  },
 }
 
 -- Beat shape in seconds from the start of a beat: "lub" then a weaker "dub". Fixed

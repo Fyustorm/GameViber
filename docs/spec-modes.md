@@ -54,6 +54,7 @@ mode {
   version     = "1.0",
   channels    = { "main" },                 -- output channels, default { "main" }
   params      = { ... },                    -- see §4
+  feedback    = { ... },                    -- questions for the player, see §4.2
 }
 ```
 
@@ -114,6 +115,39 @@ window = 0.5
 - The GUI shows "(modified)" when the current values differ from the active preset;
   selecting the preset again reverts the changes.
 - `--preset <name>` loads a preset of the startup mode (useful with `--headless`).
+
+### 4.2 Feedback questions
+
+When a mode does not feel right, the player opens **Doesn't feel right?** in the GUI.
+`feedback` declares the questions it asks, so that the player says what is wrong with a
+few clicks instead of describing it. Without `feedback`, the GUI asks generic questions
+("Too strong overall", "Misses moments that should be felt"...); with it, the mode's
+questions come first and the generic ones sit behind "Other problems".
+
+```lua
+feedback = {
+  dash  = ask("Dash vibration length", { "Too short", "Good", "Too long" }, "Good", { param = "dash_len" }),
+  parry = ask("Parry detection", { "Often missed", "Good", "Also on hits taken" }, "Good", { param = "window" }),
+  hit   = ask("Hits", { "Often missed", "Good", "Small bumps too" }, "Good", { param = "hit", invert = true }),
+  menus = ask("Vibrates in menus or cutscenes"),
+},
+```
+
+`ask(label [, answers [, default [, opts]]])`:
+
+- `answers`: 2 or more answers, shown as buttons. Without answers, the question is a
+  checkbox (ticked = a problem).
+- `default`: the answer meaning "fine", selected at first. Defaults to the middle answer.
+- `opts.param`: a `number()` parameter that fixes the problem. When the player picks
+  another answer, the GUI offers a **quick fix** that moves the parameter: answers
+  before the default call for a larger value, answers after it for a smaller one (the
+  reverse with `opts.invert = true`). Each answer away from the default moves it by a
+  quarter of its value, at least 5% of its range, snapped to its step.
+- Questions are shown in declaration order; their keys only identify them.
+
+Answers away from the default go into the request sent to the AI assistant, together
+with the questions answered "fine", the earlier rounds of fixes for this mode, and a
+recorded session replayed into the mode. Scripts never see the answers.
 
 ## 5. Callbacks
 

@@ -1,20 +1,23 @@
-//! "Doesn't feel right?" dialog: the player says what feels wrong with the
-//! active mode and picks a recorded session; GameViber replays the session
-//! into the mode and builds a request for an AI assistant with all of it,
-//! then applies the corrected mode pasted back.
+//! "Doesn't feel right?" dialog: the player answers the mode's questions
+//! (`ask()`, or common complaints when it has none), tries the quick fixes
+//! they offer, and picks a recorded session; GameViber replays the session
+//! into the mode and builds a request for an AI assistant with all of it and
+//! the earlier rounds, then applies the corrected mode pasted back.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use eframe::egui::{self, RichText};
 
 use super::theme::*;
 use super::{App, Page};
-use crate::config::{self, ModeEntry};
+use crate::config::{self, FeedbackRound, ModeEntry};
 use crate::engine::{Command, Shared, RECENT_SECS};
-use crate::mode::{prompt, report, ModeRuntime};
-use crate::session::Session;
+use crate::mode::{prompt, report, ModeInfo, ModeRuntime, ParamValue, Question};
+use crate::session::{self, Session};
 
-/// Common complaints, ticked rather than typed.
+/// Common complaints, ticked rather than typed (all of them when the mode asks
+/// nothing, below its own questions otherwise).
 const PROBLEMS: [&str; 7] = [
     "Too strong overall",
     "Too weak overall",
@@ -28,6 +31,10 @@ const PROBLEMS: [&str; 7] = [
 #[derive(Default)]
 pub struct State {
     pub open: bool,
+    /// Mode the answers are about; they are reset for another mode.
+    mode_id: String,
+    /// Question id -> answer index (checkboxes: 1 when ticked).
+    answers: BTreeMap<String, usize>,
     ticked: [bool; PROBLEMS.len()],
     words: String,
     game: String,
@@ -47,6 +54,9 @@ pub struct State {
 impl App {
     pub(super) fn open_feedback(&mut self, s: &Shared) {
         let f = &mut self.feedback;
+        if f.mode_id != s.mode.id {
+            *f = State { mode_id: s.mode.id.clone(), game: std::mem::take(&mut f.game), ..State::default() };
+        }
         f.open = true;
         f.note = None;
         if f.session.as_ref().is_none_or(|p| !s.recordings.iter().any(|r| r.path == *p)) {
@@ -74,19 +84,34 @@ impl App {
         let mut copy = false;
         let mut apply = false;
         let mut save_recent = false;
+        let mut quick_fix = None;
         let modal = egui::Modal::new(egui::Id::new("mode-feedback")).show(ctx, |ui| {
             ui.set_width(600.0);
             let f = &mut self.feedback;
             heading(ui, &format!("{} doesn't feel right?", info.name));
             ui.label(muted(
-                "Tell what feels wrong. GameViber replays a session you recorded into the mode and prepares a \
-                 request for an AI assistant with everything it needs to fix it; you paste the answer back.",
+                "Say what feels wrong with a few clicks. Some answers can be fixed right away; for the rest, \
+                 GameViber replays a session you recorded into the mode and prepares a request for an AI \
+                 assistant with everything it needs; you paste the answer back.",
             ));
             ui.add_space(8.0);
             egui::ScrollArea::vertical().max_height(ctx.content_rect().height() * 0.7).show(ui, |ui| {
                 step(ui, 1, "What feels wrong?");
-                for (problem, ticked) in PROBLEMS.iter().zip(f.ticked.iter_mut()) {
-                    ui.checkbox(ticked, *problem);
+                for q in &info.feedback {
+                    let answer = f.answers.entry(q.id.clone()).or_insert(q.default);
+                    if let Some(fix) = question_ui(ui, q, answer, &info, &s.mode.values) {
+                        quick_fix = Some((q.clone(), *answer, fix));
+                    }
+                }
+                let generic = |ui: &mut egui::Ui, ticked: &mut [bool; PROBLEMS.len()]| {
+                    for (problem, ticked) in PROBLEMS.iter().zip(ticked.iter_mut()) {
+                        ui.checkbox(ticked, *problem);
+                    }
+                };
+                if info.feedback.is_empty() {
+                    generic(ui, &mut f.ticked);
+                } else {
+                    egui::CollapsingHeader::new("Other problems").show(ui, |ui| generic(ui, &mut f.ticked));
                 }
                 ui.add(
                     egui::TextEdit::multiline(&mut f.words)
@@ -101,15 +126,21 @@ impl App {
                 ui.add_space(10.0);
 
                 step(ui, 2, "Show what happened");
-                ui.label(muted(
-                    "Pick a recorded session where it felt wrong. Just played it? Save the last minutes.",
-                ));
+                ui.label(muted(format!(
+                    "Pick a recorded session where it felt wrong (⚑: moments you marked with {} while \
+                     playing). Just played it? Save the last minutes.",
+                    crate::gamepad::combo_text(&s.settings.mark_combo)
+                )));
                 ui.horizontal(|ui| {
                     let label = |path: &Option<PathBuf>| match path {
                         None => "No session".to_owned(),
                         Some(p) => s.recordings.iter().find(|r| r.path == *p).map_or("?".to_owned(), |r| {
                             let what = r.header.game.as_deref().unwrap_or(&r.header.mode);
-                            format!("{} · {what} · {:.0} s", r.header.started, r.header.duration)
+                            let marks = match r.header.marks {
+                                0 => String::new(),
+                                n => format!(" · ⚑ {n}"),
+                            };
+                            format!("{} · {what} · {:.0} s{marks}", r.header.started, r.header.duration)
                         }),
                     };
                     egui::ComboBox::from_id_salt("feedback-session").width(330.0).selected_text(label(&f.session)).show_ui(
@@ -187,6 +218,9 @@ impl App {
         if save_recent {
             self.send(Command::SaveRecent);
         }
+        if let Some((question, answer, value)) = quick_fix {
+            self.apply_quick_fix(s, &info, &question, answer, value);
+        }
         if copy {
             match self.feel_request(s) {
                 Ok(request) => {
@@ -202,7 +236,36 @@ impl App {
         }
     }
 
-    /// The request for the AI assistant, with the session replayed into the mode.
+    /// Sets the parameter a question is linked to, notes it in the mode's history
+    /// and puts the question back to its "fine" answer.
+    fn apply_quick_fix(&mut self, s: &Shared, info: &ModeInfo, q: &Question, answer: usize, value: f64) {
+        let Some(name) = &q.param else { return };
+        let Some(def) = info.params.iter().find(|p| p.name == *name) else { return };
+        let from = match s.mode.values.get(name).unwrap_or(&def.default) {
+            ParamValue::Number(n) => *n,
+            _ => return,
+        };
+        self.send(Command::SetParam(name.clone(), ParamValue::Number(value)));
+        log::info!("quick fix: {} {from} -> {value} ({}: {})", def.label, q.label, q.options[answer]);
+        let entry = ModeEntry::from_id(&s.mode.id);
+        let mut history = entry.load_feedback();
+        history.push(FeedbackRound::QuickFix {
+            date: session::local_time(),
+            version: info.version.clone(),
+            question: q.label.clone(),
+            answer: q.options[answer].clone(),
+            setting: def.label.clone(),
+            from,
+            to: value,
+        });
+        entry.save_feedback(&history);
+        let f = &mut self.feedback;
+        f.answers.insert(q.id.clone(), q.default);
+        f.note = Some(format!("✔ {} set to {value}: play a bit, then come back if it still feels off.", def.label));
+    }
+
+    /// The request for the AI assistant, with the session replayed into the mode;
+    /// records the round in the mode's history.
     fn feel_request(&self, s: &Shared) -> Result<String, String> {
         let f = &self.feedback;
         let info = s.mode.info.as_ref().ok_or("no mode loaded")?;
@@ -216,20 +279,46 @@ impl App {
             }
             None => None,
         };
-        let mut problems: Vec<String> =
-            PROBLEMS.iter().zip(f.ticked).filter(|(_, ticked)| *ticked).map(|(p, _)| p.to_string()).collect();
+        // Only answers away from "fine" are problems; the others are worth keeping.
+        let (mut problems, mut fine) = (Vec::new(), Vec::new());
+        for q in &info.feedback {
+            let answer = f.answers.get(&q.id).copied().unwrap_or(q.default);
+            match (q.options.is_empty(), answer == q.default) {
+                (true, true) => {}
+                (true, false) => problems.push(q.label.clone()),
+                (false, true) => fine.push(q.label.clone()),
+                (false, false) => {
+                    let link = q.param.as_ref().map_or(String::new(), |p| format!(", setting `{p}`"));
+                    problems.push(format!("{}: **{}** (fine would be \"{}\"{link})", q.label, q.options[answer], q.options[q.default]));
+                }
+            }
+        }
+        problems.extend(PROBLEMS.iter().zip(f.ticked).filter(|(_, ticked)| *ticked).map(|(p, _)| p.to_string()));
+        let answers = problems.clone();
         if !f.words.trim().is_empty() {
             problems.push(format!("In the player's words: {}", f.words.trim()));
         }
-        Ok(prompt::feel_prompt(&prompt::FeelReport {
+        let mut history = entry.load_feedback();
+        let earlier = history.lines();
+        let request = prompt::feel_prompt(&prompt::FeelReport {
             name: &info.name,
             game: &f.game,
             problems: &problems,
+            fine: &fine,
+            history: &earlier,
             params: &info.params,
             values: &s.mode.values,
             source: &source,
             session: session.as_deref(),
-        }))
+        });
+        history.push(FeedbackRound::Request {
+            date: session::local_time(),
+            version: info.version.clone(),
+            answers: answers.iter().map(|a| a.replace("**", "")).collect(),
+            words: f.words.trim().to_owned(),
+        });
+        entry.save_feedback(&history);
+        Ok(request)
     }
 
     /// Replaces the active mode by the corrected one: in place for a user mode
@@ -242,12 +331,21 @@ impl App {
             return;
         }
         let script = prompt::extract_script(&f.answer);
-        if let Err(e) = ModeRuntime::probe("fixed", &script) {
-            f.error = Some(e);
-            f.fix_copied = false;
-            return;
-        }
+        let fixed = match ModeRuntime::probe("fixed", &script) {
+            Ok(info) => info,
+            Err(e) => {
+                f.error = Some(e);
+                f.fix_copied = false;
+                return;
+            }
+        };
         let entry = ModeEntry::from_id(&s.mode.id);
+        let mut history = entry.load_feedback();
+        history.push(FeedbackRound::Fixed {
+            date: session::local_time(),
+            from_version: s.mode.info.as_ref().map(|i| i.version.clone()).unwrap_or_default(),
+            to_version: fixed.version.clone(),
+        });
         match entry.path() {
             Some(path) => {
                 let backup = path.with_extension("luau.bak");
@@ -256,6 +354,10 @@ impl App {
                     return;
                 }
                 log::info!("{} fixed (previous version in {})", path.display(), backup.display());
+                entry.save_feedback(&history);
+                f.answers.clear();
+                f.ticked = Default::default();
+                f.words.clear();
                 f.answer.clear();
                 f.error = None;
                 f.note = Some(format!("✔ Applied. The previous version is kept in {}.", backup.display()));
@@ -263,12 +365,52 @@ impl App {
             }
             None => {
                 *f = State { game: std::mem::take(&mut f.game), ..State::default() };
-                self.create_mode(&format!("{}-tuned", entry.key), &script);
+                // The history follows the tuned copy.
+                if let Some(copy) = self.create_mode(&format!("{}-tuned", entry.key), &script) {
+                    copy.save_feedback(&history);
+                }
                 self.page = Page::Play;
                 self.play.show_user_modes();
             }
         }
     }
+}
+
+/// One of the mode's questions; returns the quick fix value when its button is clicked.
+fn question_ui(
+    ui: &mut egui::Ui,
+    q: &Question,
+    answer: &mut usize,
+    info: &ModeInfo,
+    values: &BTreeMap<String, ParamValue>,
+) -> Option<f64> {
+    if q.options.is_empty() {
+        let mut ticked = *answer == 1;
+        ui.checkbox(&mut ticked, &q.label);
+        *answer = ticked as usize;
+        return None;
+    }
+    ui.add_space(2.0);
+    ui.label(&q.label);
+    ui.horizontal_wrapped(|ui| {
+        for (i, option) in q.options.iter().enumerate() {
+            if ui.selectable_label(*answer == i, option).clicked() {
+                *answer = i;
+            }
+        }
+    });
+    let def = q.param.as_ref().and_then(|name| info.params.iter().find(|p| p.name == *name))?;
+    let current = match values.get(&def.name).unwrap_or(&def.default) {
+        ParamValue::Number(n) => *n,
+        _ => return None,
+    };
+    let value = q.quick_fix(*answer, def, current)?;
+    let mut apply = false;
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(format!("Quick fix: {} {current} → {value}", def.label)).color(ACCENT_TEXT).size(12.5));
+        apply = ui.small_button("Apply").clicked();
+    });
+    apply.then_some(value)
 }
 
 fn step(ui: &mut egui::Ui, n: usize, text: &str) {

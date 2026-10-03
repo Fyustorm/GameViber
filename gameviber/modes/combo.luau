@@ -23,6 +23,12 @@ mode {
     tension       = number(0.15, 0, 0.5, "Max tension vibration", 0.01),
     tension_decay = number(0.3, 0, 5, "Tension lost per second", 0.05),
   },
+  feedback = {
+    chain = ask("Hits counting as one combo", { "Combos break too easily", "Good", "Unrelated hits chain" }, "Good",
+                { param = "window" }),
+    first = ask("First hits of a combo", { "Too weak", "Good", "Too strong" }, "Good", { param = "base" }),
+    burst = ask("Final burst", { "Too weak", "Good", "Too strong" }, "Good", { param = "burst" }),
+  },
 }
 
 local burst = pattern {

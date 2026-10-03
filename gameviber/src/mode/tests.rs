@@ -311,7 +311,50 @@ fn builtin_modes_describe_themselves_for_players() {
     for src in [SIMPLE, ACCUMULATION, COMBO, OVERHEAT, TENSION, ENGINE, HEARTBEAT, ALL_OR_NOTHING, AMBIENT, SURGE] {
         let info = ModeRuntime::probe("test", src).expect("probe");
         assert!(!info.category.is_empty() && !info.help.is_empty(), "{}: category and help", info.name);
+        assert!((2..=5).contains(&info.feedback.len()), "{}: feedback questions", info.name);
+        assert!(info.feedback.iter().all(|q| q.param.is_some()), "{}: quick fixes", info.name);
         assert!((1..=3).contains(&info.main_params.len()), "{}: main_params", info.name);
+    }
+}
+
+#[test]
+fn feedback_questions_are_declared_with_ask() {
+    let src = "mode { api = 1, name = 'T',\n\
+               params = { dash = number(0.3, 0.1, 1, 'Dash length (s)', 0.05), on = bool(true, 'On') },\n\
+               feedback = {\n\
+                 dash = ask('Dash vibration length', { 'Too short', 'Good', 'Too long' }, 'Good', { param = 'dash' }),\n\
+                 menus = ask('Vibrates in menus'),\n\
+                 parry = ask('Parries', { 'Missed', 'Good', 'On hits' }, nil, { param = 'dash', invert = true }),\n\
+               } }\nfunction tick() end";
+    let info = ModeRuntime::probe("test", src).unwrap();
+    let ids: Vec<_> = info.feedback.iter().map(|q| q.id.as_str()).collect();
+    assert_eq!(ids, ["dash", "menus", "parry"], "declaration order");
+    let dash = &info.feedback[0];
+    assert_eq!((dash.default, dash.param.as_deref()), (1, Some("dash")));
+    assert!(info.feedback[1].options.is_empty(), "checkbox");
+    assert_eq!(info.feedback[2].default, 1, "middle answer by default");
+
+    let param = &info.params[0];
+    assert_eq!(dash.quick_fix(0, param, 0.3), Some(0.4), "too short: longer, snapped to the step");
+    assert_eq!(dash.quick_fix(2, param, 0.3), Some(0.2));
+    assert_eq!(dash.quick_fix(1, param, 0.3), None, "default answer");
+    assert_eq!(dash.quick_fix(2, param, 0.1), None, "already at the minimum");
+    assert_eq!(info.feedback[2].quick_fix(0, param, 0.3), Some(0.2), "inverted");
+
+    for (decl, error) in [
+        ("x = 3", "ask()"),
+        ("x = ask('X', { 'only' })", "at least 2"),
+        ("x = ask('X', { 'a', 'b' }, 'c')", "not one of the answers"),
+        ("x = ask('X', { 'a', 'b' }, 'a', { param = 'on' })", "number() parameter"),
+        ("x = ask('X', { 'a', 'b' }, 'a', { param = 'nope' })", "number() parameter"),
+        ("x = ask('X', nil, nil, { param = 'dash' })", "checkbox"),
+    ] {
+        let src = format!(
+            "mode {{ api = 1, name = 'T', params = {{ dash = number(1, 0, 2, 'D'), on = bool(true, 'On') }}, \
+             feedback = {{ {decl} }} }}\nfunction tick() end"
+        );
+        let err = load_err(&src);
+        assert!(err.contains(error), "{decl}: {err}");
     }
 }
 
@@ -469,6 +512,8 @@ fn feel_prompt_holds_the_problem_settings_and_session() {
         name: "Surge",
         game: "Hollow Knight",
         problems: &problems,
+        fine: &["Fight glow".to_owned()],
+        history: &["2026-10-03: quick fix".to_owned()],
         params: &rt.info().params,
         values: &values,
         source,
@@ -477,6 +522,8 @@ fn feel_prompt_holds_the_problem_settings_and_session() {
     let text = prompt::feel_prompt(&report);
     assert!(text.contains("to the player in **Hollow Knight**"));
     assert!(text.contains("- Parries are not detected\n- too strong while exploring"));
+    assert!(text.contains("They found these fine, keep them as they are: Fight glow."));
+    assert!(text.contains("# Earlier attempts\n\n- 2026-10-03: quick fix"));
     assert!(text.contains("| Parry window (s) | `window` | 0.45 | 0.3 |"), "{text}");
     assert!(text.contains("| Parry button (also the surge modifier) | `parry` | \"LT\" | \"LT\" |"));
     assert!(text.contains("name = \"Surge\""), "source");

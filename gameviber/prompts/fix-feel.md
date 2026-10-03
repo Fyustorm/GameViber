@@ -11,6 +11,10 @@ API specification is at the end of this message: it is the only API you may use.
 # What the player says
 
 {{PROBLEMS}}
+{{FINE}}
+# Earlier attempts
+
+{{HISTORY}}
 
 # The mode
 
@@ -32,6 +36,8 @@ Mode **{{NAME}}**, with the player's current settings:
    makes the player feel what they describe. When a session is given above, use it:
    compare when the game vibrated, when buttons were pressed, and what the mode output.
    Remember that **the rumble does not say who took a hit**: the mode can only guess.
+   Take the earlier attempts into account: do not undo what was judged fine, and do not
+   go back and forth on the same setting.
 2. **Fix it.**
    - If changing settings is enough, list the new values (with their labels) and stop
      there: the player sets them on the Play page.
@@ -59,6 +65,9 @@ Mode **{{NAME}}**, with the player's current settings:
 - Keep the game's own rumble perceptible (usually `math.max(effect, rumble * weight)`).
 - Keep `plot()` for the internal state worth tuning, and `hud()` / `hud_event()` for what
   the in-game overlay should show.
+- Keep the `feedback` questions (§4.2) in line with the mode's mechanics: 2 to 5 `ask()`
+  questions about what the player feels, each linked with `param` to the number
+  parameter that fixes it when there is one.
 - Clamp every gauge to its range; `set()` and `pulse()` already clamp to 0..1.
 - English only, readable code, short comments where the intent is not obvious.
 
