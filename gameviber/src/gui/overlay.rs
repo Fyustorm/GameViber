@@ -210,7 +210,15 @@ fn connected_games(ui: &mut egui::Ui, s: &Shared) {
     card(PANEL).show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.label(RichText::new("Games showing it now").strong());
-        if s.overlay_clients.is_empty() {
+        if s.overlay_unavailable {
+            ui.label(
+                RichText::new(
+                    "Another program holds the overlay connection (another GameViber?): games show its panel, \
+                     not this one. Close it; GameViber takes over within a few seconds.",
+                )
+                .color(DANGER_TEXT),
+            );
+        } else if s.overlay_clients.is_empty() {
             ui.label(muted("None. Start a game with the overlay enabled; it appears within a second."));
         }
         for client in &s.overlay_clients {

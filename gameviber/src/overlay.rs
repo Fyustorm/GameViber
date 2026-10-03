@@ -7,7 +7,7 @@ use std::io;
 use std::os::linux::net::SocketAddrExt;
 use std::os::unix::net::{SocketAddr, UnixDatagram};
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use gameviber_common::overlay::{self, Hello, OverlayState};
 
@@ -19,33 +19,60 @@ const MANIFEST_STEM: &str = "gameviber_overlay";
 /// Environment variable that turns the layer on for one game.
 pub const ENABLE_ENV: &str = "GAMEVIBER_OVERLAY";
 pub const DISABLE_ENV: &str = "DISABLE_GAMEVIBER_OVERLAY";
+/// While another process holds the socket, binding it is tried again this often.
+const BIND_RETRY: Duration = Duration::from_secs(5);
 
 /// Overlays of running games, by their socket name.
 pub struct Server {
     socket: Option<UnixDatagram>,
+    /// Last failed attempt to bind the socket.
+    bind_failed: Option<Instant>,
     clients: HashMap<Vec<u8>, (Hello, Instant)>,
     buf: Vec<u8>,
 }
 
 impl Server {
     pub fn new() -> Self {
+        let mut server = Self { socket: None, bind_failed: None, clients: HashMap::new(), buf: vec![0; overlay::MAX_DATAGRAM] };
+        server.bind();
+        server
+    }
+
+    /// Binds the socket games talk to. Another process holding it (another
+    /// GameViber) is reported once, then tried again quietly.
+    fn bind(&mut self) {
         // SAFETY: getuid cannot fail.
         let name = overlay::server_name(unsafe { libc::getuid() });
         let socket = SocketAddr::from_abstract_name(name.as_bytes())
             .and_then(|addr| UnixDatagram::bind_addr(&addr))
             .and_then(|s| s.set_nonblocking(true).map(|()| s));
-        let socket = match socket {
-            Ok(s) => Some(s),
-            Err(e) => {
-                log::warn!("in-game overlay unavailable (is GameViber already running?): {e}");
-                None
+        match socket {
+            Ok(s) => {
+                if self.bind_failed.is_some() {
+                    log::info!("in-game overlay available again");
+                }
+                self.socket = Some(s);
+                self.bind_failed = None;
             }
-        };
-        Self { socket, clients: HashMap::new(), buf: vec![0; overlay::MAX_DATAGRAM] }
+            Err(e) => {
+                if self.bind_failed.is_none() {
+                    log::warn!("in-game overlay unavailable (is GameViber already running?), retrying: {e}");
+                }
+                self.bind_failed = Some(Instant::now());
+            }
+        }
+    }
+
+    /// The socket is held by another process: games show its state, not ours.
+    pub fn unavailable(&self) -> bool {
+        self.socket.is_none()
     }
 
     /// Reads the overlays' hellos and sends them `state`.
     pub fn update(&mut self, state: &OverlayState) {
+        if self.bind_failed.is_some_and(|at| at.elapsed() >= BIND_RETRY) {
+            self.bind();
+        }
         let Some(socket) = &self.socket else { return };
         let now = Instant::now();
         while let Ok((n, addr)) = socket.recv_from(&mut self.buf) {

@@ -161,6 +161,8 @@ pub struct Shared {
     pub toy_levels: BTreeMap<String, f64>,
     /// Games currently showing the in-game overlay.
     pub overlay_clients: Vec<Hello>,
+    /// Another process holds the overlay socket: games show its panel, not ours.
+    pub overlay_unavailable: bool,
     /// Seconds recorded so far, while recording.
     pub recording: Option<f64>,
     pub replay: Option<ReplayView>,
@@ -1044,6 +1046,7 @@ impl Engine {
             to_toys: *to_toys,
         });
         shared.overlay_clients = self.overlay.clients();
+        shared.overlay_unavailable = self.overlay.unavailable();
         shared.history.push_back(Sample { t: time, strong: levels.strong, weak: levels.weak, channels });
         while shared.history.front().is_some_and(|s| time - s.t > HISTORY_SECS) {
             shared.history.pop_front();
