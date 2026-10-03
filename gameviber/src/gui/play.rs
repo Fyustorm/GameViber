@@ -23,6 +23,12 @@ pub struct State {
     confirm_delete: Option<String>,
 }
 
+impl State {
+    pub fn show_user_modes(&mut self) {
+        self.user_modes = true;
+    }
+}
+
 impl App {
     pub(super) fn play_ui(&mut self, ui: &mut egui::Ui, s: &Shared) {
         let frame = egui::Frame::new().fill(SIDEBAR).inner_margin(Margin::symmetric(20, 20));
@@ -43,12 +49,17 @@ impl App {
             });
             ui.add_space(8.0);
             egui::ScrollArea::vertical().show(ui, |ui| {
+                self.generator_banner(ui);
+                ui.add_space(8.0);
                 if let Some(id) = mode_tiles(ui, s, self.play.user_modes) {
                     self.send(Command::SelectMode(id));
                 }
                 if self.play.user_modes {
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
+                        if ui.button("✨ Make one with an AI").clicked() {
+                            self.open_generator();
+                        }
                         if ui.button("➕ New mode").clicked() {
                             self.create_mode("my-mode", &NEW_MODE_TEMPLATE.replace("NAME", "My mode"));
                         }
@@ -58,6 +69,27 @@ impl App {
                         ui.label(muted("Modes are small Lua scripts, edited in Creator."));
                     });
                 }
+            });
+        });
+    }
+
+    /// Puts per-game modes forward: the built-in ones are fallbacks.
+    fn generator_banner(&mut self, ui: &mut egui::Ui) {
+        card(RAISED).inner_margin(Margin::same(14)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    ui.label(RichText::new("✨ Get a mode made for your game").size(15.0).strong());
+                    ui.label(muted(
+                        "Built-in modes suit a whole genre. An AI assistant (ChatGPT, Claude...) can write one \
+                         tailored to your game's controls and mechanics in a minute.",
+                    ));
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.add(primary("Make a mode for my game")).clicked() {
+                        self.open_generator();
+                    }
+                });
             });
         });
     }

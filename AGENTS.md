@@ -25,12 +25,13 @@ Pipeline: **source** (interception) → **mode** (Luau script) → **safety laye
 | `gameviber/src/source/` | interception sources: `proxy` (uinput virtual gamepad) and `ebpf` |
 | `gameviber/src/rumble.rs` | evdev force-feedback semantics (ff-memless) → strong/weak levels |
 | `gameviber/src/gamepad.rs` | button/axis normalization (Xbox layout), panic combo |
-| `gameviber/src/mode/` | Luau runtime: `library.rs` (script API), `outputs.rs` (channels, pulses, patterns), `rumble_events.rs`, `tests.rs` |
+| `gameviber/src/mode/` | Luau runtime: `library.rs` (script API), `outputs.rs` (channels, pulses, patterns), `rumble_events.rs`, `prompt.rs` (AI request for a per-game mode), `tests.rs` |
 | `gameviber/src/engine.rs` | engine thread: sources, mode, safety layer, routing, output |
-| `gameviber/src/gui/` | egui GUI: setup guide (`onboarding`), pages (`play`, `toys`, `connection`, `creator`), `theme` |
+| `gameviber/src/gui/` | egui GUI: setup guide (`onboarding`), pages (`play`, `toys`, `connection`, `creator`), AI mode dialog (`generator`), `theme` |
 | `gameviber/src/helper/` | privileged helper (`gameviber helper`, started through pkexec) |
 | `gameviber/src/config.rs` | config files, built-in mode registry (`BUILTIN_MODES`) |
 | `gameviber/modes/` | built-in modes, embedded in the binary |
+| `gameviber/prompts/new-mode.md` | template of the request asking an AI assistant to write a mode for one game |
 | `gameviber-ebpf/`, `gameviber-common/` | eBPF probe and types shared with it |
 | `docs/spec-modes.md` | mode API specification (source of truth for the script API) |
 | `prototype/` | original Python prototype (reference only) |
@@ -58,6 +59,11 @@ Run `cargo test` after any change to the runtime or to a mode.
   header comment, `author = "GameViber"`, a `category`, a plain-language `help` and
   1 to 3 `main_params` for players, parameters with units in their labels, and
   `plot()` for the internal state worth tuning.
+- **Per-game modes come first**: built-in modes are genre fallbacks; players are steered
+  towards a mode written by an AI assistant for their game. The request
+  (`gameviber/prompts/new-mode.md`) embeds `docs/spec-modes.md` and `modes/surge.luau`
+  as the example, so keep its rules in line with the mode style rules and the known
+  pitfalls below.
 - **Safety stays outside scripts**: the global cap, STOP ALL / panic combo and
   zeroing outputs on source loss live in the engine, never in a mode.
 - **Privileges**: the GUI and the main process must never run as root. Root-only work

@@ -2,10 +2,12 @@
 //! Central, their toys, the gamepad and a first mode; afterwards a status bar
 //! (with the panic stop) sits above four pages: Play (mode tiles and their
 //! settings), Toys, Connection (troubleshooting) and Creator (mode editor,
-//! graphs, simulator, logs).
+//! graphs, simulator, logs). A dialog helps players get a mode made for
+//! their game by an AI assistant.
 
 mod connection;
 mod creator;
+mod generator;
 mod onboarding;
 mod play;
 mod theme;
@@ -47,6 +49,7 @@ pub struct App {
     play: play::State,
     connection: connection::State,
     creator: creator::State,
+    generator: generator::State,
 }
 
 impl App {
@@ -69,6 +72,7 @@ impl App {
             play: play::State::default(),
             connection: connection::State::default(),
             creator: creator::State::default(),
+            generator: generator::State::default(),
         }
     }
 
@@ -136,6 +140,7 @@ impl eframe::App for App {
             Page::Connection => self.connection_ui(ui, &s),
             Page::Creator => self.creator_ui(ui, &s),
         }
+        self.generator_ui(ui.ctx());
         self.update_simulated_rumble();
     }
 

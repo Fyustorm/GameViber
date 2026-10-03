@@ -105,6 +105,9 @@ impl App {
                 self.create_mode(&name, &NEW_MODE_TEMPLATE.replace("NAME", display));
             }
         });
+        if ui.button("✨ Generate with an AI").clicked() {
+            self.open_generator();
+        }
         if ui.button("Duplicate active mode").clicked() {
             self.duplicate_mode(&s.mode.id);
         }

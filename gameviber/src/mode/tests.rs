@@ -449,6 +449,28 @@ fn surge_fills_with_parries_and_spends_on_a_surge() {
 }
 
 #[test]
+fn ai_prompt_names_the_game_and_embeds_the_api() {
+    let text = prompt::new_mode_prompt("  Hades II ");
+    assert!(text.contains("**Hades II**"));
+    assert!(text.contains("category = \"Hades II\""));
+    assert!(text.contains("name = \"Surge\""), "example");
+    assert!(text.contains("## 14. Examples"), "spec");
+    assert!(!text.contains("{{"), "every placeholder replaced");
+}
+
+#[test]
+fn ai_answer_script_is_extracted() {
+    let answer = "Here is the design.\n\n```lua\nlocal x = 1\n```\n\n```luau\nmode { api = 1, name = 'G' }\n\
+                  function tick() end\n```\n\nTune `x` first.";
+    let script = prompt::extract_script(answer);
+    assert_eq!(script, "mode { api = 1, name = 'G' }\nfunction tick() end\n");
+    assert_eq!(ModeRuntime::probe("test", &script).unwrap().name, "G");
+    assert_eq!(prompt::extract_script("  mode { }  "), "mode { }\n", "bare code");
+    assert_eq!(prompt::extract_script("```lua\nmode { }\nfunction"), "mode { }\nfunction\n", "cut short");
+    assert_eq!(prompt::file_stem(" Prince of Persia: The Lost Crown "), "prince-of-persia-the-lost-crown");
+}
+
+#[test]
 fn apply_params_sets_all_values_and_defaults_the_rest() {
     let src = "mode { api = 1, name = 'T', params = {
                  x = number(1, 0, 2, 'X'), y = number(0.5, 0, 1, 'Y'), c = choice('a', { 'a', 'b' }, 'C') } }

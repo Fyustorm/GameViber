@@ -33,10 +33,29 @@ again from the Connection page. Then the GUI provides:
 - **Creator**: mode editing with hot reload (Ctrl+S), graphs of the rumble,
   outputs and `plot()` values, a simulator (fake rumble and buttons) and the log.
 
+### A mode for your game
+
+The best experience is a mode written for the game you play. **Play → Make a mode
+for my game** guides you through getting one from any AI assistant (ChatGPT,
+Claude, Gemini, Le Chat...):
+
+1. type the game's name;
+2. copy the request GameViber builds and paste it in a new conversation. It holds
+   the context, the full mode API, the rules (every button the mode uses is a
+   setting defaulting to the game's own binding, heuristics stay tunable) and an
+   example; an assistant with web search can check the game's default controls;
+3. paste the answer (or just its code, or drop the `.luau` file on the window):
+   GameViber checks that the mode loads, creates it and activates it. If it does
+   not load, copy the fix request and send it back to the assistant.
+
+The request template is [`gameviber/prompts/new-mode.md`](gameviber/prompts/new-mode.md).
+
+### Modes
+
 User modes are `.luau` files in `~/.config/gameviber/modes/` (they can also be
 edited in an external editor: they are reloaded on save).
 API: [`docs/spec-modes.md`](docs/spec-modes.md). Built-in modes
-([`gameviber/modes/`](gameviber/modes/)), designed per game genre:
+([`gameviber/modes/`](gameviber/modes/)) are fallbacks designed per game genre:
 
 | Mode | For | Idea |
 |---|---|---|

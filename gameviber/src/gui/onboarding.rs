@@ -263,6 +263,9 @@ impl App {
         if let Some(id) = mode_tiles(ui, s, false) {
             self.send(Command::SelectMode(id));
         }
+        ui.add_space(12.0);
+        ui.label(muted("These modes suit a whole genre. Later, from the Play page, an AI assistant can make one \
+                        tailored to your game."));
     }
 }
 
