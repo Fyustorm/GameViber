@@ -17,7 +17,8 @@ pub struct State {
     /// scope (the bool: every game) changes.
     install: Option<(bool, Vec<(Arch, InstallState)>)>,
     error: Option<String>,
-    copied: bool,
+    /// Launch option last copied.
+    copied: Option<String>,
 }
 
 impl State {
@@ -40,10 +41,8 @@ impl App {
                 self.overlay_install(ui, s);
                 ui.add_space(8.0);
                 if self.overlay.install.as_ref().is_some_and(|(_, archs)| overall(archs) != InstallState::NotInstalled) {
-                    if !s.settings.overlay.all_games {
-                        launch_options(ui, &mut self.overlay.copied);
-                        ui.add_space(8.0);
-                    }
+                    launch_options(ui, s.settings.overlay.all_games, &mut self.overlay.copied);
+                    ui.add_space(8.0);
                     if let Some(new) = appearance(ui, &s.settings.overlay) {
                         self.send(Command::SetOverlay(new));
                     }
@@ -74,8 +73,8 @@ impl App {
                 ui.label(text);
             });
             ui.label(muted(
-                "Works with Vulkan games, which includes every Windows game run through Proton (Steam, \
-                 Lutris, Heroic). OpenGL games are not supported yet.",
+                "Works with Vulkan and OpenGL games, 64-bit and 32-bit, which includes every Windows game \
+                 run through Proton (Steam, Lutris, Heroic).",
             ));
             for (arch, state) in &archs {
                 let text = match state {
@@ -136,24 +135,35 @@ fn overall(archs: &[(Arch, InstallState)]) -> InstallState {
     }
 }
 
-fn launch_options(ui: &mut egui::Ui, copied: &mut bool) {
+/// How to turn the overlay on in a game: the environment variable is enough for
+/// Vulkan (unless the layer is on everywhere), OpenGL needs the launcher.
+fn launch_options(ui: &mut egui::Ui, all_games: bool, copied: &mut Option<String>) {
+    let launcher = overlay::launcher_path().display().to_string();
+    let launcher = if launcher.contains(' ') { format!("\"{launcher}\"") } else { launcher };
     card(PANEL).show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.label(RichText::new("Enable it in a game").strong());
         ui.label(muted("Steam: right-click the game › Properties › Launch options, and paste:"));
-        ui.horizontal(|ui| {
-            ui.label(RichText::new(LAUNCH_OPTION).monospace().color(ACCENT_TEXT));
-            if ui.button("📋 Copy").clicked() {
-                ui.ctx().copy_text(LAUNCH_OPTION.to_owned());
-                *copied = true;
-            }
-            if *copied {
-                ui.label(RichText::new("✔ Copied").color(OK));
-            }
-        });
+        let mut option = |ui: &mut egui::Ui, title: &str, text: String| {
+            ui.label(RichText::new(title).size(12.5));
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(&text).monospace().color(ACCENT_TEXT));
+                if ui.button("📋 Copy").clicked() {
+                    ui.ctx().copy_text(text.clone());
+                    *copied = Some(text.clone());
+                }
+                if copied.as_deref() == Some(text.as_str()) {
+                    ui.label(RichText::new("✔ Copied").color(OK));
+                }
+            });
+        };
+        if !all_games {
+            option(ui, "Windows games (Proton) and Vulkan games:", LAUNCH_OPTION.to_owned());
+        }
+        option(ui, "Native Linux games using OpenGL (also works for any game):", format!("{launcher} %command%"));
         ui.label(muted(
-            "If the game already has launch options, add GAMEVIBER_OVERLAY=1 before them. Lutris, Heroic and \
-             others: set the environment variable GAMEVIBER_OVERLAY to 1 in the game's settings.",
+            "If the game already has launch options, put this before %command%. Lutris, Heroic and others: \
+             set the environment variable GAMEVIBER_OVERLAY to 1, or use the launcher as a command prefix.",
         ));
     });
 }

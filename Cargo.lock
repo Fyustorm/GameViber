@@ -1940,6 +1940,7 @@ dependencies = [
  "ash",
  "epaint",
  "gameviber-common",
+ "glow",
  "libc",
  "naga",
  "serde_json",

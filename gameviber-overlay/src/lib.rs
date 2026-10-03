@@ -1,14 +1,17 @@
-//! GameViber in-game overlay: an implicit Vulkan layer, like MangoHud, that
-//! draws the active mode, the toy output, mode gauges and events over the
-//! game. It gets everything to show from GameViber over a local socket
-//! (see `gameviber_common::overlay`) and shows nothing when GameViber is
-//! not running.
+//! GameViber in-game overlay, like MangoHud: an implicit Vulkan layer and,
+//! when the library is preloaded, OpenGL swap hooks (`gl`). It draws the
+//! active mode, the toy output, mode gauges and events over the game. It
+//! gets everything to show from GameViber over a local socket (see
+//! `gameviber_common::overlay`) and shows nothing when GameViber is not
+//! running.
 //!
-//! The layer is enabled per game with `GAMEVIBER_OVERLAY=1`, or for every
-//! game if the player chose so in GameViber; `DISABLE_GAMEVIBER_OVERLAY=1`
-//! turns it off.
+//! The Vulkan layer is enabled per game with `GAMEVIBER_OVERLAY=1`, or for
+//! every game if the player chose so in GameViber; OpenGL games are started
+//! through the `gameviber-overlay` launcher, which also preloads the
+//! library. `DISABLE_GAMEVIBER_OVERLAY=1` turns both off.
 
 mod client;
+mod gl;
 mod hud;
 mod layer;
 mod render;

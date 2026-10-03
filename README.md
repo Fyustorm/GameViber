@@ -56,12 +56,18 @@ Like MangoHud, GameViber can draw a small panel over the game: the active mode
 and preset, how strong the toys run (with the global cap), the mode's gauges
 and what it detects ("Parry!"), and warnings (toy lost, Intiface disconnected,
 mode error, panic stop). Install it from the **Overlay** page, then enable it
-per game with the Steam launch option `GAMEVIBER_OVERLAY=1 %command%` (or for
-every Vulkan game). It is an implicit Vulkan layer
-([`gameviber-overlay/`](gameviber-overlay/)), so it works in native Vulkan
-games and in every Proton game (DXVK / VKD3D), fullscreen or not, on any
-desktop, for 64-bit and 32-bit games (see Build). Not supported yet: OpenGL
-games, Flatpak Steam.
+per game with a Steam launch option:
+
+- Proton and Vulkan games: `GAMEVIBER_OVERLAY=1 %command%` (or turn it on for
+  every Vulkan game). It is an implicit Vulkan layer
+  ([`gameviber-overlay/`](gameviber-overlay/)), so it covers every Proton game
+  (DXVK / VKD3D).
+- Native OpenGL games: `~/.local/share/gameviber/gameviber-overlay %command%`.
+  The launcher preloads the same library, which then hooks `glXSwapBuffers` /
+  `eglSwapBuffers` (GLX and EGL, OpenGL 3.0+ and OpenGL ES 3.0+), like MangoHud.
+
+It works fullscreen or not, on any desktop, in 64-bit and 32-bit games (see
+Build). Not supported yet: Flatpak Steam.
 `DISABLE_GAMEVIBER_OVERLAY=1` turns it off for one game;
 `GAMEVIBER_OVERLAY_DEBUG=1` prints its errors on the game's stderr.
 

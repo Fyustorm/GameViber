@@ -33,7 +33,7 @@ Pipeline: **source** (interception) → **mode** (Luau script) → **safety laye
 | `gameviber/modes/` | built-in modes, embedded in the binary |
 | `gameviber/prompts/new-mode.md` | template of the request asking an AI assistant to write a mode for one game |
 | `gameviber-ebpf/`, `gameviber-common/` | eBPF probe and types shared with it; `gameviber-common/src/overlay.rs`: overlay protocol |
-| `gameviber-overlay/` | in-game overlay: implicit Vulkan layer (`layer.rs`), renderer (`render.rs`), panel layout with epaint (`hud.rs`), socket client |
+| `gameviber-overlay/` | in-game overlay: implicit Vulkan layer (`layer.rs`, `render.rs`), OpenGL swap hooks when preloaded (`gl/`), panel layout with epaint (`hud.rs`), socket client |
 | `gameviber/src/overlay.rs` | overlay socket server and layer installation |
 | `docs/spec-modes.md` | mode API specification (source of truth for the script API) |
 | `prototype/` | original Python prototype (reference only) |
