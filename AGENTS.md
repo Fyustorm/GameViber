@@ -45,6 +45,7 @@ Pipeline: **source** (interception) → **mode** (Luau script) → **safety laye
 cargo build --release
 cargo test
 SKIP_EBPF_BUILD=1 cargo test   # without the eBPF toolchain (nightly + bpf-linker)
+cargo build-overlay32          # 32-bit overlay layer (i686 target + 32-bit glibc headers)
 ```
 
 Run `cargo test` after any change to the runtime or to a mode.

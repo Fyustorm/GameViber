@@ -7,14 +7,15 @@ use super::theme::*;
 use super::App;
 use crate::config::{Corner, OverlaySettings};
 use crate::engine::{Command, Shared};
-use crate::overlay::{self, InstallState};
+use crate::overlay::{self, Arch, InstallState};
 
 const LAUNCH_OPTION: &str = "GAMEVIBER_OVERLAY=1 %command%";
 
 #[derive(Default)]
 pub struct State {
-    /// Checked when the page is shown and after each install action.
-    install: Option<InstallState>,
+    /// Checked when the page is shown, after each install action and when the
+    /// scope (the bool: every game) changes.
+    install: Option<(bool, Vec<(Arch, InstallState)>)>,
     error: Option<String>,
     copied: bool,
 }
@@ -38,7 +39,7 @@ impl App {
                 ui.add_space(8.0);
                 self.overlay_install(ui, s);
                 ui.add_space(8.0);
-                if self.overlay.install.is_some_and(|i| i != InstallState::NotInstalled) {
+                if self.overlay.install.as_ref().is_some_and(|(_, archs)| overall(archs) != InstallState::NotInstalled) {
                     if !s.settings.overlay.all_games {
                         launch_options(ui, &mut self.overlay.copied);
                         ui.add_space(8.0);
@@ -54,13 +55,17 @@ impl App {
     }
 
     fn overlay_install(&mut self, ui: &mut egui::Ui, s: &Shared) {
-        let install = *self.overlay.install.get_or_insert_with(overlay::install_state);
         let mut settings = s.settings.overlay.clone();
+        if self.overlay.install.as_ref().is_none_or(|(all, _)| *all != settings.all_games) {
+            self.overlay.install = Some((settings.all_games, overlay::install_state(settings.all_games)));
+        }
+        let archs = self.overlay.install.as_ref().map(|(_, a)| a.clone()).unwrap_or_default();
+        let install = overall(&archs);
         card(PANEL).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
                 let (color, text) = match install {
-                    InstallState::NotInstalled => (IDLE, "Not installed"),
+                    InstallState::NotInstalled | InstallState::NotBuilt => (IDLE, "Not installed"),
                     InstallState::Outdated => (WARN, "Installed, update available"),
                     InstallState::Installed => (OK, "Installed"),
                 };
@@ -70,8 +75,17 @@ impl App {
             });
             ui.label(muted(
                 "Works with Vulkan games, which includes every Windows game run through Proton (Steam, \
-                 Lutris, Heroic). OpenGL and 32-bit games are not supported yet.",
+                 Lutris, Heroic). OpenGL games are not supported yet.",
             ));
+            for (arch, state) in &archs {
+                let text = match state {
+                    InstallState::NotBuilt => "not included in this build of GameViber",
+                    InstallState::NotInstalled => "not installed",
+                    InstallState::Outdated => "update available",
+                    InstallState::Installed => "installed",
+                };
+                ui.label(muted(format!("{} games: {text}", arch.label())).size(12.0));
+            }
             ui.add_space(4.0);
             let mut all_games = settings.all_games;
             ui.radio_value(&mut all_games, false, "Only in games I enable it for (recommended)");
@@ -80,12 +94,13 @@ impl App {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 let label = match install {
-                    InstallState::NotInstalled => "Install",
+                    InstallState::NotInstalled | InstallState::NotBuilt => "Install",
                     InstallState::Outdated => "Update",
                     InstallState::Installed => "Reinstall",
                 };
                 let reinstall = scope_changed && install != InstallState::NotInstalled;
-                if ui.add(primary(label)).clicked() || reinstall {
+                let install_now = ui.add(primary(label)).clicked();
+                if install_now || reinstall {
                     self.overlay.error = overlay::install(all_games).err().map(|e| e.to_string());
                     self.overlay.install = None;
                 }
@@ -103,6 +118,21 @@ impl App {
                 self.send(Command::SetOverlay(settings));
             }
         });
+    }
+}
+
+/// The state to show for the whole overlay: the 64-bit layer decides whether it
+/// is installed; any architecture left behind makes it outdated.
+fn overall(archs: &[(Arch, InstallState)]) -> InstallState {
+    let main = archs.iter().find(|(a, _)| *a == Arch::X86_64).map(|(_, s)| *s).unwrap_or_default();
+    if matches!(main, InstallState::NotInstalled | InstallState::NotBuilt) {
+        return InstallState::NotInstalled;
+    }
+    let behind = archs.iter().any(|(_, s)| matches!(s, InstallState::Outdated | InstallState::NotInstalled));
+    if behind {
+        InstallState::Outdated
+    } else {
+        InstallState::Installed
     }
 }
 

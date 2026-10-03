@@ -4,11 +4,11 @@
 //! LICENSE-APACHE-linux-game-haptics-router). Additions: the ioctl's fd is
 //! captured (to know which gamepad is targeted), as well as the whole
 //! `struct ff_effect` union (periodic effect envelopes included).
-#![cfg_attr(not(feature = "user"), no_std)]
+#![cfg_attr(not(any(feature = "user", feature = "overlay")), no_std)]
 // `bpf_target_arch` is a cfg set by aya-build when compiling the eBPF program.
 #![allow(unexpected_cfgs)]
 
-#[cfg(feature = "user")]
+#[cfg(feature = "overlay")]
 pub mod overlay;
 
 pub const FF_RUMBLE: u16 = 0x50;
@@ -61,8 +61,10 @@ pub struct ProbeEvent {
 
 #[cfg(all(feature = "user", not(any(target_arch = "x86_64", target_arch = "aarch64"))))]
 compile_error!("KERNEL_FF_EFFECT_SIZE=48 is only verified for x86_64/aarch64 (LP64)");
+// The overlay alone does not use the probe types.
 #[cfg(all(
     not(feature = "user"),
+    not(feature = "overlay"),
     not(any(bpf_target_arch = "x86_64", bpf_target_arch = "aarch64"))
 ))]
 compile_error!("KERNEL_FF_EFFECT_SIZE=48 is only verified for x86_64/aarch64 (LP64)");

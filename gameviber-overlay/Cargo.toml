@@ -10,7 +10,7 @@ crate-type = ["cdylib"]
 [dependencies]
 ash = { version = "0.38", default-features = false, features = ["std", "debug"] }
 epaint = "0.36"
-gameviber-common = { path = "../gameviber-common", features = ["user"] }
+gameviber-common = { path = "../gameviber-common", features = ["overlay"] }
 libc = "0.2"
 serde_json = "1"
 

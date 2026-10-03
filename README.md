@@ -60,7 +60,8 @@ per game with the Steam launch option `GAMEVIBER_OVERLAY=1 %command%` (or for
 every Vulkan game). It is an implicit Vulkan layer
 ([`gameviber-overlay/`](gameviber-overlay/)), so it works in native Vulkan
 games and in every Proton game (DXVK / VKD3D), fullscreen or not, on any
-desktop. Not supported yet: OpenGL games, 32-bit games, Flatpak Steam.
+desktop, for 64-bit and 32-bit games (see Build). Not supported yet: OpenGL
+games, Flatpak Steam.
 `DISABLE_GAMEVIBER_OVERLAY=1` turns it off for one game;
 `GAMEVIBER_OVERLAY_DEBUG=1` prints its errors on the game's stderr.
 
@@ -121,6 +122,16 @@ rustup toolchain install nightly --component rust-src   # for the eBPF probe
 # bpf-linker: prebuilt binary at https://github.com/aya-rs/bpf-linker/releases
 cargo build --release          # SKIP_EBPF_BUILD=1 to build without the probe
 cargo test
+```
+
+The 32-bit in-game overlay (for 32-bit games) is built separately; GameViber
+finds it in `target/i686-unknown-linux-gnu/release/` (or `lib32/` next to the
+executable) and installs it with the 64-bit one:
+
+```sh
+rustup target add i686-unknown-linux-gnu
+sudo dnf install glibc-devel.i686     # Debian/Ubuntu: sudo apt install gcc-multilib
+cargo build-overlay32
 ```
 
 Luau is built from source (a C++ compiler is required).

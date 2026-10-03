@@ -7,7 +7,9 @@ license = "Apache-2.0"
 [features]
 default = []
 # Enabled in userspace; absent when the crate is compiled into the eBPF program.
-user = ["dep:serde"]
+user = ["overlay"]
+# The in-game overlay protocol alone: also built for 32-bit games.
+overlay = ["dep:serde"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"], optional = true }

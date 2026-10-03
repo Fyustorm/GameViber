@@ -13,9 +13,9 @@ use gameviber_common::overlay::{self, Hello, OverlayState};
 
 use crate::config;
 
-pub const LAYER_NAME: &str = "VK_LAYER_GAMEVIBER_overlay";
+const LAYER_NAME: &str = "VK_LAYER_GAMEVIBER_overlay";
 const LIBRARY: &str = "libgameviber_overlay.so";
-const MANIFEST: &str = "gameviber_overlay.x86_64.json";
+const MANIFEST_STEM: &str = "gameviber_overlay";
 /// Environment variable that turns the layer on for one game.
 pub const ENABLE_ENV: &str = "GAMEVIBER_OVERLAY";
 pub const DISABLE_ENV: &str = "DISABLE_GAMEVIBER_OVERLAY";
@@ -76,83 +76,158 @@ impl Server {
     }
 }
 
-/// Where the Vulkan loader looks for the user's implicit layers.
-fn manifest_path() -> PathBuf {
-    data_home().join("vulkan/implicit_layer.d").join(MANIFEST)
+/// Games are 64-bit or 32-bit processes (old games through Proton): each
+/// needs a layer library of its own, declared in a manifest of its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Arch {
+    X86_64,
+    X86,
 }
 
-/// Installed copy of the layer library.
-fn library_path() -> PathBuf {
-    data_home().join("gameviber").join(LIBRARY)
+impl Arch {
+    pub const ALL: [Arch; 2] = [Arch::X86_64, Arch::X86];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Arch::X86_64 => "64-bit",
+            Arch::X86 => "32-bit",
+        }
+    }
+
+    fn suffix(self) -> &'static str {
+        match self {
+            Arch::X86_64 => "x86_64",
+            Arch::X86 => "x86",
+        }
+    }
+
+    /// Distinct names, so the loader never mixes the two libraries up.
+    fn layer_name(self) -> String {
+        format!("{LAYER_NAME}_{}", self.suffix())
+    }
+
+    /// Where the Vulkan loader looks for the user's implicit layers.
+    fn manifest_path(self) -> PathBuf {
+        data_home().join("vulkan/implicit_layer.d").join(format!("{MANIFEST_STEM}.{}.json", self.suffix()))
+    }
+
+    /// Installed copy of the layer library.
+    fn library_path(self) -> PathBuf {
+        let dir = data_home().join("gameviber");
+        match self {
+            Arch::X86_64 => dir.join(LIBRARY),
+            Arch::X86 => dir.join("lib32").join(LIBRARY),
+        }
+    }
+
+    /// The library shipped with this GameViber: next to the executable (32-bit in
+    /// `lib32/`), or where cargo builds it (`target/i686-unknown-linux-gnu/<profile>/`).
+    fn bundled_library(self) -> Option<PathBuf> {
+        let exe = std::env::current_exe().ok()?;
+        let dir = exe.parent()?;
+        let candidates = match self {
+            Arch::X86_64 => vec![dir.join(LIBRARY)],
+            Arch::X86 => {
+                let mut c = vec![dir.join("lib32").join(LIBRARY)];
+                if let (Some(target), Some(profile)) = (dir.parent(), dir.file_name()) {
+                    c.push(target.join("i686-unknown-linux-gnu").join(profile).join(LIBRARY));
+                }
+                c
+            }
+        };
+        candidates.into_iter().find(|p| p.exists())
+    }
+
+    fn manifest(self, all_games: bool) -> String {
+        manifest(&self.layer_name(), &self.library_path(), all_games)
+    }
 }
 
 fn data_home() -> PathBuf {
     std::env::var_os("XDG_DATA_HOME").map(PathBuf::from).unwrap_or_else(|| config::user_home().join(".local/share"))
 }
 
-/// The layer library built next to the GameViber executable.
-fn bundled_library() -> Option<PathBuf> {
-    let path = std::env::current_exe().ok()?.parent()?.join(LIBRARY);
-    path.exists().then_some(path)
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum InstallState {
+    /// This GameViber has no layer for the architecture.
+    NotBuilt,
     #[default]
     NotInstalled,
-    /// Installed, but the library differs from the one shipped with this GameViber.
+    /// Installed, but different from the one shipped with this GameViber.
     Outdated,
     Installed,
 }
 
-pub fn install_state() -> InstallState {
-    let (Ok(installed), Ok(_)) = (std::fs::read(library_path()), std::fs::metadata(manifest_path())) else {
-        return InstallState::NotInstalled;
-    };
-    match bundled_library().and_then(|p| std::fs::read(p).ok()) {
-        Some(bundled) if bundled != installed => InstallState::Outdated,
-        _ => InstallState::Installed,
+/// Installation state of each architecture, for the given scope.
+pub fn install_state(all_games: bool) -> Vec<(Arch, InstallState)> {
+    Arch::ALL.into_iter().map(|arch| (arch, arch_state(arch, all_games))).collect()
+}
+
+fn arch_state(arch: Arch, all_games: bool) -> InstallState {
+    let bundled = arch.bundled_library().and_then(|p| std::fs::read(p).ok());
+    let installed = std::fs::read(arch.library_path()).ok();
+    let manifest = std::fs::read_to_string(arch.manifest_path()).ok();
+    match (installed, manifest) {
+        (Some(library), Some(manifest)) => {
+            if bundled.is_some_and(|b| b != library) || manifest != arch.manifest(all_games) {
+                InstallState::Outdated
+            } else {
+                InstallState::Installed
+            }
+        }
+        _ if bundled.is_none() => InstallState::NotBuilt,
+        _ => InstallState::NotInstalled,
     }
 }
 
-/// Copies the layer library and writes its manifest. With `all_games`, the
-/// layer is on in every Vulkan program unless `DISABLE_GAMEVIBER_OVERLAY=1`;
-/// otherwise only where `GAMEVIBER_OVERLAY=1` is set.
+/// Copies the layer libraries this GameViber ships and writes their
+/// manifests. With `all_games`, the layer is on in every Vulkan program
+/// unless `DISABLE_GAMEVIBER_OVERLAY=1`; otherwise only where
+/// `GAMEVIBER_OVERLAY=1` is set.
 pub fn install(all_games: bool) -> io::Result<()> {
-    let source = bundled_library()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("{LIBRARY} not found next to the GameViber executable")))?;
-    let library = library_path();
-    let bytes = std::fs::read(&source)?;
-    // Replace through a rename: running games keep the old file mapped.
-    let tmp = library.with_extension("so.tmp");
-    if let Some(dir) = library.parent() {
-        std::fs::create_dir_all(dir)?;
+    if Arch::X86_64.bundled_library().is_none() {
+        return Err(io::Error::new(io::ErrorKind::NotFound, format!("{LIBRARY} not found next to the GameViber executable")));
     }
-    std::fs::write(&tmp, bytes)?;
-    std::fs::rename(&tmp, &library)?;
-    config::write_file(&manifest_path(), &manifest(&library, all_games))?;
-    log::info!("in-game overlay installed ({})", if all_games { "every Vulkan game" } else { "games with GAMEVIBER_OVERLAY=1" });
+    for arch in Arch::ALL {
+        let Some(source) = arch.bundled_library() else { continue };
+        let library = arch.library_path();
+        if let Some(dir) = library.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        // Replace through a rename: running games keep the old file mapped.
+        let tmp = library.with_extension("so.tmp");
+        std::fs::write(&tmp, std::fs::read(&source)?)?;
+        std::fs::rename(&tmp, &library)?;
+        config::write_file(&arch.manifest_path(), &arch.manifest(all_games))?;
+        log::info!(
+            "in-game overlay installed for {} games ({})",
+            arch.label(),
+            if all_games { "every Vulkan game" } else { "games with GAMEVIBER_OVERLAY=1" }
+        );
+    }
     Ok(())
 }
 
 pub fn uninstall() -> io::Result<()> {
-    for path in [manifest_path(), library_path()] {
-        match std::fs::remove_file(&path) {
-            Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
-            _ => {}
+    for arch in Arch::ALL {
+        for path in [arch.manifest_path(), arch.library_path()] {
+            match std::fs::remove_file(&path) {
+                Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
+                _ => {}
+            }
         }
     }
     log::info!("in-game overlay removed");
     Ok(())
 }
 
-fn manifest(library: &Path, all_games: bool) -> String {
+fn manifest(name: &str, library: &Path, all_games: bool) -> String {
     let enable = if all_games { String::new() } else { format!("\n    \"enable_environment\": {{ \"{ENABLE_ENV}\": \"1\" }},") };
     format!(
         r#"{{
   "file_format_version": "1.0.0",
   "layer": {{
-    "name": "{LAYER_NAME}",
+    "name": "{name}",
     "type": "GLOBAL",
     "api_version": "1.3.0",
     "library_path": "{}",
@@ -177,11 +252,19 @@ mod tests {
     #[test]
     fn manifest_is_valid_json_and_scoped() {
         let path = Path::new("/home/me/.local/share/gameviber/libgameviber_overlay.so");
-        let per_game: serde_json::Value = serde_json::from_str(&manifest(path, false)).unwrap();
+        let per_game: serde_json::Value = serde_json::from_str(&manifest("VK_LAYER_X", path, false)).unwrap();
+        assert_eq!(per_game["layer"]["name"], "VK_LAYER_X");
         assert_eq!(per_game["layer"]["enable_environment"][ENABLE_ENV], "1");
         assert_eq!(per_game["layer"]["library_path"], path.to_str().unwrap());
-        let everywhere: serde_json::Value = serde_json::from_str(&manifest(path, true)).unwrap();
+        let everywhere: serde_json::Value = serde_json::from_str(&manifest("VK_LAYER_X", path, true)).unwrap();
         assert!(everywhere["layer"].get("enable_environment").is_none());
         assert_eq!(everywhere["layer"]["disable_environment"][DISABLE_ENV], "1");
+    }
+
+    #[test]
+    fn architectures_have_distinct_layers() {
+        assert_ne!(Arch::X86_64.layer_name(), Arch::X86.layer_name());
+        assert_ne!(Arch::X86_64.manifest_path(), Arch::X86.manifest_path());
+        assert_ne!(Arch::X86_64.library_path(), Arch::X86.library_path());
     }
 }

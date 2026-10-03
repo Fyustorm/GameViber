@@ -1,0 +1,5 @@
+[alias]
+# 32-bit in-game overlay layer, for 32-bit games (old games through Proton).
+# Needs `rustup target add i686-unknown-linux-gnu` and 32-bit glibc headers
+# (Fedora: glibc-devel.i686, Debian/Ubuntu: gcc-multilib).
+build-overlay32 = "build --release -p gameviber-overlay --target i686-unknown-linux-gnu"
