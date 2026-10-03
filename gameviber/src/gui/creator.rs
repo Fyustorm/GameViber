@@ -13,7 +13,7 @@ use super::luau;
 use super::theme::*;
 use super::App;
 use crate::config::{self, ModeEntry, NEW_MODE_TEMPLATE};
-use crate::engine::{Command, Sample, Shared, HISTORY_SECS};
+use crate::engine::{Command, Sample, Shared, HISTORY_SECS, RECENT_SECS};
 use crate::gamepad::BUTTONS;
 use crate::session::RecordingInfo;
 
@@ -132,6 +132,9 @@ impl App {
         }
         if ui.button("Duplicate active mode").clicked() {
             self.duplicate_mode(&s.mode.id);
+        }
+        if ui.button("😕 Active mode feels wrong").clicked() {
+            self.open_feedback(s);
         }
         ui.add_space(12.0);
         eyebrow(ui, "Built-in (read-only)");
@@ -290,9 +293,15 @@ impl App {
                 }
             }
             (None, None) => {
-                if ui.add(primary("⏺ Record a session")).on_hover_text("Start it, then play the game").clicked() {
-                    self.send(Command::StartRecording);
-                }
+                ui.horizontal(|ui| {
+                    if ui.add(primary("⏺ Record a session")).on_hover_text("Start it, then play the game").clicked() {
+                        self.send(Command::StartRecording);
+                    }
+                    let save = egui::Button::new(format!("Save the last {:.0} min", RECENT_SECS / 60.0));
+                    if ui.add(save).on_hover_text("GameViber always keeps the last minutes of play in memory").clicked() {
+                        self.send(Command::SaveRecent);
+                    }
+                });
             }
         }
         ui.separator();

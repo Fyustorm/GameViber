@@ -1,0 +1,263 @@
+//! What a mode did during a recorded session, for an AI assistant asked to
+//! fix a mode that does not feel right: the session is replayed offline into
+//! a fresh copy of the mode, and the game's vibrations, the player's presses,
+//! the mode's overlay messages and a timeline of its outputs and `plot()`
+//! values are written out as Markdown.
+
+use std::collections::BTreeMap;
+use std::fmt::Write;
+use std::path::Path;
+
+use super::rumble_events::{RumbleEvent, RumbleTracker};
+use super::{ModeEvent, ModeRuntime, ParamValue};
+use crate::gamepad::PadState;
+use crate::session::{Player, Session};
+
+const DT: f64 = 0.02;
+/// The timeline has at most this many rows (before identical rows are dropped).
+const MAX_ROWS: usize = 300;
+const MIN_ROW_SECS: f64 = 0.25;
+const MAX_VIBRATIONS: usize = 150;
+const MAX_PRESSES: usize = 200;
+const MAX_PLOTS: usize = 6;
+
+struct Tick {
+    t: f64,
+    rumble: f64,
+    held: Vec<&'static str>,
+    channels: BTreeMap<String, f64>,
+    plots: Vec<(String, f64)>,
+}
+
+/// The mode replayed on a session.
+pub struct Simulation {
+    duration: f64,
+    ticks: Vec<Tick>,
+    /// Start, duration and peak of each vibration of the game.
+    vibrations: Vec<(f64, f64, f64)>,
+    /// Press time, button, how long it was held (None: still held at the end).
+    presses: Vec<(f64, &'static str, Option<f64>)>,
+    hud_events: Vec<(f64, String)>,
+    /// The mode stopped on a runtime error.
+    error: Option<(f64, String)>,
+}
+
+/// Replays `session` into a freshly loaded mode with `params`.
+pub fn simulate(
+    chunk_name: &str,
+    source: &str,
+    params: &BTreeMap<String, ParamValue>,
+    session: Session,
+) -> Result<Simulation, String> {
+    let mut rt = ModeRuntime::load(chunk_name, source, params, None)?;
+    rt.start()?;
+    let info = rt.info().clone();
+    let duration = session.header.duration;
+    let mut player = Player::new(session, Path::new(""), 0.0);
+    let mut pad = PadState::default();
+    let mut tracker = RumbleTracker::new(info.rumble_threshold, info.rumble_release, 0.0);
+    let mut sim = Simulation {
+        duration,
+        ticks: Vec::new(),
+        vibrations: Vec::new(),
+        presses: Vec::new(),
+        hud_events: Vec::new(),
+        error: None,
+    };
+    let mut vibration_start = 0.0;
+    let mut step = 0;
+    loop {
+        let t = step as f64 * DT;
+        if t > duration {
+            break;
+        }
+        step += 1;
+        let buttons = player.advance(t, &mut pad);
+        for b in &buttons {
+            if b.pressed {
+                sim.presses.push((t, b.name, None));
+            } else if let Some(press) = sim.presses.iter_mut().rev().find(|p| p.1 == b.name && p.2.is_none()) {
+                press.2 = Some(t - press.0);
+            }
+        }
+        for event in tracker.update(player.rumble, t) {
+            match event {
+                RumbleEvent::Start(_) => vibration_start = t,
+                RumbleEvent::End { peak, duration } => sim.vibrations.push((vibration_start, duration, peak)),
+                RumbleEvent::Changed(_) => {}
+            }
+        }
+        let events: Vec<ModeEvent> = buttons.into_iter().map(ModeEvent::Button).collect();
+        let out = match rt.step(DT, player.rumble, &pad, pad.input_idle(t), &events) {
+            Ok(out) => out,
+            Err(e) => {
+                sim.error = Some((t, e));
+                break;
+            }
+        };
+        sim.hud_events.extend(out.hud_events.into_iter().map(|e| (t, e)));
+        sim.ticks.push(Tick {
+            t,
+            rumble: player.rumble.level(),
+            held: pad.held().iter().copied().collect(),
+            channels: out.channels,
+            plots: out.plots,
+        });
+    }
+    Ok(sim)
+}
+
+impl Simulation {
+    /// The simulation as Markdown sections for an AI assistant.
+    pub fn report(&self) -> String {
+        let mut out = String::new();
+        let _ = writeln!(out, "Session length: {:.1} s.\n", self.duration);
+        if let Some((t, error)) = &self.error {
+            let _ = writeln!(out, "**The mode stopped on an error at {t:.2} s:** `{}`\n", error.trim());
+        }
+
+        let _ = writeln!(out, "### Vibrations sent by the game ({})\n", self.vibrations.len());
+        if self.vibrations.is_empty() {
+            out.push_str("None.\n");
+        }
+        for (start, length, peak) in self.vibrations.iter().take(MAX_VIBRATIONS) {
+            let _ = writeln!(out, "- {start:.2} s: {length:.2} s long, peak {peak:.2}");
+        }
+        more(&mut out, self.vibrations.len(), MAX_VIBRATIONS);
+
+        let _ = writeln!(out, "\n### Button presses ({})\n", self.presses.len());
+        if self.presses.is_empty() {
+            out.push_str("None.\n");
+        }
+        for (t, button, held) in self.presses.iter().take(MAX_PRESSES) {
+            let held = held.map_or("held until the end".to_owned(), |h| format!("held {h:.2} s"));
+            let _ = writeln!(out, "- {t:.2} s: {button} ({held})");
+        }
+        more(&mut out, self.presses.len(), MAX_PRESSES);
+
+        if !self.hud_events.is_empty() {
+            let _ = writeln!(out, "\n### Messages the mode showed with hud_event ({})\n", self.hud_events.len());
+            for (t, text) in self.hud_events.iter().take(MAX_PRESSES) {
+                let _ = writeln!(out, "- {t:.2} s: {text}");
+            }
+            more(&mut out, self.hud_events.len(), MAX_PRESSES);
+        }
+
+        out.push('\n');
+        out.push_str(&self.timeline());
+        out
+    }
+
+    /// Table of the game rumble, held buttons, outputs (max over each row) and
+    /// plot values (last of each row).
+    fn timeline(&self) -> String {
+        let row_secs = (self.duration / MAX_ROWS as f64).max(MIN_ROW_SECS);
+        let channels: Vec<String> = self.ticks.iter().flat_map(|t| t.channels.keys().cloned()).fold(Vec::new(), uniq);
+        let plots: Vec<String> =
+            self.ticks.iter().flat_map(|t| t.plots.iter().map(|(n, _)| n.clone())).fold(Vec::new(), uniq);
+        let plots = &plots[..plots.len().min(MAX_PLOTS)];
+
+        let mut out = String::new();
+        let _ = writeln!(
+            out,
+            "### Timeline\n\nOne row per {row_secs:.2} s: the game rumble and mode outputs are the maximum over the \
+             row, held buttons and plot() values are taken at its end. Rows equal to the previous one are left \
+             out.\n"
+        );
+        let mut header = vec!["t (s)".to_owned(), "game rumble".into(), "held".into()];
+        header.extend(channels.iter().map(|c| format!("out {c}")));
+        header.extend(plots.iter().map(|p| format!("plot {p}")));
+        let _ = writeln!(out, "| {} |", header.join(" | "));
+        let _ = writeln!(out, "|{}", "---|".repeat(header.len()));
+
+        let mut last_values: Option<Vec<String>> = None;
+        let mut plot_values: BTreeMap<&str, f64> = BTreeMap::new();
+        for row in self.ticks.chunk_by(|a, b| (a.t / row_secs).floor() == (b.t / row_secs).floor()) {
+            let end = row.last().unwrap();
+            for tick in row {
+                for (name, value) in &tick.plots {
+                    plot_values.insert(name, *value);
+                }
+            }
+            let rumble = row.iter().map(|t| t.rumble).fold(0.0, f64::max);
+            let held = if end.held.is_empty() { "-".to_owned() } else { end.held.join(" ") };
+            let mut values = vec![format!("{rumble:.2}"), held];
+            for c in &channels {
+                let max = row.iter().filter_map(|t| t.channels.get(c)).copied().fold(0.0, f64::max);
+                values.push(format!("{max:.2}"));
+            }
+            for p in plots {
+                values.push(plot_values.get(p.as_str()).map_or("-".to_owned(), |v| format!("{v:.3}")));
+            }
+            if last_values.as_ref() == Some(&values) {
+                continue;
+            }
+            let start = (row[0].t / row_secs).floor() * row_secs;
+            let _ = writeln!(out, "| {start:.2} | {} |", values.join(" | "));
+            last_values = Some(values);
+        }
+        out
+    }
+}
+
+fn uniq(mut list: Vec<String>, item: String) -> Vec<String> {
+    if !list.contains(&item) {
+        list.push(item);
+    }
+    list
+}
+
+fn more(out: &mut String, total: usize, shown: usize) {
+    if total > shown {
+        let _ = writeln!(out, "- ... and {} more", total - shown);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session::{Change, Header};
+
+    #[test]
+    fn report_shows_what_the_mode_did() {
+        let source = r#"
+mode { api = 1, name = "T", params = { gain = number(1, 0, 2, "Gain") } }
+function on_button(ev) if ev.pressed then hud_event("Press " .. ev.button) end end
+function tick(dt, input)
+  set(input.rumble.level * P.gain)
+  plot("level", input.rumble.level)
+end
+"#;
+        let session = Session {
+            header: Header { version: 1, started: "now".into(), game: None, mode: "T".into(), duration: 2.0 },
+            changes: vec![
+                (0.5, Change::Button { name: "LT".into(), pressed: true }),
+                (0.6, Change::Rumble { strong: 0.8, weak: 0.0 }),
+                (0.7, Change::Button { name: "LT".into(), pressed: false }),
+                (0.9, Change::Rumble { strong: 0.0, weak: 0.0 }),
+            ],
+        };
+        let params = [("gain".to_owned(), ParamValue::Number(0.5))].into_iter().collect();
+        let sim = simulate("t.luau", source, &params, session).unwrap();
+        let report = sim.report();
+        assert!(report.contains("### Vibrations sent by the game (1)"), "{report}");
+        assert!(report.contains("- 0.60 s: 0.30 s long, peak 0.80"), "{report}");
+        assert!(report.contains("- 0.50 s: LT (held 0.20 s)"), "{report}");
+        assert!(report.contains("- 0.50 s: Press LT"), "{report}");
+        assert!(report.contains("| t (s) | game rumble | held | out main | plot level |"), "{report}");
+        // Gain 0.5 halves the 0.8 rumble.
+        assert!(report.contains("| 0.50 | 0.80 | - | 0.40 | 0.800 |"), "{report}");
+    }
+
+    #[test]
+    fn runtime_errors_are_reported() {
+        let source = "mode { api = 1, name = 'T' } function tick(dt, input) if input.time > 0.1 then error('boom') end end";
+        let session = Session {
+            header: Header { version: 1, started: "now".into(), game: None, mode: "T".into(), duration: 1.0 },
+            changes: Vec::new(),
+        };
+        let report = simulate("t.luau", source, &BTreeMap::new(), session).unwrap().report();
+        assert!(report.contains("stopped on an error"), "{report}");
+        assert!(report.contains("boom"), "{report}");
+    }
+}

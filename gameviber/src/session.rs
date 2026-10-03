@@ -5,7 +5,7 @@
 //! A recording is a JSON Lines file in `~/.config/gameviber/recordings/`: a
 //! header line, then one line per change (`[time, change]`).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::fs;
 use std::io::{self, BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -78,15 +78,64 @@ fn list_in(dir: &Path) -> Vec<RecordingInfo> {
     found
 }
 
-/// Accumulates the changes of a session, then writes them to a file.
+/// A session in memory: its header and its changes, in seconds from its start.
+#[derive(Debug, Clone)]
+pub struct Session {
+    pub header: Header,
+    pub changes: Vec<(f64, Change)>,
+}
+
+impl Session {
+    pub fn open(path: &Path) -> anyhow::Result<Self> {
+        let text = fs::read_to_string(path)?;
+        let mut lines = text.lines();
+        let header: Header = serde_json::from_str(lines.next().unwrap_or_default())?;
+        anyhow::ensure!(header.version <= FORMAT_VERSION, "recording made by a newer GameViber");
+        let changes = lines.filter(|l| !l.trim().is_empty()).map(serde_json::from_str).collect::<Result<_, _>>()?;
+        Ok(Self { header, changes })
+    }
+
+    /// Writes the session to the recordings directory; returns its path.
+    pub fn save(&self) -> io::Result<PathBuf> {
+        self.save_in(&recordings_dir())
+    }
+
+    fn save_in(&self, dir: &Path) -> io::Result<PathBuf> {
+        let label = self.header.game.as_deref().unwrap_or(&self.header.mode);
+        let stem: String = format!("{} {label}", self.header.started.replace(':', "-"))
+            .chars()
+            .map(|c| if c.is_alphanumeric() || " -_.".contains(c) { c } else { '_' })
+            .collect();
+        let mut path = dir.join(format!("{stem}.{EXTENSION}"));
+        let mut n = 2;
+        while path.exists() {
+            path = dir.join(format!("{stem} ({n}).{EXTENSION}"));
+            n += 1;
+        }
+        let mut text = serde_json::to_string(&self.header).map_err(io::Error::other)?;
+        text.push('\n');
+        for change in &self.changes {
+            text.push_str(&serde_json::to_string(change).map_err(io::Error::other)?);
+            text.push('\n');
+        }
+        config::write_file(&path, &text)?;
+        Ok(path)
+    }
+}
+
+/// Accumulates the changes of a session: all of them, or only the last
+/// `window` seconds (a rolling memory of what just happened).
 pub struct Recorder {
     started: String,
     game: Option<String>,
     mode: String,
     start: f64,
+    window: Option<f64>,
     rumble: RumbleLevels,
     axes: BTreeMap<&'static str, f64>,
-    changes: Vec<(f64, Change)>,
+    changes: VecDeque<(f64, Change)>,
+    /// State at the start of the window: changes dropped from it, latest per key.
+    base: BTreeMap<String, Change>,
 }
 
 impl Recorder {
@@ -96,10 +145,17 @@ impl Recorder {
             game,
             mode,
             start: time,
+            window: None,
             rumble: RumbleLevels::default(),
             axes: BTreeMap::new(),
-            changes: Vec::new(),
+            changes: VecDeque::new(),
+            base: BTreeMap::new(),
         }
+    }
+
+    /// Keeps only the last `secs` seconds.
+    pub fn rolling(time: f64, secs: f64) -> Self {
+        Self { window: Some(secs), ..Self::new(time, String::new(), None) }
     }
 
     pub fn elapsed(&self, time: f64) -> f64 {
@@ -112,56 +168,62 @@ impl Recorder {
         if (rumble.strong - self.rumble.strong).abs() >= RUMBLE_STEP || (rumble.weak - self.rumble.weak).abs() >= RUMBLE_STEP {
             self.rumble = rumble;
             let (strong, weak) = (round(rumble.strong, 1000.0), round(rumble.weak, 1000.0));
-            self.changes.push((t, Change::Rumble { strong, weak }));
+            self.changes.push_back((t, Change::Rumble { strong, weak }));
         }
         for b in buttons {
-            self.changes.push((t, Change::Button { name: b.name.to_owned(), pressed: b.pressed }));
+            self.changes.push_back((t, Change::Button { name: b.name.to_owned(), pressed: b.pressed }));
         }
         for (&name, &value) in pad.axes() {
             let last = self.axes.get(name).copied().unwrap_or(0.0);
             if (value - last).abs() >= AXIS_STEP || (value == 0.0 && last != 0.0) {
                 self.axes.insert(name, value);
-                self.changes.push((t, Change::Axis { name: name.to_owned(), value: round(value, 100.0) }));
+                self.changes.push_back((t, Change::Axis { name: name.to_owned(), value: round(value, 100.0) }));
+            }
+        }
+        if let Some(window) = self.window {
+            while self.changes.front().is_some_and(|(at, _)| *at < t - window) {
+                let (_, change) = self.changes.pop_front().unwrap();
+                let key = match &change {
+                    Change::Rumble { .. } => "rumble".to_owned(),
+                    Change::Button { name, .. } => format!("button {name}"),
+                    Change::Axis { name, .. } => format!("axis {name}"),
+                };
+                self.base.insert(key, change);
             }
         }
     }
 
-    /// Writes the recording; returns its path.
-    pub fn save(self, time: f64) -> io::Result<PathBuf> {
-        self.save_in(&recordings_dir(), time)
-    }
-
-    fn save_in(self, dir: &Path, time: f64) -> io::Result<PathBuf> {
-        let header = Header {
-            version: FORMAT_VERSION,
-            started: self.started.clone(),
-            game: self.game.clone(),
-            mode: self.mode.clone(),
-            duration: round(self.elapsed(time), 1000.0),
-        };
-        let label = header.game.as_deref().unwrap_or(&header.mode);
-        let stem: String = format!("{} {label}", self.started.replace(':', "-"))
-            .chars()
-            .map(|c| if c.is_alphanumeric() || " -_.".contains(c) { c } else { '_' })
+    /// The session so far (or its window), with `mode` and `game` given when
+    /// the recorder did not know them.
+    pub fn session(&self, time: f64, mode: Option<&str>, game: Option<&str>) -> Session {
+        let elapsed = self.elapsed(time);
+        let from = self.window.map_or(0.0, |w| (elapsed - w).max(0.0));
+        // The window's starting state, released buttons and centered axes left out.
+        let base = self.base.values().filter(|c| match c {
+            Change::Button { pressed, .. } => *pressed,
+            Change::Axis { value, .. } => *value != 0.0,
+            Change::Rumble { strong, weak } => *strong != 0.0 || *weak != 0.0,
+        });
+        let changes = base
+            .cloned()
+            .map(|c| (0.0, c))
+            .chain(self.changes.iter().map(|(t, c)| (round(t - from, 1000.0).max(0.0), c.clone())))
             .collect();
-        let mut path = dir.join(format!("{stem}.{EXTENSION}"));
-        let mut n = 2;
-        while path.exists() {
-            path = dir.join(format!("{stem} ({n}).{EXTENSION}"));
-            n += 1;
+        let started = if self.window.is_some() { local_time() } else { self.started.clone() };
+        Session {
+            header: Header {
+                version: FORMAT_VERSION,
+                started,
+                game: game.map(str::to_owned).or_else(|| self.game.clone()),
+                mode: mode.map(str::to_owned).unwrap_or_else(|| self.mode.clone()),
+                duration: round(elapsed - from, 1000.0),
+            },
+            changes,
         }
-        let mut text = serde_json::to_string(&header).map_err(io::Error::other)?;
-        text.push('\n');
-        for change in &self.changes {
-            text.push_str(&serde_json::to_string(change).map_err(io::Error::other)?);
-            text.push('\n');
-        }
-        config::write_file(&path, &text)?;
-        Ok(path)
     }
 }
 
-/// Plays a recording back in the mode's time.
+/// Plays a session back in real time.
 pub struct Player {
     pub info: RecordingInfo,
     changes: Vec<(f64, Change)>,
@@ -172,21 +234,18 @@ pub struct Player {
 
 impl Player {
     pub fn open(path: &Path, time: f64) -> anyhow::Result<Self> {
-        let text = fs::read_to_string(path)?;
-        let mut lines = text.lines();
-        let header: Header = serde_json::from_str(lines.next().unwrap_or_default())?;
-        anyhow::ensure!(header.version <= FORMAT_VERSION, "recording made by a newer GameViber");
-        let changes = lines
-            .filter(|l| !l.trim().is_empty())
-            .map(serde_json::from_str)
-            .collect::<Result<Vec<(f64, Change)>, _>>()?;
-        Ok(Self {
-            info: RecordingInfo { path: path.to_owned(), header },
-            changes,
+        let session = Session::open(path)?;
+        Ok(Self::new(session, path, time))
+    }
+
+    pub fn new(session: Session, path: &Path, time: f64) -> Self {
+        Self {
+            info: RecordingInfo { path: path.to_owned(), header: session.header },
+            changes: session.changes,
             next: 0,
             start: time,
             rumble: RumbleLevels::default(),
-        })
+        }
     }
 
     pub fn position(&self, time: f64) -> f64 {
@@ -267,7 +326,7 @@ mod tests {
         let release = pad.button("A", false, 11.0).unwrap();
         rec.tick(11.0, RumbleLevels::default(), &[release], &pad);
         assert_eq!(rec.changes.len(), 5);
-        let path = rec.save_in(&dir, 12.0).unwrap();
+        let path = rec.session(12.0, None, None).save_in(&dir).unwrap();
 
         let listed = list_in(&dir);
         assert_eq!(listed.len(), 1);
@@ -287,5 +346,30 @@ mod tests {
         assert!(!pad.held().contains("A"));
         assert!(player.finished(102.0));
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn rolling_window_keeps_the_starting_state() {
+        let mut pad = PadState::default();
+        let mut rec = Recorder::rolling(0.0, 1.0);
+        let press = pad.button("LT", true, 0.5).unwrap();
+        rec.tick(0.5, RumbleLevels { strong: 0.4, weak: 0.0 }, &[press], &pad);
+        let press = pad.button("A", true, 0.6).unwrap();
+        rec.tick(0.6, RumbleLevels { strong: 0.4, weak: 0.0 }, &[press], &pad);
+        let release = pad.button("A", false, 0.7).unwrap();
+        rec.tick(0.7, RumbleLevels { strong: 0.4, weak: 0.0 }, &[release], &pad);
+        rec.tick(2.0, RumbleLevels { strong: 0.9, weak: 0.0 }, &[], &pad);
+
+        let session = rec.session(2.5, Some("Surge"), Some("Game"));
+        assert_eq!(session.header.duration, 1.0);
+        assert_eq!(session.header.mode, "Surge");
+        assert_eq!(
+            session.changes,
+            vec![
+                (0.0, Change::Button { name: "LT".into(), pressed: true }),
+                (0.0, Change::Rumble { strong: 0.4, weak: 0.0 }),
+                (0.5, Change::Rumble { strong: 0.9, weak: 0.0 }),
+            ]
+        );
     }
 }

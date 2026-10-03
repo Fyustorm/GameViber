@@ -459,6 +459,35 @@ fn ai_prompt_names_the_game_and_embeds_the_api() {
 }
 
 #[test]
+fn feel_prompt_holds_the_problem_settings_and_session() {
+    let source = include_str!("../../modes/surge.luau");
+    let rt = ModeRuntime::load("surge.luau", source, &BTreeMap::new(), None).unwrap();
+    let mut values = rt.param_values().clone();
+    values.insert("window".into(), ParamValue::Number(0.45));
+    let problems = ["Parries are not detected".to_owned(), "too strong while exploring".to_owned()];
+    let report = prompt::FeelReport {
+        name: "Surge",
+        game: "Hollow Knight",
+        problems: &problems,
+        params: &rt.info().params,
+        values: &values,
+        source,
+        session: Some("### Vibrations sent by the game (0)\n"),
+    };
+    let text = prompt::feel_prompt(&report);
+    assert!(text.contains("to the player in **Hollow Knight**"));
+    assert!(text.contains("- Parries are not detected\n- too strong while exploring"));
+    assert!(text.contains("| Parry window (s) | `window` | 0.45 | 0.3 |"), "{text}");
+    assert!(text.contains("| Parry button (also the surge modifier) | `parry` | \"LT\" | \"LT\" |"));
+    assert!(text.contains("name = \"Surge\""), "source");
+    assert!(text.contains("### Vibrations sent by the game (0)"), "session");
+    assert!(text.contains("## 14. Examples"), "spec");
+    assert!(!text.contains("{{"), "every placeholder replaced");
+    assert!(prompt::has_script("```lua\nmode { api = 1 }\n```"));
+    assert!(!prompt::has_script("Set the parry window to 0.5 s."));
+}
+
+#[test]
 fn ai_answer_script_is_extracted() {
     let answer = "Here is the design.\n\n```lua\nlocal x = 1\n```\n\n```luau\nmode { api = 1, name = 'G' }\n\
                   function tick() end\n```\n\nTune `x` first.";

@@ -158,13 +158,22 @@ impl App {
         if !info.author.is_empty() || !info.version.is_empty() {
             ui.label(muted(format!("by {} {}", info.author, info.version).trim().to_owned()).size(11.5));
         }
-        if entry.is_some_and(|e| e.builtin) {
-            if ui.button("Duplicate and edit").on_hover_text("Copy this mode to change how it works").clicked() {
-                self.duplicate_mode(&mode.id);
+        ui.horizontal(|ui| {
+            if ui
+                .button("😕 Doesn't feel right?")
+                .on_hover_text("Get the mode fixed by an AI assistant, from what you felt and a recorded session")
+                .clicked()
+            {
+                self.open_feedback(s);
             }
-        } else if ui.button("Edit in Creator").clicked() {
-            self.page = Page::Creator;
-        }
+            if entry.is_some_and(|e| e.builtin) {
+                if ui.button("Duplicate and edit").on_hover_text("Copy this mode to change how it works").clicked() {
+                    self.duplicate_mode(&mode.id);
+                }
+            } else if ui.button("Edit in Creator").clicked() {
+                self.page = Page::Creator;
+            }
+        });
     }
 
     fn param(&self, ui: &mut egui::Ui, def: &ParamDef, mode: &ModeView) {

@@ -38,6 +38,8 @@ pub const TEST_LEVEL: f64 = 0.5;
 const TEST_LENGTH: Duration = Duration::from_millis(800);
 /// How often a lost gamepad is looked for again (proxy source).
 const SOURCE_RETRY: Duration = Duration::from_secs(2);
+/// What `Command::SaveRecent` saves: the last seconds of play.
+pub const RECENT_SECS: f64 = 120.0;
 
 #[derive(Debug, Clone)]
 pub struct EngineOptions {
@@ -90,6 +92,8 @@ pub enum Command {
     /// Records the game's rumble and the player's inputs until `StopRecording`.
     StartRecording,
     StopRecording,
+    /// Saves the last `RECENT_SECS` of play as a recording.
+    SaveRecent,
     /// Restarts the active mode and feeds it a recording instead of the gamepad;
     /// `to_toys` false keeps the toys still (graphs only).
     Replay { path: PathBuf, to_toys: bool },
@@ -253,6 +257,8 @@ struct Engine {
     last_rumble: Option<f64>,
     buttons_seen: bool,
     recorder: Option<Recorder>,
+    /// Always on: the last `RECENT_SECS` of play.
+    recent: Recorder,
     /// Recording being replayed, and whether the toys play it.
     player: Option<(Player, bool)>,
     /// Toy being buzzed by `Command::TestToy`, at what intensity, until when.
@@ -317,6 +323,7 @@ async fn run_async(
         buttons_seen: false,
         test: None,
         recorder: None,
+        recent: Recorder::rolling(0.0, RECENT_SECS),
         player: None,
         overlay: overlay::Server::new(),
         overlay_events: Vec::new(),
@@ -542,6 +549,7 @@ impl Engine {
             }
             Command::StartRecording => self.start_recording(),
             Command::StopRecording => self.stop_recording(),
+            Command::SaveRecent => self.save_recent(),
             Command::Replay { path, to_toys } => self.start_replay(&path, to_toys),
             Command::StopReplay => self.stop_replay(),
             Command::DeleteRecording(path) => {
@@ -571,15 +579,31 @@ impl Engine {
         if self.recorder.is_some() || self.player.is_some() {
             return;
         }
-        let mode = self.mode.as_ref().and_then(|m| m.runtime.as_ref()).map(|rt| rt.info().name.clone()).unwrap_or_default();
-        let game = self.overlay.clients().first().map(|c| c.exe.clone());
         log::info!("recording started");
-        self.recorder = Some(Recorder::new(self.time(), mode, game));
+        self.recorder = Some(Recorder::new(self.time(), self.mode_name(), self.game()));
+    }
+
+    fn mode_name(&self) -> String {
+        self.mode.as_ref().and_then(|m| m.runtime.as_ref()).map(|rt| rt.info().name.clone()).unwrap_or_default()
+    }
+
+    /// The game showing the in-game overlay, if any.
+    fn game(&self) -> Option<String> {
+        self.overlay.clients().first().map(|c| c.exe.clone())
+    }
+
+    fn save_recent(&mut self) {
+        let session = self.recent.session(self.time(), Some(&self.mode_name()), self.game().as_deref());
+        match session.save() {
+            Ok(path) => log::info!("last {:.0} s saved to {}", session.header.duration, path.display()),
+            Err(e) => log::error!("cannot save the last minutes: {e}"),
+        }
+        self.refresh_recordings();
     }
 
     fn stop_recording(&mut self) {
         let Some(recorder) = self.recorder.take() else { return };
-        match recorder.save(self.time()) {
+        match recorder.session(self.time(), None, None).save() {
             Ok(path) => log::info!("recording saved to {}", path.display()),
             Err(e) => log::error!("cannot save the recording: {e}"),
         }
@@ -856,14 +880,17 @@ impl Engine {
             None => RumbleLevels { strong: strong as f64 / 65535.0, weak: weak as f64 / 65535.0 },
         };
         let levels = RumbleLevels { strong: game.strong.max(self.sim.strong), weak: game.weak.max(self.sim.weak) };
+        let buttons: Vec<_> =
+            self.events.iter().filter_map(|e| if let ModeEvent::Button(b) = e { Some(b.clone()) } else { None }).collect();
         if let Some(recorder) = self.recorder.as_mut() {
-            let buttons: Vec<_> =
-                self.events.iter().filter_map(|e| if let ModeEvent::Button(b) = e { Some(b.clone()) } else { None }).collect();
             recorder.tick(time, levels, &buttons, &self.pad);
             if recorder.elapsed(time) >= session::MAX_SECS {
                 log::warn!("recording stopped after {:.0} min", session::MAX_SECS / 60.0);
                 self.stop_recording();
             }
+        }
+        if self.player.is_none() {
+            self.recent.tick(time, levels, &buttons, &self.pad);
         }
         if self.pad.panic_combo(time) {
             self.trigger_panic(&gamepad::combo_text(&self.settings.panic_combo));

@@ -2,11 +2,12 @@
 //! Central, their toys, the gamepad and a first mode; afterwards a status bar
 //! (with the panic stop) sits above four pages: Play (mode tiles and their
 //! settings), Toys, Connection (troubleshooting), Overlay (in-game overlay)
-//! and Creator (mode editor, graphs, simulator, logs). A dialog helps players get a mode made for
-//! their game by an AI assistant.
+//! and Creator (mode editor, graphs, simulator, sessions, logs). Dialogs help players get a mode
+//! made for their game by an AI assistant, and get one fixed when it does not feel right.
 
 mod connection;
 mod creator;
+mod feedback;
 mod generator;
 mod luau;
 mod onboarding;
@@ -54,6 +55,7 @@ pub struct App {
     overlay: overlay::State,
     creator: creator::State,
     generator: generator::State,
+    feedback: feedback::State,
 }
 
 impl App {
@@ -78,6 +80,7 @@ impl App {
             overlay: overlay::State::default(),
             creator: creator::State::default(),
             generator: generator::State::default(),
+            feedback: feedback::State::default(),
         }
     }
 
@@ -150,6 +153,7 @@ impl eframe::App for App {
             Page::Creator => self.creator_ui(ui, &s),
         }
         self.generator_ui(ui.ctx());
+        self.feedback_ui(ui.ctx(), &s);
         self.update_simulated_rumble();
     }
 

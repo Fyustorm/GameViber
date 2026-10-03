@@ -5,6 +5,7 @@
 pub mod library;
 pub mod outputs;
 pub mod prompt;
+pub mod report;
 pub mod rumble_events;
 
 use std::cell::{Cell, RefCell};
