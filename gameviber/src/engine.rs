@@ -10,13 +10,11 @@ use std::time::{Duration, Instant, SystemTime};
 
 use gameviber_common::overlay::{CaptureRequest, Event, Gauge, Hello, OverlayState};
 
-use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::mpsc;
 
 use crate::audio::{self, Audio, AudioHit, AudioLevels, Embedding};
 pub use crate::config::SourceChoice;
 use crate::config::{self, AudioSource, ModeEntry, OverlaySettings, Presets, Settings, ToySettings};
-use crate::helper::client::Helper;
 use crate::gamepad::{self, PadState, BUTTONS};
 use crate::inputs::{self, Inputs, InputsView};
 use crate::intiface::{Intiface, IntifaceStatus, Toy, ToyOutputs};
@@ -25,16 +23,15 @@ use crate::mode::scenes::Sense;
 use crate::mode::{HudGauge, ModeEvent, ModeInfo, ModeRuntime, ParamValue};
 use crate::models::{self, Model, ModelState};
 use crate::overlay;
+use crate::platform;
 use crate::game::Game;
 use crate::screen::zones::ZoneReader;
 use crate::shortcuts::{Action, Shortcuts};
 use crate::screen::{self, ImageScenes, ScreenLevels, ScreenView};
 use crate::rumble::RumbleState;
 use crate::session::{self, Player, Recorder, RecordingInfo, Senses};
-use crate::source::ebpf::EbpfSource;
-use crate::source::proxy::{Hide, ProxySource};
 pub use crate::source::SourceHealth;
-use crate::source::{EventSender, SourceEvent, SourceKind};
+use crate::source::{ActiveSource, EventSender, SourceEvent, SourceKind, SourceOptions, Sources};
 
 const TICK: Duration = Duration::from_millis(20);
 /// How often user mode files are checked for changes.
@@ -270,8 +267,7 @@ struct ActiveMode {
 }
 
 enum Source {
-    Proxy(ProxySource),
-    Ebpf(EbpfSource),
+    Running(Box<dyn ActiveSource>),
     Failed(String),
     None,
 }
@@ -279,8 +275,7 @@ enum Source {
 impl Source {
     fn status(&self) -> String {
         match self {
-            Source::Proxy(p) => p.status(),
-            Source::Ebpf(e) => e.status(),
+            Source::Running(s) => s.status(),
             Source::Failed(e) => format!("source error: {e}"),
             Source::None => "no source (simulator only)".into(),
         }
@@ -288,8 +283,7 @@ impl Source {
 
     fn health(&self) -> SourceHealth {
         match self {
-            Source::Proxy(p) => p.health(),
-            Source::Ebpf(e) => e.health(),
+            Source::Running(s) => s.health(),
             Source::Failed(e) => SourceHealth::Failed(e.clone()),
             Source::None => SourceHealth::Off,
         }
@@ -297,18 +291,14 @@ impl Source {
 
     fn gamepads(&self) -> Vec<String> {
         match self {
-            Source::Proxy(p) if matches!(p.health(), SourceHealth::Failed(_)) => Vec::new(),
-            Source::Proxy(p) => vec![p.gamepad().to_owned()],
-            Source::Ebpf(e) => e.gamepads(),
+            Source::Running(s) => s.gamepads(),
             Source::Failed(_) | Source::None => Vec::new(),
         }
     }
 
     fn shutdown(self) {
-        match self {
-            Source::Proxy(p) => p.shutdown(),
-            Source::Ebpf(e) => e.shutdown(),
-            Source::Failed(_) | Source::None => {}
+        if let Source::Running(s) = self {
+            s.shutdown();
         }
     }
 
@@ -328,7 +318,7 @@ struct Engine {
     settings: Settings,
     source: Source,
     source_tx: EventSender,
-    helper: Arc<Helper>,
+    sources: Sources,
     states: HashMap<String, RumbleState>,
     sim: RumbleLevels,
     pad: PadState,
@@ -432,7 +422,7 @@ async fn run_async(
         settings,
         source: Source::None,
         source_tx,
-        helper: Helper::new(),
+        sources: Sources::new(),
         states: HashMap::new(),
         sim: RumbleLevels::default(),
         pad: PadState::default(),
@@ -495,12 +485,10 @@ async fn run_async(
 
     let mut tick = tokio::time::interval(TICK);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    let mut sigterm = signal(SignalKind::terminate())?;
-    let mut sigint = signal(SignalKind::interrupt())?;
+    let mut stop = platform::StopSignals::new()?;
     loop {
         tokio::select! {
-            _ = sigterm.recv() => break,
-            _ = sigint.recv() => break,
+            _ = stop.recv() => break,
             Some(ev) = rx.recv() => engine.on_source_event(ev),
             command = commands.recv() => match command {
                 Some(Command::Shutdown) | None => break,
@@ -526,26 +514,13 @@ impl Engine {
     }
 
     fn new_source(&self) -> Source {
-        let opts = &self.opts;
-        let tx = self.source_tx.clone();
-        let root = unsafe { libc::geteuid() } == 0;
-        match self.settings.source {
-            SourceChoice::Proxy => {
-                let hide = match (self.settings.hide, root) {
-                    (false, _) => Hide::No,
-                    (true, true) => Hide::Local,
-                    (true, false) => Hide::Helper(self.helper.clone()),
-                };
-                match ProxySource::start(opts.device.as_deref(), opts.passthrough, hide, tx) {
-                    Ok(s) => Source::Proxy(s),
-                    Err(e) => Source::Failed(format!("{e:#}")),
-                }
-            }
-            SourceChoice::Ebpf => match EbpfSource::start(tx, &self.helper) {
-                Ok(s) => Source::Ebpf(s),
-                Err(e) => Source::Failed(format!("{e:#}")),
-            },
-            SourceChoice::None => Source::None,
+        if self.settings.source == SourceChoice::None {
+            return Source::None;
+        }
+        let opts = SourceOptions { device: self.opts.device.clone(), passthrough: self.opts.passthrough, hide: self.settings.hide };
+        match self.sources.start(self.settings.source, &opts, self.source_tx.clone()) {
+            Ok(s) => Source::Running(s),
+            Err(e) => Source::Failed(format!("{e:#}")),
         }
     }
 
@@ -1775,6 +1750,6 @@ impl Engine {
         if let Some(audio) = self.audio.take() {
             audio.shutdown();
         }
-        self.helper.shutdown();
+        self.sources.shutdown();
     }
 }

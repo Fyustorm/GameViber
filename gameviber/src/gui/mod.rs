@@ -185,7 +185,7 @@ impl App {
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         ui.ctx().request_repaint_after(REPAINT);
-        crate::helper::dialog::set_focused(ui.ctx().input(|i| i.focused));
+        crate::platform::window_focused(ui.ctx().input(|i| i.focused));
         let s = self.shared.lock().unwrap().clone();
         if s.stopped {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
@@ -235,7 +235,7 @@ impl eframe::App for App {
     }
 
     fn on_exit(&mut self) {
-        crate::helper::dialog::forget_window();
+        crate::platform::window_closing();
         self.send(Command::Shutdown);
         if let Some(engine) = self.engine.take() {
             let _ = engine.join();

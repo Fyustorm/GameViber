@@ -1,7 +1,8 @@
-//! Rebuilds the motor state from evdev force-feedback semantics (upload /
-//! play / stop / erase / gain), like the kernel's `ff-memless`: every active
-//! effect contributes to the strong and weak motors, contributions are summed
-//! then clamped.
+//! Rebuilds the motor state from force-feedback semantics (upload / play /
+//! stop / erase / gain, as Linux's evdev defines them, which every source
+//! translates to), like the kernel's `ff-memless`: every active effect
+//! contributes to the strong and weak motors, contributions are summed then
+//! clamped.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -54,31 +55,6 @@ impl Effect {
             _ => EffectKind::Unsupported,
         };
         Self { kind, length_ms: raw.replay_length, delay_ms: raw.replay_delay }
-    }
-
-    /// Converts an effect received by the uinput virtual gamepad.
-    pub fn from_evdev(data: &evdev::FFEffectData) -> Self {
-        use evdev::FFEffectKind as K;
-        let env = |e: &evdev::FFEnvelope| Envelope {
-            attack_length: e.attack_length,
-            attack_level: e.attack_level,
-            fade_length: e.fade_length,
-            fade_level: e.fade_level,
-        };
-        let kind = match &data.kind {
-            K::Rumble { strong_magnitude, weak_magnitude } => {
-                EffectKind::Rumble { strong: *strong_magnitude, weak: *weak_magnitude }
-            }
-            K::Periodic { magnitude, envelope, .. } => {
-                EffectKind::Periodic { magnitude: *magnitude, envelope: env(envelope) }
-            }
-            K::Constant { level, envelope } => EffectKind::Constant { level: *level, envelope: env(envelope) },
-            K::Ramp { start_level, end_level, envelope } => {
-                EffectKind::Ramp { start: *start_level, end: *end_level, envelope: env(envelope) }
-            }
-            _ => EffectKind::Unsupported,
-        };
-        Self { kind, length_ms: data.replay.length, delay_ms: data.replay.delay }
     }
 
     /// (strong, weak) in 0..0xFFFF, `elapsed` since the effect actually started.

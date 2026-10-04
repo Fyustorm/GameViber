@@ -1,15 +1,21 @@
 //! Event sources: they observe what the game sends to the gamepad and turn
-//! it into `SourceEvent`s, identical whatever the interception method.
+//! it into `SourceEvent`s, identical whatever the interception method and the
+//! OS. The methods themselves are OS backends (`linux`: proxy and eBPF), started
+//! through `Sources`.
 
-pub mod ebpf;
-pub mod proxy;
+#[cfg(target_os = "linux")]
+pub mod linux;
+#[cfg(target_os = "linux")]
+pub use linux::Sources;
+#[cfg(not(target_os = "linux"))]
+mod unsupported;
+#[cfg(not(target_os = "linux"))]
+pub use unsupported::Sources;
 
-use std::path::Path;
+use std::path::PathBuf;
 
-use evdev::{Device, EventSummary, EventType, FFEffectCode};
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::gamepad::AxisRanges;
 use crate::rumble::Effect;
 
 #[derive(Debug, Clone)]
@@ -17,12 +23,12 @@ pub enum SourceKind {
     /// Effect uploaded (new or updated) by the game.
     Upload { id: i16, effect: Effect },
     Erase { id: i16 },
-    /// EV_FF play (count > 0) or stop (count = 0).
+    /// Play (count > 0) or stop (count = 0), like Linux's EV_FF.
     Play { id: i16, count: i32 },
     Gain(u16),
-    /// Key pressed / released (evdev KEY_* / BTN_* code).
+    /// Key pressed / released (`gamepad::codes` KEY_* / BTN_* code).
     Button { code: u16, pressed: bool },
-    /// Axis (evdev ABS_* code), normalized with the device's range.
+    /// Axis (`gamepad::codes` ABS_* code), normalized with the device's range.
     Axis { code: u16, value: f64 },
     /// The gamepad was unplugged: its effects are gone.
     Removed,
@@ -30,7 +36,7 @@ pub enum SourceKind {
 
 #[derive(Debug, Clone)]
 pub struct SourceEvent {
-    /// Gamepad the event belongs to (/dev/input/eventN).
+    /// Gamepad the event belongs to (its device path on Linux: /dev/input/eventN).
     pub device: String,
     pub kind: SourceKind,
 }
@@ -49,47 +55,23 @@ pub enum SourceHealth {
     Failed(String),
 }
 
-/// A gamepad: face buttons and rumble force feedback.
-pub fn is_rumble_gamepad(dev: &Device) -> bool {
-    let has_rumble = dev.supported_ff().is_some_and(|ff| ff.contains(FFEffectCode::FF_RUMBLE));
-    let has_pad_buttons = dev.supported_keys().is_some_and(|k| k.contains(evdev::KeyCode::BTN_SOUTH));
-    has_rumble && has_pad_buttons
+/// How a source is started.
+#[derive(Debug, Clone, Default)]
+pub struct SourceOptions {
+    /// The gamepad to use (else: found automatically).
+    pub device: Option<PathBuf>,
+    /// Proxy: the rumble also goes to the real gamepad.
+    pub passthrough: bool,
+    /// Proxy: the real gamepad is hidden from games.
+    pub hide: bool,
 }
 
-/// Every evdev device with force feedback, sorted by path.
-pub fn list_ff_devices() -> Vec<(String, Device)> {
-    let mut found: Vec<_> = evdev::enumerate()
-        .filter(|(_, dev)| dev.supported_events().contains(EventType::FORCEFEEDBACK))
-        .map(|(path, dev)| (path.to_string_lossy().into_owned(), dev))
-        .collect();
-    found.sort_by(|a, b| a.0.cmp(&b.0));
-    found
-}
-
-pub fn find_gamepad(path: Option<&Path>) -> anyhow::Result<(String, Device)> {
-    if let Some(path) = path {
-        return Ok((path.to_string_lossy().into_owned(), Device::open(path)?));
-    }
-    list_ff_devices()
-        .into_iter()
-        .find(|(_, dev)| is_rumble_gamepad(dev))
-        .ok_or_else(|| anyhow::anyhow!("no gamepad with rumble found"))
-}
-
-/// Translates an evdev event read from a gamepad (FF upload/erase excluded).
-pub fn translate_input(event: evdev::InputEvent, ranges: &AxisRanges) -> Option<SourceKind> {
-    match event.destructure() {
-        EventSummary::ForceFeedback(_, FFEffectCode::FF_GAIN, value) => Some(SourceKind::Gain(value as u16)),
-        // Below FF_GAIN (= FF_MAX_EFFECTS) the code is an effect id; above, a setting
-        // (FF_GAIN, FF_AUTOCENTER).
-        EventSummary::ForceFeedback(_, code, value) if code.0 < FFEffectCode::FF_GAIN.0 => {
-            Some(SourceKind::Play { id: code.0 as i16, count: value })
-        }
-        // value 2 = autorepeat
-        EventSummary::Key(_, code, value) if value != 2 => Some(SourceKind::Button { code: code.0, pressed: value == 1 }),
-        EventSummary::AbsoluteAxis(_, code, value) => {
-            Some(SourceKind::Axis { code: code.0, value: ranges.normalize(code.0, value) })
-        }
-        _ => None,
-    }
+/// A running source.
+pub trait ActiveSource {
+    /// One line for the logs and the GUI.
+    fn status(&self) -> String;
+    fn health(&self) -> SourceHealth;
+    /// Names of the gamepads it sees (none once it failed).
+    fn gamepads(&self) -> Vec<String>;
+    fn shutdown(self: Box<Self>);
 }

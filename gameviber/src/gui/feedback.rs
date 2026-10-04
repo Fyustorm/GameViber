@@ -14,7 +14,7 @@ use super::{App, Page};
 use crate::config::{self, FeedbackRound, ModeEntry};
 use crate::engine::{Command, Shared, RECENT_SECS};
 use crate::mode::{prompt, report, ModeInfo, ModeRuntime, ParamValue, Question};
-use crate::session::{self, Session};
+use crate::session::Session;
 
 /// Common complaints, ticked rather than typed (all of them when the mode asks
 /// nothing, below its own questions otherwise).
@@ -365,7 +365,7 @@ impl App {
         let entry = ModeEntry::from_id(&s.mode.id);
         let mut history = entry.load_feedback();
         history.push(FeedbackRound::QuickFix {
-            date: session::local_time(),
+            date: crate::platform::local_time(),
             version: info.version.clone(),
             question: q.label.clone(),
             answer: q.options[answer].clone(),
@@ -422,7 +422,7 @@ impl App {
             profile: profile.as_deref(),
         });
         history.push(FeedbackRound::Request {
-            date: session::local_time(),
+            date: crate::platform::local_time(),
             version: info.version.clone(),
             answers: answers.iter().map(|a| a.replace("**", "")).collect(),
             words: f.words.trim().to_owned(),
@@ -452,7 +452,7 @@ impl App {
         let entry = ModeEntry::from_id(&s.mode.id);
         let mut history = entry.load_feedback();
         history.push(FeedbackRound::Fixed {
-            date: session::local_time(),
+            date: crate::platform::local_time(),
             from_version: s.mode.info.as_ref().map(|i| i.version.clone()).unwrap_or_default(),
             to_version: fixed.version.clone(),
         });

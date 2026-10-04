@@ -261,6 +261,11 @@ Luau is built from source (a C++ compiler is required). ONNX Runtime (for the
 scene model) is downloaded prebuilt by the `ort` crate at build time and linked
 statically.
 
+GameViber is Linux only for now. Everything OS-specific lives in `linux`
+modules, so that other systems (Windows first) can be added later;
+`tools/check-windows.sh` checks that the rest still builds for Windows (see
+AGENTS.md, Platforms).
+
 ## Known limitations
 
 - Only the evdev force-feedback path is covered: gamepads driven through

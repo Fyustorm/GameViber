@@ -16,7 +16,8 @@ the rumble games send to a gamepad, listens to the game's sound, looks at its im
 through the in-game overlay, takes values other programs send, transforms all of it
 through a Lua (Luau) **mode**, and drives toys connected to Intiface Central (Buttplug
 protocol).
-Linux only.
+Linux only for now; everything OS-specific is isolated so that other systems
+(Windows first) can be added later (see Platforms).
 
 Pipeline: **source** (interception), **audio** (the game's sound), **screen** (its
 image, the profile's zones) and **inputs** (other programs) → **mode** (Luau
@@ -26,31 +27,31 @@ script) → **safety layer** → **Intiface output**.
 
 | Path | Contents |
 |---|---|
-| `gameviber/src/source/` | interception sources: `proxy` (uinput virtual gamepad) and `ebpf` |
-| `gameviber/src/audio/` | the game's sound: `capture` (PipeWire `pw-record` / `pw-dump`), `features` (levels, hits), `clap` (sound scene model: mel spectrogram, encoder) |
+| `gameviber/src/platform/` | what differs between operating systems for the rest of the code (paths, local time, stop signals, the GUI window system dialogs open over); `linux/`: XDG paths, the privileged helper (`helper/`, `gameviber helper`, started through pkexec) and the device hider |
+| `gameviber/src/source/` | interception sources, OS backends started through `Sources`: `linux/proxy` (uinput virtual gamepad) and `linux/ebpf` |
+| `gameviber/src/audio/` | the game's sound: `capture` (what to listen to; `linux`: PipeWire `pw-record` / `pw-dump`), `features` (levels, hits), `clap` (sound scene model: mel spectrogram, encoder) |
 | `gameviber/src/models.rs` | scene models downloaded on demand (CLAP, CLIP): download, ONNX sessions, text embeddings |
-| `gameviber/src/rumble.rs` | evdev force-feedback semantics (ff-memless) → strong/weak levels |
-| `gameviber/src/gamepad.rs` | button/axis normalization (Xbox layout), panic combo |
+| `gameviber/src/rumble.rs` | force-feedback semantics (evdev's, ff-memless) → strong/weak levels |
+| `gameviber/src/gamepad.rs` | button/axis normalization (Xbox layout) from `codes` (Linux's numbering, which every source translates to), panic combo |
 | `gameviber/src/mode/` | Luau runtime: `library.rs` (script API), `outputs.rs` (channels, pulses, patterns), `rumble_events.rs`, `scenes.rs` (scenes fused from the sound, the image and the game's captures; the game's scenes replace the mode's own), `prompt.rs` (AI requests: a per-game mode, a fix for a mode that feels wrong), `report.rs` (a session replayed offline into a mode, for the fix request), `tests.rs` |
 | `gameviber/src/screen/` | the game's image: frames copied by the overlay, measures (brightness, motion, flashes), `clip` (image scene model: PIL-exact preprocessing, encoder thread), `zones` (shown-or-not and bar zones) |
 | `gameviber/src/game.rs` | games (`~/.config/gameviber/games/<id>.json`, captures as PNG in `games/<id>/`), identified by name: linked executables (optional), scenes, captures per scene (also the scene examples), zones drawn on them, declared inputs, sound source, modes; migration of the older exe-keyed profiles |
-| `gameviber/src/shortcuts.rs` | keyboard shortcuts for the combos' actions through the desktop's global shortcuts portal (needs a desktop entry for the app id, written on first use) |
-| `gameviber/src/inputs.rs` | values and events other programs send: local WebSocket (browsers refused) and named pipe |
+| `gameviber/src/shortcuts/` | keyboard shortcuts for the combos' actions; `linux`: the desktop's global shortcuts portal (needs a desktop entry for the app id, written on first use) |
+| `gameviber/src/inputs/` | values and events other programs send: local WebSocket (browsers refused) and, `linux`, a named pipe |
 | `gameviber/src/engine.rs` | engine thread: sources, audio, image, mode, safety layer, routing, output |
 | `gameviber/src/session.rs` | recorded play sessions (rumble, buttons, axes, sound and image measures, hits, flashes, zones, scene embeddings, values from other programs) and their replay |
 | `gameviber/src/gui/` | egui GUI: setup guide (`onboarding`), pages: `live` (while playing: mode, output, signals, gamepad combos), `games` (library, then each game by breadcrumb: modes, sessions), `play` (a mode's page, mode tiles), `signals` (a game's guided Signals), `screen` (a game's captures and zoomable zone editor checked on every capture), `toys`, `setup` (tabs: `gamepad`, `keybindings`, `overlay`, `audio` (default sound), other programs), `creator`, `settings`; AI requests (`generator` dialog: a mode for a game; `feedback` page: a fix for the active mode), Luau highlighting (`luau`), `theme` |
-| `gameviber/src/helper/` | privileged helper (`gameviber helper`, started through pkexec) |
 | `gameviber/src/config.rs` | config files, built-in mode registry (`BUILTIN_MODES`) |
 | `gameviber/modes/` | built-in modes, embedded in the binary |
 | `gameviber/prompts/new-mode.md` | template of the request asking an AI assistant to write a mode for one game |
 | `gameviber/prompts/fix-feel.md` | template of the request asking an AI assistant to fix a mode that does not feel right (`<!-- full -->` blocks are left out of the short request for the conversation that wrote the mode) |
 | `gameviber/prompts/rules.md` | what makes a mode feel good and the script rules, shared by both requests; players can override the three templates from the Settings page (`~/.config/gameviber/prompts/`) |
 | `gameviber-ebpf/`, `gameviber-common/` | eBPF probe and types shared with it; `gameviber-common/src/overlay.rs`: overlay protocol and the shared frame memory (`frames`) |
-| `gameviber-overlay/` | in-game overlay: implicit Vulkan layer (`layer.rs`, `render.rs`), OpenGL swap hooks when preloaded (`gl/`), panel layout with epaint (`hud.rs`), socket client, copies of the game's image (`capture.rs`, `render.rs`, `gl/capture.rs`) |
-| `gameviber/src/overlay.rs` | overlay socket server (with the games' frame memory) and layer installation |
+| `gameviber-overlay/` | in-game overlay: panel layout with epaint (`hud.rs`); `linux/`: implicit Vulkan layer (`layer.rs`, `render.rs`), OpenGL swap hooks when preloaded (`gl/`), socket client, copies of the game's image (`capture.rs`, `render.rs`, `gl/capture.rs`) |
+| `gameviber/src/overlay/` | the games' overlays and their frame memory; `linux/`: the Unix socket and sealed memfds, `linux/install.rs`: layer and launcher installation |
 | `docs/spec-modes.md` | mode API specification (source of truth for the script API) |
 | `prototype/` | original Python prototype (reference only) |
-| `tools/` | test helpers: fake gamepad, SDL rumble game |
+| `tools/` | test helpers: fake gamepad, SDL rumble game, `check-windows.sh` (Platforms) |
 
 ## Build and test
 
@@ -59,6 +60,7 @@ cargo build --release
 cargo test
 SKIP_EBPF_BUILD=1 cargo test   # without the eBPF toolchain (nightly + bpf-linker)
 cargo build-overlay32          # 32-bit overlay layer (i686 target + 32-bit glibc headers)
+tools/check-windows.sh         # the code outside `linux` modules still builds for Windows
 ```
 
 Run `cargo test` after any change to the runtime or to a mode.
@@ -86,10 +88,39 @@ Run `cargo test` after any change to the runtime or to a mode.
   repeat in them what the spec already says.
 - **Safety stays outside scripts**: the global cap, STOP ALL / panic combo and
   zeroing outputs on source loss live in the engine, never in a mode.
+- **Platforms**: see the section below; run `tools/check-windows.sh` after
+  touching OS-specific code or adding a dependency.
 - **Privileges**: the GUI and the main process must never run as root. Root-only work
   (eBPF probe, hiding gamepad nodes) goes through the helper, whose scope must stay
   minimal.
 - Match the surrounding code: comment density, naming and idioms.
+
+## Platforms
+
+GameViber only runs on Linux today, but a Windows version (with fewer features:
+no eBPF, an overlay of its own) is planned. Keep the way open:
+
+- **OS-specific code lives only in modules named after the OS**: `linux.rs` or
+  `linux/`, declared with `#[cfg(target_os = "linux")]`. That means any use
+  of `libc`, `evdev`, `aya`, `zbus`, `wayland-*`, `std::os::unix`, `/dev`,
+  `/proc`, XDG paths, PipeWire tools, pkexec or Unix sockets. Everything else
+  must build on every OS.
+- **Where it goes**: things the whole app needs (paths, time, signals, the
+  privileged helper) in `platform/`; a part's backend next to that part
+  (`source/linux/`, `audio/capture/linux.rs`, `overlay/linux/`,
+  `shortcuts/linux.rs`, `inputs/linux.rs`, `gameviber-overlay/src/linux/`).
+  The part's `mod.rs` holds the neutral types and logic and re-exports the
+  backend's items under the same names for every OS.
+- **Other systems** get each part's `unsupported.rs` (same API, "not available
+  on this system yet"), so the rest still builds and runs. A Windows backend
+  is a `windows.rs` / `windows/` next to `linux`, with the fallback's `cfg`
+  narrowed to `not(any(target_os = "linux", target_os = "windows"))`.
+- **Data stays neutral**: sources translate their gamepad to Linux's key and
+  axis numbering (`gamepad::codes`) and to evdev force-feedback effects
+  (`rumble::Effect`), and audio to mono f32 samples, whatever the OS.
+- **Linux-only crates** go in `[target.'cfg(target_os = "linux")'.dependencies]`.
+- `tools/check-windows.sh` checks the Windows build without a Windows toolchain;
+  it must stay free of errors and warnings.
 
 ## Known pitfalls
 

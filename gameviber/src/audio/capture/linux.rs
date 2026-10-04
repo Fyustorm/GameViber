@@ -1,4 +1,4 @@
-//! Captures the game's sound through PipeWire's `pw-record`: every playback
+//! Linux: captures the game's sound through PipeWire's `pw-record`: every playback
 //! stream of one application, or the default output (everything the
 //! computer plays). The graph is read with `pw-dump`; an application's
 //! streams are linked to the capture with `pw-link`, so that a game opening
@@ -12,24 +12,14 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+use anyhow::Context;
 use serde_json::Value;
 
-use super::SAMPLE_RATE;
-use crate::config::AudioSource;
+use super::{Stream, Target};
+use crate::audio::{features, SAMPLE_RATE};
 
 /// How long a new capture node may take to appear in the graph, with its ports.
 const NODE_WAIT: Duration = Duration::from_secs(2);
-
-/// A playback stream of an application.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Stream {
-    /// PipeWire object id of the stream's node.
-    pub node: u32,
-    /// `application.name`, as shown in the GUI.
-    pub app: String,
-    pub binary: String,
-    pub pid: Option<u32>,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Port {
@@ -101,58 +91,6 @@ impl Graph {
     }
 }
 
-/// What `pw-record` listens to.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Target {
-    /// Every stream of one application.
-    App { name: String, streams: Vec<Stream> },
-    /// The default output's monitor.
-    Everything,
-}
-
-impl Target {
-    pub fn describe(&self) -> String {
-        match self {
-            Target::App { name, streams } if streams.len() > 1 => format!("{name} ({} streams)", streams.len()),
-            Target::App { name, .. } => name.clone(),
-            Target::Everything => "everything the computer plays".to_owned(),
-        }
-    }
-
-    /// Same capture: only the streams of an application may come and go.
-    fn same_capture(&self, other: &Target) -> bool {
-        match (self, other) {
-            (Target::App { name: a, .. }, Target::App { name: b, .. }) => a == b,
-            (a, b) => a == b,
-        }
-    }
-}
-
-/// Picks what to listen to. `games` are the processes showing the overlay
-/// (pid, executable name).
-pub fn choose(source: &AudioSource, streams: &[Stream], games: &[(u32, String)]) -> Option<Target> {
-    let app = |matches: &dyn Fn(&Stream) -> bool| {
-        let streams: Vec<Stream> = streams.iter().filter(|s| matches(s)).cloned().collect();
-        let name = streams.first()?.app.clone();
-        Some(Target::App { name, streams })
-    };
-    match source {
-        AudioSource::Off => None,
-        AudioSource::Everything => Some(Target::Everything),
-        AudioSource::App(name) => app(&|s| s.app == *name || s.binary == *name),
-        AudioSource::Auto => {
-            let stem = |exe: &str| exe.rsplit(['/', '\\']).next().unwrap_or(exe).trim_end_matches(".exe").to_lowercase();
-            let game = |s: &Stream| {
-                games.iter().any(|(pid, exe)| {
-                    let exe = stem(exe);
-                    s.pid == Some(*pid) || (!exe.is_empty() && (stem(&s.app) == exe || stem(&s.binary) == exe))
-                })
-            };
-            Some(app(&game).unwrap_or(Target::Everything))
-        }
-    }
-}
-
 /// A running `pw-record`, whose samples arrive on a channel.
 pub struct Capture {
     pub target: Target,
@@ -182,11 +120,11 @@ impl Capture {
             Target::Everything => props.push_str(" stream.capture.sink=true"),
         }
         command.args(["-P", &format!("{{ {props} }}"), "-"]);
-        let mut child = command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn()?;
+        let mut child = command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().context("pw-record")?;
         let mut stdout = child.stdout.take().expect("piped stdout");
         let (tx, samples) = mpsc::channel();
         std::thread::Builder::new().name("audio-capture".into()).spawn(move || {
-            let mut bytes = vec![0u8; super::features::HOP * 4];
+            let mut bytes = vec![0u8; features::HOP * 4];
             let mut filled = 0;
             loop {
                 match stdout.read(&mut bytes[filled..]) {
@@ -280,6 +218,8 @@ impl Drop for Capture {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audio::capture::choose;
+    use crate::config::AudioSource;
 
     const DUMP: &str = r#"[
       { "id": 46, "type": "PipeWire:Interface:Node", "info": { "props": { "media.class": "Audio/Sink", "node.name": "speakers" } } },

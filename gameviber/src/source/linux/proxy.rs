@@ -18,12 +18,12 @@ use evdev::{
     UInputCode, UinputAbsSetup,
 };
 
-use super::{find_gamepad, translate_input, EventSender, SourceEvent, SourceHealth, SourceKind};
+use super::{axis_ranges, effect_from_evdev, find_gamepad, translate_input};
 use crate::gamepad::AxisRanges;
-use crate::helper::client::{Helper, Phase};
-use crate::helper::Request;
-use crate::hider::DeviceHider;
-use crate::rumble::Effect;
+use crate::platform::linux::helper::client::{Helper, Phase};
+use crate::platform::linux::helper::Request;
+use crate::platform::linux::hider::DeviceHider;
+use crate::source::{ActiveSource, EventSender, SourceEvent, SourceHealth, SourceKind};
 
 const FF_CODES: [FFEffectCode; 6] = [
     FFEffectCode::FF_RUMBLE,
@@ -88,7 +88,7 @@ impl ProxySource {
         let error = Arc::new(Mutex::new(None));
         let thread = {
             let (stop, status, error) = (stop.clone(), status.clone(), error.clone());
-            let ranges = AxisRanges::from_device(&real);
+            let ranges = axis_ranges(&real);
             std::thread::Builder::new().name("proxy".into()).spawn(move || {
                 let mut proxy =
                     Proxy { real, virt, ranges, real_effects: HashMap::new(), passthrough, tx, device: virt_path };
@@ -101,12 +101,10 @@ impl ProxySource {
         };
         Ok(Self { stop, thread: Some(thread), hidden, status, name, error })
     }
+}
 
-    pub fn gamepad(&self) -> &str {
-        &self.name
-    }
-
-    pub fn health(&self) -> SourceHealth {
+impl ActiveSource for ProxySource {
+    fn health(&self) -> SourceHealth {
         if let Some(e) = self.error.lock().unwrap().clone() {
             return SourceHealth::Failed(e);
         }
@@ -118,7 +116,7 @@ impl ProxySource {
         }
     }
 
-    pub fn status(&self) -> String {
+    fn status(&self) -> String {
         let base = self.status.lock().unwrap().clone();
         let hidden = match &self.hidden {
             Hidden::No => String::new(),
@@ -137,7 +135,14 @@ impl ProxySource {
         format!("{base}{hidden}")
     }
 
-    pub fn shutdown(mut self) {
+    fn gamepads(&self) -> Vec<String> {
+        match self.health() {
+            SourceHealth::Failed(_) => Vec::new(),
+            _ => vec![self.name.clone()],
+        }
+    }
+
+    fn shutdown(mut self: Box<Self>) {
         self.stop.store(true, Ordering::Relaxed);
         if let Some(t) = self.thread.take() {
             let _ = t.join();
@@ -273,7 +278,7 @@ impl Proxy {
                     }
                     upload.set_retval(0);
                     drop(upload); // UI_END_FF_UPLOAD: unblocks the game
-                    self.send(SourceKind::Upload { id, effect: Effect::from_evdev(&data) });
+                    self.send(SourceKind::Upload { id, effect: effect_from_evdev(&data) });
                 }
                 EventSummary::UInput(ev, UInputCode::UI_FF_ERASE, _) => {
                     let erase = self.virt.process_ff_erase(ev)?;

@@ -1,19 +1,21 @@
 //! GameViber: intercepts the rumble games send to the gamepad, runs it
 //! through a scriptable Lua mode and drives toys through Intiface Central.
 
+// Without an OS backend (see `platform`), what only backends use is left unused.
+#![cfg_attr(not(target_os = "linux"), allow(dead_code))]
+
 mod audio;
 mod config;
 mod engine;
 mod gamepad;
 mod gui;
-mod helper;
 mod inputs;
-mod hider;
 mod intiface;
 mod logging;
 mod models;
 mod mode;
 mod overlay;
+mod platform;
 mod game;
 mod rumble;
 mod screen;
@@ -29,7 +31,6 @@ use tokio::sync::mpsc;
 
 use crate::config::{ModeEntry, BUILTIN_PREFIX};
 use crate::engine::{EngineOptions, Shared, SourceChoice};
-use crate::helper::SUBCOMMAND as HELPER_SUBCOMMAND;
 
 #[derive(Parser, Debug)]
 #[command(version, about)]
@@ -84,9 +85,8 @@ fn mode_id(arg: &str) -> String {
 }
 
 fn main() -> anyhow::Result<()> {
-    if std::env::args().nth(1).as_deref() == Some(HELPER_SUBCOMMAND) {
-        logging::init(false);
-        return helper::server::run();
+    if let Some(result) = platform::privileged_subcommand() {
+        return result;
     }
     let args = Args::parse();
     let logs = logging::init(args.verbose);
@@ -107,7 +107,7 @@ fn main() -> anyhow::Result<()> {
         return engine::run(opts, shared, commands_rx);
     }
 
-    helper::dialog::expect_window();
+    platform::window_expected();
     let engine = {
         let shared = shared.clone();
         std::thread::Builder::new().name("engine".into()).spawn(move || {
@@ -124,7 +124,7 @@ fn main() -> anyhow::Result<()> {
         "GameViber",
         native,
         Box::new(move |cc| {
-            helper::dialog::set_window(cc);
+            platform::window_created(cc);
             Ok(Box::new(gui::App::new(&cc.egui_ctx, shared, logs, commands, engine)))
         }),
     )

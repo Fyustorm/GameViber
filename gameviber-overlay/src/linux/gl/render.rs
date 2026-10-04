@@ -11,7 +11,7 @@ use gameviber_common::overlay::OverlayState;
 use glow::HasContext;
 
 use super::capture::{self, Capture};
-use crate::client::Client;
+use crate::linux::client::Client;
 use crate::hud::Hud;
 
 const VERTEX_SIZE: i32 = 20;

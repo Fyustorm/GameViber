@@ -1,8 +1,8 @@
 //! Settings, per-mode parameter values and presets, and the mode catalog, stored under
-//! `~/.config/gameviber` of the invoking user (even when run through sudo).
+//! `platform::config_dir()` (`~/.config/gameviber` of the invoking user on Linux, even
+//! when run through sudo).
 
 use std::collections::BTreeMap;
-use std::ffi::CStr;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 pub use gameviber_common::overlay::Corner;
 
 use crate::mode::ParamValue;
+use crate::platform;
 
 pub const BUILTIN_PREFIX: &str = "builtin:";
 pub const MODE_EXTENSION: &str = "luau";
@@ -196,45 +197,10 @@ impl Default for Settings {
     }
 }
 
-/// Home of the user who started us: the sudo caller rather than root.
-pub fn user_home() -> PathBuf {
-    if let Ok(user) = std::env::var("SUDO_USER") {
-        if let Ok(name) = std::ffi::CString::new(user) {
-            // SAFETY: getpwnam returns a pointer to static storage or null.
-            let pw = unsafe { libc::getpwnam(name.as_ptr()) };
-            if !pw.is_null() {
-                let dir = unsafe { CStr::from_ptr((*pw).pw_dir) };
-                return PathBuf::from(dir.to_string_lossy().into_owned());
-            }
-        }
-    }
-    std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."))
-}
-
-pub fn config_dir() -> PathBuf {
-    match std::env::var_os("XDG_CONFIG_HOME") {
-        Some(dir) if std::env::var_os("SUDO_USER").is_none() => PathBuf::from(dir).join("gameviber"),
-        _ => user_home().join(".config").join("gameviber"),
-    }
-}
-
-/// Downloaded data (the scene models), under `~/.local/share/gameviber`.
-pub fn data_dir() -> PathBuf {
-    match std::env::var_os("XDG_DATA_HOME") {
-        Some(dir) if std::env::var_os("SUDO_USER").is_none() => PathBuf::from(dir).join("gameviber"),
-        _ => user_home().join(".local").join("share").join("gameviber"),
-    }
-}
+pub use crate::platform::{config_dir, data_dir};
 
 pub fn modes_dir() -> PathBuf {
     config_dir().join("modes")
-}
-
-/// Gives files created as root back to the sudo caller.
-fn chown_to_caller(path: &Path) {
-    let (Ok(uid), Ok(gid)) = (std::env::var("SUDO_UID"), std::env::var("SUDO_GID")) else { return };
-    let (Ok(uid), Ok(gid)) = (uid.parse(), gid.parse()) else { return };
-    let _ = std::os::unix::fs::chown(path, Some(uid), Some(gid));
 }
 
 pub fn create_dir(dir: &Path) -> io::Result<()> {
@@ -243,7 +209,7 @@ pub fn create_dir(dir: &Path) -> io::Result<()> {
             create_dir(parent)?;
         }
         fs::create_dir(dir)?;
-        chown_to_caller(dir);
+        platform::chown_to_caller(dir);
     }
     Ok(())
 }
@@ -253,7 +219,7 @@ pub fn write_file(path: &Path, contents: &str) -> io::Result<()> {
         create_dir(dir)?;
     }
     fs::write(path, contents)?;
-    chown_to_caller(path);
+    platform::chown_to_caller(path);
     Ok(())
 }
 

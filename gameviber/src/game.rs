@@ -299,7 +299,7 @@ fn unused_id(id: &str) -> String {
 pub fn save_capture(game: &str, scene: &str, frame: &Frame) -> std::io::Result<String> {
     let dir = captures_dir(game);
     config::create_dir(&dir)?;
-    let stamp = crate::session::local_time().replace([' ', ':'], "-");
+    let stamp = crate::platform::local_time().replace([' ', ':'], "-");
     let label = if scene.is_empty() { "capture" } else { scene };
     let mut file = format!("{label}-{stamp}.png");
     let mut n = 2;

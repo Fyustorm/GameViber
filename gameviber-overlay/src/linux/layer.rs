@@ -9,8 +9,8 @@ use std::sync::{Arc, Mutex};
 
 use ash::vk::{self, Handle};
 
-use crate::client::Client;
-use crate::render::{Gpu, Renderer, SetDeviceLoaderData};
+use crate::linux::client::Client;
+use crate::linux::render::{Gpu, Renderer, SetDeviceLoaderData};
 
 // From vk_layer.h, which ash does not cover.
 const LOADER_INSTANCE_CREATE_INFO: vk::StructureType = vk::StructureType::from_raw(47);

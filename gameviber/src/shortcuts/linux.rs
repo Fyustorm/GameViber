@@ -1,5 +1,4 @@
-//! Keyboard shortcuts for the gamepad combos' actions (stop, mark a moment,
-//! capture the screen), through the desktop's global shortcuts portal
+//! Linux: the desktop's global shortcuts portal
 //! (`org.freedesktop.portal.GlobalShortcuts`): the desktop owns the keys, so
 //! the game never sees them, and no input device permission is needed. The
 //! desktop asks the player to confirm the keys the first time, and lets them
@@ -13,60 +12,11 @@ use anyhow::{bail, Context};
 use zbus::blocking::{Connection, Proxy};
 use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
 
+use super::{Action, Status, APP_ID};
+
 const PORTAL: &str = "org.freedesktop.portal.Desktop";
 const PORTAL_PATH: &str = "/org/freedesktop/portal/desktop";
 const SHORTCUTS: &str = "org.freedesktop.portal.GlobalShortcuts";
-/// The id the portal knows GameViber by, which needs a desktop entry of that name
-/// (else the desktop files the shortcuts under the terminal GameViber started from).
-pub const APP_ID: &str = "io.github.gameviber.GameViber";
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Action {
-    Panic,
-    Mark,
-    Capture,
-}
-
-impl Action {
-    pub const ALL: [Action; 3] = [Action::Panic, Action::Mark, Action::Capture];
-
-    fn id(self) -> &'static str {
-        match self {
-            Action::Panic => "panic",
-            Action::Mark => "mark",
-            Action::Capture => "capture",
-        }
-    }
-
-    pub fn description(self) -> &'static str {
-        match self {
-            Action::Panic => "GameViber: stop every toy",
-            Action::Mark => "GameViber: mark a moment that felt wrong",
-            Action::Capture => "GameViber: capture the game's screen",
-        }
-    }
-
-    /// Keys suggested to the desktop (it may pick others).
-    fn preferred(self) -> &'static str {
-        match self {
-            Action::Panic => "CTRL+ALT+X",
-            Action::Mark => "CTRL+ALT+M",
-            Action::Capture => "CTRL+ALT+C",
-        }
-    }
-}
-
-/// The shortcuts as the GUI shows them.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub enum Status {
-    #[default]
-    Off,
-    Connecting,
-    /// Bound: the keys of each action, as the desktop describes them ("" if none).
-    Ready(Vec<(Action, String)>),
-    Failed(String),
-}
-
 pub struct Shortcuts {
     actions: Receiver<Action>,
     status: Arc<Mutex<Status>>,
@@ -174,11 +124,7 @@ fn register(conn: &Connection) {
 /// `~/.local/share/applications/<APP_ID>.desktop`, launching this executable.
 fn desktop_entry() -> anyhow::Result<()> {
     let exe = std::env::current_exe()?;
-    let dir = std::env::var_os("XDG_DATA_HOME")
-        .map(std::path::PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".local/share")))
-        .context("no home")?
-        .join("applications");
+    let dir = crate::platform::linux::data_home().join("applications");
     let path = dir.join(format!("{APP_ID}.desktop"));
     let entry = format!(
         "[Desktop Entry]\nType=Application\nName=GameViber\nComment=Game rumble, sound and image to toys\nExec={}\nIcon=input-gaming\nCategories=Game;Utility;\n",

@@ -10,7 +10,7 @@ use std::time::Instant;
 
 use gameviber_common::overlay::{self, CaptureRequest, Hello, OverlayState};
 
-use crate::capture::{Pace, SharedFrames};
+use crate::linux::capture::{Pace, SharedFrames};
 
 /// Sockets made by this process, to give each a distinct name.
 static SOCKETS: AtomicU32 = AtomicU32::new(0);

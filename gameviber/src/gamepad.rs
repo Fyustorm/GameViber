@@ -1,11 +1,56 @@
-//! Gamepad normalization: evdev key/axis codes to the Xbox-layout names
+//! Gamepad normalization: key/axis codes (Linux's numbering, see `codes`) to the Xbox-layout names
 //! exposed to modes (A, B, LB, DPAD_UP, LX, LT...), plus idle tracking and
 //! detection of the panic, "mark this moment" and "capture the screen" combos.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::atomic::{AtomicU8, Ordering};
 
-use evdev::{AbsoluteAxisCode as Abs, KeyCode as Key};
+/// Button and axis codes: Linux's input event codes (`input-event-codes.h`),
+/// which every source translates its gamepad's events to.
+pub mod codes {
+    pub const KEY_RECORD: u16 = 167;
+    pub const BTN_SOUTH: u16 = 0x130;
+    pub const BTN_EAST: u16 = 0x131;
+    pub const BTN_NORTH: u16 = 0x133;
+    pub const BTN_WEST: u16 = 0x134;
+    pub const BTN_TL: u16 = 0x136;
+    pub const BTN_TR: u16 = 0x137;
+    pub const BTN_TL2: u16 = 0x138;
+    pub const BTN_TR2: u16 = 0x139;
+    pub const BTN_SELECT: u16 = 0x13a;
+    pub const BTN_START: u16 = 0x13b;
+    pub const BTN_MODE: u16 = 0x13c;
+    pub const BTN_THUMBL: u16 = 0x13d;
+    pub const BTN_THUMBR: u16 = 0x13e;
+    pub const BTN_DPAD_UP: u16 = 0x220;
+    pub const BTN_DPAD_DOWN: u16 = 0x221;
+    pub const BTN_DPAD_LEFT: u16 = 0x222;
+    pub const BTN_DPAD_RIGHT: u16 = 0x223;
+    pub const BTN_GRIPL: u16 = 0x224;
+    pub const BTN_GRIPR: u16 = 0x225;
+    pub const BTN_GRIPL2: u16 = 0x226;
+    pub const BTN_GRIPR2: u16 = 0x227;
+    pub const BTN_TRIGGER_HAPPY1: u16 = 0x2c0;
+    pub const BTN_TRIGGER_HAPPY2: u16 = 0x2c1;
+    pub const BTN_TRIGGER_HAPPY3: u16 = 0x2c2;
+    pub const BTN_TRIGGER_HAPPY4: u16 = 0x2c3;
+    pub const BTN_TRIGGER_HAPPY5: u16 = 0x2c4;
+    pub const BTN_TRIGGER_HAPPY6: u16 = 0x2c5;
+    pub const BTN_TRIGGER_HAPPY7: u16 = 0x2c6;
+    pub const BTN_TRIGGER_HAPPY8: u16 = 0x2c7;
+    pub const ABS_X: u16 = 0x00;
+    pub const ABS_Y: u16 = 0x01;
+    pub const ABS_Z: u16 = 0x02;
+    pub const ABS_RX: u16 = 0x03;
+    pub const ABS_RY: u16 = 0x04;
+    pub const ABS_RZ: u16 = 0x05;
+    pub const ABS_GAS: u16 = 0x09;
+    pub const ABS_BRAKE: u16 = 0x0a;
+    pub const ABS_HAT0X: u16 = 0x10;
+    pub const ABS_HAT0Y: u16 = 0x11;
+}
+
+use codes as c;
 
 pub const BUTTONS: [&str; 22] = [
     "A", "B", "X", "Y", "LB", "RB", "BACK", "START", "GUIDE", "LS", "RS", "DPAD_UP", "DPAD_DOWN",
@@ -72,47 +117,44 @@ pub fn combo_text(names: &[String]) -> String {
 }
 
 fn button_name(code: u16) -> Option<&'static str> {
-    Some(match Key(code) {
-        Key::BTN_SOUTH => "A",
-        Key::BTN_EAST => "B",
+    Some(match code {
+        c::BTN_SOUTH => "A",
+        c::BTN_EAST => "B",
         // xpad reports the Xbox X/Y buttons as BTN_X/BTN_Y (aliases of NORTH/WEST).
-        Key::BTN_NORTH => "X",
-        Key::BTN_WEST => "Y",
-        Key::BTN_TL => "LB",
-        Key::BTN_TR => "RB",
-        Key::BTN_SELECT => "BACK",
-        Key::BTN_START => "START",
-        Key::BTN_MODE => "GUIDE",
-        Key::BTN_THUMBL => "LS",
-        Key::BTN_THUMBR => "RS",
-        Key::BTN_DPAD_UP | Key::BTN_TRIGGER_HAPPY3 => "DPAD_UP",
-        Key::BTN_DPAD_DOWN | Key::BTN_TRIGGER_HAPPY4 => "DPAD_DOWN",
-        Key::BTN_DPAD_LEFT | Key::BTN_TRIGGER_HAPPY1 => "DPAD_LEFT",
-        Key::BTN_DPAD_RIGHT | Key::BTN_TRIGGER_HAPPY2 => "DPAD_RIGHT",
-        Key::BTN_TL2 => "LT",
-        Key::BTN_TR2 => "RT",
+        c::BTN_NORTH => "X",
+        c::BTN_WEST => "Y",
+        c::BTN_TL => "LB",
+        c::BTN_TR => "RB",
+        c::BTN_SELECT => "BACK",
+        c::BTN_START => "START",
+        c::BTN_MODE => "GUIDE",
+        c::BTN_THUMBL => "LS",
+        c::BTN_THUMBR => "RS",
+        c::BTN_DPAD_UP | c::BTN_TRIGGER_HAPPY3 => "DPAD_UP",
+        c::BTN_DPAD_DOWN | c::BTN_TRIGGER_HAPPY4 => "DPAD_DOWN",
+        c::BTN_DPAD_LEFT | c::BTN_TRIGGER_HAPPY1 => "DPAD_LEFT",
+        c::BTN_DPAD_RIGHT | c::BTN_TRIGGER_HAPPY2 => "DPAD_RIGHT",
+        c::BTN_TL2 => "LT",
+        c::BTN_TR2 => "RT",
         // Back paddles: xpad (Elite Series 2) and newer kernels' BTN_GRIPL, GRIPR, GRIPL2, GRIPR2.
-        Key::BTN_TRIGGER_HAPPY5 | Key(0x224) => "P1",
-        Key::BTN_TRIGGER_HAPPY6 | Key(0x225) => "P2",
-        Key::BTN_TRIGGER_HAPPY7 | Key(0x226) => "P3",
-        Key::BTN_TRIGGER_HAPPY8 | Key(0x227) => "P4",
+        c::BTN_TRIGGER_HAPPY5 | c::BTN_GRIPL => "P1",
+        c::BTN_TRIGGER_HAPPY6 | c::BTN_GRIPR => "P2",
+        c::BTN_TRIGGER_HAPPY7 | c::BTN_GRIPL2 => "P3",
+        c::BTN_TRIGGER_HAPPY8 | c::BTN_GRIPR2 => "P4",
         // The share button of Xbox Series and recent gamepads.
-        Key::KEY_RECORD => "SHARE",
+        c::KEY_RECORD => "SHARE",
         _ => return None,
     })
 }
 
-/// Axis value range of one device, read from its absinfo.
+/// Axis value range of one device, as its driver reports it.
 #[derive(Debug, Clone, Default)]
 pub struct AxisRanges(HashMap<u16, (i32, i32)>);
 
 impl AxisRanges {
-    pub fn from_device(dev: &evdev::Device) -> Self {
-        let ranges = dev
-            .get_absinfo()
-            .map(|it| it.map(|(code, info)| (code.0, (info.minimum(), info.maximum()))).collect())
-            .unwrap_or_default();
-        Self(ranges)
+    /// (code, (minimum, maximum)) of each axis.
+    pub fn new(ranges: impl IntoIterator<Item = (u16, (i32, i32))>) -> Self {
+        Self(ranges.into_iter().collect())
     }
 
     /// Sticks and hats to -1..1, triggers to 0..1.
@@ -122,8 +164,8 @@ impl AxisRanges {
             return 0.0;
         }
         let unit = (value - min) as f64 / (max - min) as f64;
-        match Abs(code) {
-            Abs::ABS_Z | Abs::ABS_RZ | Abs::ABS_GAS | Abs::ABS_BRAKE => unit.clamp(0.0, 1.0),
+        match code {
+            c::ABS_Z | c::ABS_RZ | c::ABS_GAS | c::ABS_BRAKE => unit.clamp(0.0, 1.0),
             _ => (unit * 2.0 - 1.0).clamp(-1.0, 1.0),
         }
     }
@@ -230,18 +272,18 @@ impl PadState {
             events.extend(this.button(neg, value < -0.5, time));
             events.extend(this.button(pos, value > 0.5, time));
         };
-        let name = match Abs(code) {
-            Abs::ABS_X => "LX",
-            Abs::ABS_Y => "LY",
-            Abs::ABS_RX => "RX",
-            Abs::ABS_RY => "RY",
-            Abs::ABS_Z => "LT",
-            Abs::ABS_RZ => "RT",
-            Abs::ABS_HAT0X => {
+        let name = match code {
+            c::ABS_X => "LX",
+            c::ABS_Y => "LY",
+            c::ABS_RX => "RX",
+            c::ABS_RY => "RY",
+            c::ABS_Z => "LT",
+            c::ABS_RZ => "RT",
+            c::ABS_HAT0X => {
                 hat(self, "DPAD_LEFT", "DPAD_RIGHT");
                 return events;
             }
-            Abs::ABS_HAT0Y => {
+            c::ABS_HAT0Y => {
                 hat(self, "DPAD_UP", "DPAD_DOWN");
                 return events;
             }
@@ -315,26 +357,26 @@ mod tests {
     #[test]
     fn key_press_and_release_emit_named_events_once() {
         let mut pad = PadState::default();
-        assert_eq!(pad.key(Key::BTN_SOUTH.0, true, 1.0), Some(ButtonEvent { name: "A", pressed: true }));
-        assert_eq!(pad.key(Key::BTN_SOUTH.0, true, 1.1), None);
+        assert_eq!(pad.key(c::BTN_SOUTH, true, 1.0), Some(ButtonEvent { name: "A", pressed: true }));
+        assert_eq!(pad.key(c::BTN_SOUTH, true, 1.1), None);
         assert!(pad.held().contains("A"));
-        assert_eq!(pad.key(Key::BTN_SOUTH.0, false, 1.2), Some(ButtonEvent { name: "A", pressed: false }));
+        assert_eq!(pad.key(c::BTN_SOUTH, false, 1.2), Some(ButtonEvent { name: "A", pressed: false }));
         assert_eq!(pad.input_idle(3.2), 2.0);
     }
 
     #[test]
     fn hat_axis_becomes_dpad_buttons() {
         let mut pad = PadState::default();
-        let ev = pad.axis(Abs::ABS_HAT0X.0, -1.0, 0.0);
+        let ev = pad.axis(c::ABS_HAT0X, -1.0, 0.0);
         assert_eq!(ev, vec![ButtonEvent { name: "DPAD_LEFT", pressed: true }]);
-        let ev = pad.axis(Abs::ABS_HAT0X.0, 0.0, 0.1);
+        let ev = pad.axis(c::ABS_HAT0X, 0.0, 0.1);
         assert_eq!(ev, vec![ButtonEvent { name: "DPAD_LEFT", pressed: false }]);
     }
 
     #[test]
     fn trigger_is_axis_and_button() {
         let mut pad = PadState::default();
-        let ev = pad.axis(Abs::ABS_RZ.0, 0.8, 0.0);
+        let ev = pad.axis(c::ABS_RZ, 0.8, 0.0);
         assert_eq!(pad.axes()["RT"], 0.8);
         assert_eq!(ev, vec![ButtonEvent { name: "RT", pressed: true }]);
     }
@@ -342,18 +384,18 @@ mod tests {
     #[test]
     fn stick_inside_deadzone_is_not_input() {
         let mut pad = PadState::default();
-        pad.axis(Abs::ABS_X.0, 0.05, 5.0);
+        pad.axis(c::ABS_X, 0.05, 5.0);
         assert_eq!(pad.input_idle(5.0), 5.0);
-        pad.axis(Abs::ABS_X.0, 0.5, 5.0);
+        pad.axis(c::ABS_X, 0.5, 5.0);
         assert_eq!(pad.input_idle(5.0), 0.0);
     }
 
     #[test]
     fn normalize_uses_device_ranges() {
-        let ranges = AxisRanges([(Abs::ABS_Z.0, (0, 255)), (Abs::ABS_X.0, (-32768, 32767))].into_iter().collect());
-        assert_eq!(ranges.normalize(Abs::ABS_Z.0, 255), 1.0);
-        assert!(ranges.normalize(Abs::ABS_X.0, 0).abs() < 0.001);
-        assert_eq!(ranges.normalize(Abs::ABS_X.0, -32768), -1.0);
+        let ranges = AxisRanges::new([(c::ABS_Z, (0, 255)), (c::ABS_X, (-32768, 32767))]);
+        assert_eq!(ranges.normalize(c::ABS_Z, 255), 1.0);
+        assert!(ranges.normalize(c::ABS_X, 0).abs() < 0.001);
+        assert_eq!(ranges.normalize(c::ABS_X, -32768), -1.0);
     }
 
     #[test]
@@ -421,7 +463,7 @@ mod tests {
     fn release_all_emits_releases_and_centers_axes() {
         let mut pad = PadState::default();
         pad.button("A", true, 0.0);
-        pad.axis(Abs::ABS_X.0, 0.8, 0.0);
+        pad.axis(c::ABS_X, 0.8, 0.0);
         let released = pad.release_all();
         assert_eq!(released, vec![ButtonEvent { name: "A", pressed: false }]);
         assert!(pad.held().is_empty());
@@ -434,11 +476,11 @@ mod tests {
         assert!(parse_combo(&names(&["P1"])).is_some());
         assert!(parse_combo(&names(&["A"])).is_none());
         let mut pad = PadState::default();
-        assert_eq!(pad.key(Key::BTN_TRIGGER_HAPPY5.0, true, 0.0).map(|e| e.name), Some("P1"));
-        assert_eq!(pad.key(0x227, true, 0.0).map(|e| e.name), Some("P4"));
+        assert_eq!(pad.key(c::BTN_TRIGGER_HAPPY5, true, 0.0).map(|e| e.name), Some("P1"));
+        assert_eq!(pad.key(c::BTN_GRIPR2, true, 0.0).map(|e| e.name), Some("P4"));
         reserve_extras([&parse_combo(&names(&["P1"])).unwrap(), &parse_combo(&names(&["BACK", "START"])).unwrap()]);
-        assert!(reserved(Key::BTN_TRIGGER_HAPPY5.0) && reserved(0x224));
-        assert!(!reserved(Key::BTN_TRIGGER_HAPPY6.0) && !reserved(Key::BTN_SELECT.0));
+        assert!(reserved(c::BTN_TRIGGER_HAPPY5) && reserved(c::BTN_GRIPL));
+        assert!(!reserved(c::BTN_TRIGGER_HAPPY6) && !reserved(c::BTN_SELECT));
         reserve_extras([]);
     }
 }

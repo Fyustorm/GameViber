@@ -12,8 +12,8 @@ use aya::Ebpf;
 use gameviber_common::ProbeEvent;
 
 use super::{Reply, Request, WireProbe};
-use crate::hider::DeviceHider;
-use crate::source::ebpf::load_probe;
+use crate::platform::linux::hider::DeviceHider;
+use crate::source::linux::load_probe;
 
 type Output = Arc<Mutex<std::io::Stdout>>;
 

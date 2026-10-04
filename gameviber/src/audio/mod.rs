@@ -167,8 +167,8 @@ fn run(control: Arc<Mutex<Control>>, tx: mpsc::Sender<Output>) {
                             capture = Some(c);
                         }
                         Err(e) => {
-                            log::warn!("cannot capture the sound (pw-record): {e}");
-                            error = Some(format!("pw-record: {e}"));
+                            log::warn!("cannot capture the sound: {e:#}");
+                            error = Some(format!("{e:#}"));
                         }
                     }
                 }
@@ -204,7 +204,7 @@ fn run(control: Arc<Mutex<Control>>, tx: mpsc::Sender<Output>) {
             }
             Err(mpsc::RecvTimeoutError::Timeout) => continue,
             Err(mpsc::RecvTimeoutError::Disconnected) => {
-                // pw-record exited: `ended()` restarts it on the next turn.
+                // The capture stopped: `ended()` restarts it on the next turn.
                 std::thread::sleep(Duration::from_millis(100));
                 continue;
             }

@@ -6,7 +6,7 @@
 use gameviber_common::overlay::frames;
 use glow::HasContext;
 
-use crate::client::Client;
+use crate::linux::client::Client;
 
 /// At most this many halvings after the first blit.
 const MAX_HALVINGS: u32 = 6;

@@ -150,7 +150,7 @@ fn input_table_exposes_buttons_axes_and_idle() {
     let mut rt = load(&src);
     let mut pad = PadState::default();
     pad.button("A", true, 0.0);
-    pad.axis(evdev::AbsoluteAxisCode::ABS_X.0, 0.5, 0.0);
+    pad.axis(crate::gamepad::codes::ABS_X, 0.5, 0.0);
     let out = rt.step(DT, rumble(0.0, 0.0), &pad, 0.0, &[]).unwrap();
     let get = |name: &str| out.plots.iter().find(|(n, _)| n == name).unwrap().1;
     assert_eq!((get("a"), get("lx")), (1.0, 0.5));
@@ -297,7 +297,7 @@ fn stop_resets_outputs() {
 #[test]
 fn builtin_modes_load_and_run() {
     let mut pad = PadState::default();
-    pad.axis(evdev::AbsoluteAxisCode::ABS_RZ.0, 1.0, 0.0);
+    pad.axis(crate::gamepad::codes::ABS_RZ, 1.0, 0.0);
     pad.button("RB", true, 0.0);
     for src in [COMBO, OVERHEAT, TENSION, ENGINE, HEARTBEAT, ALL_OR_NOTHING, AMBIENT, SURGE] {
         let mut rt = load(src);
@@ -419,7 +419,7 @@ fn engine_revs_with_throttle() {
     let idle = run(&mut rt, 1.0, rumble(0.0, 0.0), &PadState::default(), 0.0);
     assert_eq!(plot_value(&idle, "rpm"), 0.0);
     let mut pad = PadState::default();
-    pad.axis(evdev::AbsoluteAxisCode::ABS_RZ.0, 1.0, 0.0);
+    pad.axis(crate::gamepad::codes::ABS_RZ, 1.0, 0.0);
     let out = run(&mut rt, 1.0, rumble(0.0, 0.0), &pad, 0.0);
     assert_eq!(plot_value(&out, "rpm"), 1.0);
     let off = run(&mut rt, 1.0, rumble(0.0, 0.0), &PadState::default(), 1e9);

@@ -22,18 +22,19 @@ use gameviber_common::ProbeEvent;
 use tokio::io::unix::AsyncFd;
 use tokio::sync::mpsc;
 
-use super::{list_ff_devices, translate_input, EventSender, SourceEvent, SourceHealth, SourceKind};
-use crate::gamepad::AxisRanges;
-use crate::helper::client::{Helper, Phase};
-use crate::helper::{Request, WireProbe};
+use super::{axis_ranges, list_ff_devices, translate_input};
+use crate::platform::linux::helper::client::{Helper, Phase};
+use crate::platform::linux::helper::{Request, WireProbe};
+use crate::platform::linux::is_root;
 use crate::rumble::Effect;
+use crate::source::{ActiveSource, EventSender, SourceEvent, SourceHealth, SourceKind};
 
 const RESCAN_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Loads and attaches the probe (root only). Returns the program handle, which
 /// must stay alive, and its event ring buffer.
 pub fn load_probe() -> anyhow::Result<(Ebpf, RingBuf<MapData>)> {
-    anyhow::ensure!(unsafe { libc::geteuid() } == 0, "loading the eBPF probe needs root");
+    anyhow::ensure!(is_root(), "loading the eBPF probe needs root");
     let bytes = include_bytes_aligned!(concat!(env!("OUT_DIR"), "/gameviber-ebpf"));
     anyhow::ensure!(!bytes.is_empty(), "binary built without the eBPF probe (SKIP_EBPF_BUILD)");
     let mut bpf = Ebpf::load(bytes).context("cannot load the eBPF probe")?;
@@ -65,7 +66,7 @@ impl EbpfSource {
     pub fn start(tx: EventSender, helper: &Arc<Helper>) -> anyhow::Result<Self> {
         let (probe_tx, probe_rx) = mpsc::unbounded_channel::<WireProbe>();
         tokio::spawn(forward_probe_events(probe_rx, tx.clone()));
-        let probe = if unsafe { libc::geteuid() } == 0 {
+        let probe = if is_root() {
             let (bpf, ring) = load_probe()?;
             tokio::spawn(read_local_ring(AsyncFd::new(ring)?, probe_tx));
             Probe::Local { _bpf: bpf }
@@ -79,8 +80,10 @@ impl EbpfSource {
         spawn_device_watcher(tx, watched.clone(), stop.clone());
         Ok(Self { probe, stop, watched })
     }
+}
 
-    pub fn status(&self) -> String {
+impl ActiveSource for EbpfSource {
+    fn status(&self) -> String {
         let watching = || {
             let mut devices: Vec<_> = self.watched.lock().unwrap().keys().cloned().collect();
             devices.sort();
@@ -104,13 +107,13 @@ impl EbpfSource {
     }
 
     /// Names of the watched gamepads.
-    pub fn gamepads(&self) -> Vec<String> {
+    fn gamepads(&self) -> Vec<String> {
         let mut names: Vec<_> = self.watched.lock().unwrap().values().cloned().collect();
         names.sort();
         names
     }
 
-    pub fn health(&self) -> SourceHealth {
+    fn health(&self) -> SourceHealth {
         let Probe::Helper(helper) = &self.probe else { return SourceHealth::Working };
         let state = helper.state();
         match state.phase {
@@ -124,7 +127,7 @@ impl EbpfSource {
         }
     }
 
-    pub fn shutdown(self) {
+    fn shutdown(self: Box<Self>) {
         self.stop.store(true, Ordering::Relaxed);
         if let Probe::Helper(helper) = &self.probe {
             helper.set_probe_sink(None);
@@ -207,7 +210,7 @@ fn spawn_device_watcher(tx: EventSender, watched: Arc<Mutex<HashMap<String, Stri
 
 /// Blocking reader; after `stop` it exits on the next event of the device.
 fn read_device(path: &str, mut dev: Device, tx: &EventSender, stop: &AtomicBool) {
-    let ranges = AxisRanges::from_device(&dev);
+    let ranges = axis_ranges(&dev);
     loop {
         let events = match dev.fetch_events() {
             Ok(it) => it.collect::<Vec<_>>(),

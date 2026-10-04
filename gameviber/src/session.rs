@@ -20,6 +20,7 @@ use crate::config;
 use crate::gamepad::{ButtonEvent, PadState, AXES, BUTTONS};
 use crate::mode::rumble_events::RumbleLevels;
 use crate::mode::{ModeEvent, ZoneValue};
+use crate::platform::local_time;
 use crate::screen::ScreenLevels;
 
 /// 2: audio changes. 3: image, zones, values from other programs.
@@ -451,27 +452,6 @@ impl Player {
 
 fn round(x: f64, scale: f64) -> f64 {
     (x * scale).round() / scale
-}
-
-/// "2026-10-03 21:14:05", local time.
-pub fn local_time() -> String {
-    // SAFETY: localtime_r only writes the tm struct it is given.
-    unsafe {
-        let now = libc::time(std::ptr::null_mut());
-        let mut tm: libc::tm = std::mem::zeroed();
-        if libc::localtime_r(&now, &mut tm).is_null() {
-            return format!("{now}");
-        }
-        format!(
-            "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
-            tm.tm_year + 1900,
-            tm.tm_mon + 1,
-            tm.tm_mday,
-            tm.tm_hour,
-            tm.tm_min,
-            tm.tm_sec
-        )
-    }
 }
 
 #[cfg(test)]

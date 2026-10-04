@@ -10,12 +10,14 @@
 //! through the `gameviber-overlay` launcher, which also preloads the
 //! library. `DISABLE_GAMEVIBER_OVERLAY=1` turns both off.
 
-mod capture;
-mod client;
-mod gl;
+// Without an OS backend, `hud` and the logging are left unused.
+#![cfg_attr(not(target_os = "linux"), allow(dead_code))]
+
+// The overlay itself is an OS backend (`linux`); a Windows one (DXGI hooks)
+// would reuse `hud`. See AGENTS.md, Platforms.
 mod hud;
-mod layer;
-mod render;
+#[cfg(target_os = "linux")]
+mod linux;
 
 /// Writes to stderr when `GAMEVIBER_OVERLAY_DEBUG` is set: games own stdout/stderr.
 pub(crate) fn log(message: &str) {

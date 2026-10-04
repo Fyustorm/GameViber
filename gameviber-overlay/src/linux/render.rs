@@ -16,7 +16,7 @@ use ash::vk::{self, Handle};
 use epaint::{ColorImage, ImageData, Primitive, TextureId};
 use gameviber_common::overlay::{frames, OverlayState};
 
-use crate::client::Client;
+use crate::linux::client::Client;
 use crate::hud::{Frame as HudFrame, Hud};
 
 const SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/overlay.spv"));

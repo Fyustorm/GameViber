@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_ulong, c_void, CStr};
 use std::sync::{Mutex, OnceLock};
 
-use crate::client::Client;
+use crate::linux::client::Client;
 use render::Renderer;
 
 type Ptr = *mut c_void;

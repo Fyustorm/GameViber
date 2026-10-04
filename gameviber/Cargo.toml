@@ -5,7 +5,6 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1"
-aya = "0.14"
 buttplug = "12"
 buttplug_core = "11"
 futures = "0.3"
@@ -13,16 +12,13 @@ clap = { version = "4", features = ["derive"] }
 eframe = "0.36"
 egui_plot = "0.37"
 env_logger = "0.11"
-evdev = "0.13"
 gameviber-common = { path = "../gameviber-common", features = ["user"] }
-libc = "0.2"
 log = "0.4"
 mlua = { version = "0.12", features = ["luau"] }
 # Captures of the game's image kept in game profiles.
 png = "0.18"
 # CLAP audio scene model (docs/spec-modes.md §6.3); ONNX Runtime is linked statically.
 ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "download-binaries", "tls-native", "api-22"] }
-raw-window-handle = "0.6"
 rustfft = "6"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -32,6 +28,13 @@ tokio = { version = "1", features = ["full"] }
 tokio-tungstenite = "0.30"
 toml = "1"
 ureq = "3"
+
+# Linux only: everything that uses them lives in `linux` modules (AGENTS.md, Platforms).
+[target.'cfg(target_os = "linux")'.dependencies]
+aya = "0.14"
+evdev = "0.13"
+libc = "0.2"
+raw-window-handle = "0.6"
 wayland-client = { version = "0.31", features = ["system"] }
 wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }
