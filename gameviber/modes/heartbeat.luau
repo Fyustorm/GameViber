@@ -1,3 +1,4 @@
+-- SPDX-License-Identifier: MIT
 -- Horror and survival games (Resident Evil, Silent Hill, Dead Space...). A heartbeat
 -- runs all the time; every vibration raises the stress, which speeds it up and makes it
 -- stronger, then the heart slowly calms down. Optional random jump scares.

@@ -21,7 +21,7 @@ description: |
   Lua mode and drives toys connected to Intiface Central.
 vendor: GameViber
 homepage: https://github.com/Fyustorm/GameViber
-license: Proprietary
+license: GPL-3.0-or-later
 
 contents:
   - src: target/package/root/usr/bin/gameviber
@@ -48,6 +48,12 @@ contents:
     dst: /usr/share/vulkan/implicit_layer.d/gameviber_overlay.x86_64.json
   - src: target/package/root/usr/share/vulkan/implicit_layer.d/gameviber_overlay.x86.json
     dst: /usr/share/vulkan/implicit_layer.d/gameviber_overlay.x86.json
+  - src: target/package/root/usr/share/licenses/gameviber/LICENSE
+    dst: /usr/share/licenses/gameviber/LICENSE
+  - src: target/package/root/usr/share/licenses/gameviber/LICENSE-MIT
+    dst: /usr/share/licenses/gameviber/LICENSE-MIT
+  - src: target/package/root/usr/share/licenses/gameviber/THIRD-PARTY-LICENSES.txt
+    dst: /usr/share/licenses/gameviber/THIRD-PARTY-LICENSES.txt
   - src: target/package/root/usr/lib/udev/rules.d/60-gameviber-uinput.rules
     dst: /usr/lib/udev/rules.d/60-gameviber-uinput.rules
   - src: target/package/root/usr/share/polkit-1/actions/io.github.gameviber.GameViber.policy

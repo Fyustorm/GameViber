@@ -1,6 +1,6 @@
 //! Settings page: updates (`updates.rs`), the language of the requests to AI
 //! assistants, the request templates (editable, with the shipped version one
-//! click away) and the setup guide.
+//! click away), the setup guide and the license notice.
 
 use eframe::egui::{self, Margin, RichText};
 
@@ -67,6 +67,8 @@ impl App {
                         });
                     });
                 });
+                ui.add_space(8.0);
+                card(PANEL).inner_margin(Margin::same(16)).show(ui, about);
             });
         });
     }
@@ -155,4 +157,19 @@ impl App {
                 .desired_rows(24),
         );
     }
+}
+
+/// The license notice the GNU GPL asks interactive programs to show.
+fn about(ui: &mut egui::Ui) {
+    ui.set_width(ui.available_width());
+    ui.label(RichText::new(format!("GameViber {}", crate::update::current_version())).strong().size(15.0));
+    ui.label(muted(
+        "Copyright © 2026 The GameViber contributors. GameViber is free software: you can redistribute it and/or \
+         modify it under the terms of the GNU General Public License, version 3 or any later version. It comes \
+         with ABSOLUTELY NO WARRANTY.",
+    ));
+    ui.horizontal(|ui| {
+        ui.hyperlink_to("Source code", format!("https://github.com/{}", crate::update::REPOSITORY));
+        ui.hyperlink_to("License", "https://www.gnu.org/licenses/gpl-3.0.html");
+    });
 }

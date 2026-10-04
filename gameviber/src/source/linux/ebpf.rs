@@ -18,15 +18,13 @@ use aya::maps::{MapData, RingBuf};
 use aya::programs::TracePoint;
 use aya::{include_bytes_aligned, Ebpf};
 use evdev::Device;
-use gameviber_common::ProbeEvent;
 use tokio::io::unix::AsyncFd;
 use tokio::sync::mpsc;
 
 use super::{axis_ranges, list_ff_devices, translate_input};
 use crate::platform::linux::helper::client::{Helper, Phase};
-use crate::platform::linux::helper::{Request, WireProbe};
+use crate::platform::linux::helper::{read_record, Request, WireProbe};
 use crate::platform::linux::is_root;
-use crate::rumble::Effect;
 use crate::source::{ActiveSource, EventSender, SourceEvent, SourceHealth, SourceKind};
 
 const RESCAN_INTERVAL: Duration = Duration::from_secs(2);
@@ -38,12 +36,12 @@ pub fn load_probe() -> anyhow::Result<(Ebpf, RingBuf<MapData>)> {
     let bytes = include_bytes_aligned!(concat!(env!("OUT_DIR"), "/gameviber-ebpf"));
     anyhow::ensure!(!bytes.is_empty(), "binary built without the eBPF probe (SKIP_EBPF_BUILD)");
     let mut bpf = Ebpf::load(bytes).context("cannot load the eBPF probe")?;
-    for name in ["sys_enter_ioctl", "sys_exit_ioctl"] {
+    for (name, tracepoint) in [("ioctl_enter", "sys_enter_ioctl"), ("ioctl_exit", "sys_exit_ioctl")] {
         let program: &mut TracePoint = bpf.program_mut(name).context(name)?.try_into()?;
         program.load()?;
-        program.attach("syscalls", name)?;
+        program.attach("syscalls", tracepoint)?;
     }
-    let ring = RingBuf::try_from(bpf.take_map("EVENTS").context("EVENTS map")?)?;
+    let ring = RingBuf::try_from(bpf.take_map("RECORDS").context("RECORDS map")?)?;
     log::info!("eBPF probe attached (EVIOCSFF / EVIOCRMFF)");
     Ok((bpf, ring))
 }
@@ -146,11 +144,8 @@ async fn read_local_ring(mut ring: AsyncFd<RingBuf<MapData>>, probe_tx: mpsc::Un
             }
         };
         while let Some(item) = guard.get_inner_mut().next() {
-            if item.len() < std::mem::size_of::<ProbeEvent>() {
-                continue;
-            }
-            let ev: ProbeEvent = unsafe { std::ptr::read_unaligned(item.as_ptr() as *const ProbeEvent) };
-            if probe_tx.send(WireProbe::from(&ev)).is_err() {
+            let Some(record) = read_record(&item) else { continue };
+            if probe_tx.send(WireProbe::from(&record)).is_err() {
                 return;
             }
         }
@@ -161,14 +156,14 @@ async fn read_local_ring(mut ring: AsyncFd<RingBuf<MapData>>, probe_tx: mpsc::Un
 /// Probe events -> source events, attributed to the gamepad the ioctl targeted.
 async fn forward_probe_events(mut probe_rx: mpsc::UnboundedReceiver<WireProbe>, tx: EventSender) {
     while let Some(probe) = probe_rx.recv().await {
-        let Some(device) = resolve_fd(probe.tgid, probe.fd) else {
-            log::debug!("effect {} of pid {}: fd {} not resolved, ignored", probe.effect_id, probe.tgid, probe.fd);
+        let Some(device) = resolve_fd(probe.pid, probe.fd) else {
+            log::debug!("effect {} of pid {}: fd {} not resolved, ignored", probe.effect_id, probe.pid, probe.fd);
             continue;
         };
-        let kind = if probe.erased {
-            SourceKind::Erase { id: probe.effect_id }
-        } else {
-            SourceKind::Upload { id: probe.effect_id, effect: Effect::from_probe(&probe.effect()) }
+        let kind = match probe.effect() {
+            Some(effect) => SourceKind::Upload { id: probe.effect_id, effect },
+            None if probe.erased => SourceKind::Erase { id: probe.effect_id },
+            None => continue,
         };
         if tx.send(SourceEvent { device, kind }).is_err() {
             return;

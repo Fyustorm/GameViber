@@ -2,6 +2,7 @@
 # Lays out the files a GameViber package installs under DESTDIR (prefix /usr),
 # for deb / rpm / AUR packaging. Build first:
 #   cargo build --release && cargo build-overlay32
+# Needs cargo-about, for the third-party licenses.
 # Usage: packaging/linux/stage.sh DESTDIR
 # The 32-bit overlay is optional: without it, 32-bit games get no overlay.
 set -eu
@@ -32,6 +33,11 @@ fi
 # How GameViber was installed, for its updates: one of our packages,
 # installed through the package manager (a store build writes its own name).
 printf 'package\n' > "$dest/usr/lib/gameviber/distribution"
+
+# Licenses: GameViber's, and those of what it includes.
+install -Dm644 "$root/LICENSE" "$dest/usr/share/licenses/gameviber/LICENSE"
+install -Dm644 "$root/LICENSE-MIT" "$dest/usr/share/licenses/gameviber/LICENSE-MIT"
+"$root/packaging/third-party/licenses.sh" "$dest/usr/share/licenses/gameviber/THIRD-PARTY-LICENSES.txt"
 
 install -Dm644 "$here/60-gameviber-uinput.rules" "$dest/usr/lib/udev/rules.d/60-gameviber-uinput.rules"
 install -Dm644 "$here/io.github.gameviber.GameViber.policy" "$dest/usr/share/polkit-1/actions/io.github.gameviber.GameViber.policy"

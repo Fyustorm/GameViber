@@ -466,6 +466,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn built_in_modes_are_under_the_mit_license() {
+        for (name, source) in BUILTIN_MODES {
+            assert!(source.starts_with("-- SPDX-License-Identifier: MIT\n"), "{name}: first line (AGENTS.md, Licenses)");
+        }
+    }
+
+    #[test]
     fn audio_source_round_trips_in_the_settings_file() {
         for audio in [AudioSource::Off, AudioSource::Auto, AudioSource::Everything, AudioSource::App("METAPHOR.exe".into())] {
             let settings = Settings { audio: audio.clone(), ..Settings::default() };

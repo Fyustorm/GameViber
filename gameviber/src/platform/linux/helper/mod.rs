@@ -11,7 +11,7 @@ pub mod client;
 pub mod dialog;
 pub mod server;
 
-use gameviber_common::{FfEffect, ProbeEvent, FF_UNION_WORDS, PROBE_EVENT_KIND_ERASED};
+use gameviber_common::{ProbeRecord, EVIOCRMFF, FF_EFFECT_SIZE};
 use serde::{Deserialize, Serialize};
 
 pub const SUBCOMMAND: &str = "helper";
@@ -55,47 +55,41 @@ pub enum Reply {
     Error { message: String },
 }
 
-/// Serializable copy of a probe event.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+/// A probe record, as the helper sends it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WireProbe {
     pub erased: bool,
-    pub tgid: u32,
+    pub pid: u32,
     pub fd: i32,
     pub effect_id: i16,
-    pub kind: u16,
-    pub direction: u16,
-    pub replay_length: u16,
-    pub replay_delay: u16,
-    pub u: [u16; FF_UNION_WORDS],
+    /// The raw `struct ff_effect` (`ProbeRecord::effect`).
+    pub effect: Vec<u8>,
 }
 
-impl From<&ProbeEvent> for WireProbe {
-    fn from(ev: &ProbeEvent) -> Self {
+impl From<&ProbeRecord> for WireProbe {
+    fn from(record: &ProbeRecord) -> Self {
         Self {
-            erased: ev.kind == PROBE_EVENT_KIND_ERASED,
-            tgid: ev.tgid,
-            fd: ev.fd,
-            effect_id: ev.effect_id,
-            kind: ev.effect.kind,
-            direction: ev.effect.direction,
-            replay_length: ev.effect.replay_length,
-            replay_delay: ev.effect.replay_delay,
-            u: ev.effect.u,
+            erased: record.cmd == EVIOCRMFF,
+            pid: record.pid,
+            fd: record.fd,
+            effect_id: record.effect_id(),
+            effect: record.effect.to_vec(),
         }
     }
 }
 
 impl WireProbe {
-    pub fn effect(&self) -> FfEffect {
-        FfEffect {
-            kind: self.kind,
-            id: self.effect_id,
-            direction: self.direction,
-            replay_length: self.replay_length,
-            replay_delay: self.replay_delay,
-            u: self.u,
-        }
+    /// The uploaded effect (None for an erasure, or a malformed record).
+    pub fn effect(&self) -> Option<crate::rumble::Effect> {
+        let raw: &[u8; FF_EFFECT_SIZE] = self.effect.as_slice().try_into().ok()?;
+        (!self.erased).then(|| crate::rumble::Effect::from_kernel(raw))
     }
+}
+
+/// Reads the probe's records from its ring buffer entries.
+pub fn read_record(item: &[u8]) -> Option<ProbeRecord> {
+    // SAFETY: the probe writes whole `ProbeRecord`s; the length is checked.
+    (item.len() >= std::mem::size_of::<ProbeRecord>()).then(|| unsafe { std::ptr::read_unaligned(item.as_ptr() as *const ProbeRecord) })
 }
 
 #[cfg(test)]
@@ -113,17 +107,16 @@ mod tests {
 
     #[test]
     fn messages_round_trip_as_json_lines() {
-        let probe = WireProbe {
-            erased: false,
-            tgid: 42,
-            fd: 7,
-            effect_id: 3,
-            kind: 0x50,
-            direction: 0,
-            replay_length: 300,
-            replay_delay: 0,
-            u: [1; FF_UNION_WORDS],
-        };
+        let mut record = ProbeRecord { pid: 42, fd: 7, cmd: gameviber_common::EVIOCSFF, effect: [0; FF_EFFECT_SIZE] };
+        record.effect[..2].copy_from_slice(&gameviber_common::FF_RUMBLE.to_ne_bytes());
+        record.effect[2..4].copy_from_slice(&3i16.to_ne_bytes());
+        record.effect[16..18].copy_from_slice(&0x8000u16.to_ne_bytes());
+        let probe = WireProbe::from(&record);
+        assert_eq!((probe.effect_id, probe.erased), (3, false));
+        let effect = probe.effect().unwrap();
+        assert_eq!(effect.kind, crate::rumble::EffectKind::Rumble { strong: 0x8000, weak: 0 });
+        let erased = WireProbe::from(&ProbeRecord { cmd: EVIOCRMFF, ..record });
+        assert!(erased.erased && erased.effect().is_none());
         for reply in [Reply::Ready, Reply::Probe(probe), Reply::Error { message: "x".into() }] {
             let line = serde_json::to_string(&reply).unwrap();
             assert!(!line.contains('\n'));

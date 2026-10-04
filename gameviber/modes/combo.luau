@@ -1,3 +1,4 @@
+-- SPDX-License-Identifier: MIT
 -- Fighting games (Tekken, Street Fighter...). Vibrations close together build a combo:
 -- each hit is stronger than the previous one, and a long enough combo ends with a burst
 -- sized by its length. Button mashing adds a light background tension.

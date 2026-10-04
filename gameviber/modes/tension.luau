@@ -1,3 +1,4 @@
+-- SPDX-License-Identifier: MIT
 -- Turn-based games with timed defense (Clair Obscur, Sea of Stars, Persona...).
 -- A slow wave builds up during fights and fades away while exploring. A vibration right
 -- after a parry or dodge press is probably a successful parry and gets a reward pulse.

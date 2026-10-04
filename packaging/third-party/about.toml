@@ -1,0 +1,27 @@
+# cargo-about (https://github.com/EmbarkStudios/cargo-about): the licenses of
+# the crates compiled into GameViber, for THIRD-PARTY-LICENSES.txt
+# (packaging/third-party/licenses.sh). A dependency under a license missing
+# here makes the generation fail: check that it is compatible with the GNU GPL
+# version 3 before adding it.
+accepted = [
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "0BSD",
+    "Unlicense",
+    "BSL-1.0",
+    "Unicode-3.0",
+    "CDLA-Permissive-2.0",
+    "OFL-1.1",
+    "Ubuntu-font-1.0",
+]
+targets = ["x86_64-unknown-linux-gnu", "i686-unknown-linux-gnu"]
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+# GameViber's own crates (LICENSE, LICENSE-MIT).
+private = { ignore = true }

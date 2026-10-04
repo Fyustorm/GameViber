@@ -4,6 +4,23 @@ Code, comments, docs and commit messages are in English. [AGENTS.md](AGENTS.md)
 holds the project's layout, rules and known pitfalls (written for AI coding
 agents, but true for everyone): read it before changing the code.
 
+## License and sign-off
+
+GameViber is under the GNU GPL version 3 or later ([LICENSE](LICENSE)). The
+built-in modes, `docs/spec-modes.md` and `gameviber/prompts/` are under the MIT
+license, and the eBPF probe (`gameviber-ebpf/`, `gameviber-common/`) under MIT
+or the GPL version 2 or later ([LICENSE-MIT](LICENSE-MIT)); contributions to
+those parts are under the same terms.
+
+Sign off your commits (`git commit -s`): the `Signed-off-by:` line certifies
+the [Developer Certificate of Origin](https://developercertificate.org/), that
+you wrote the change or have the right to contribute it under these licenses.
+No other agreement is needed.
+
+New dependencies must be under a license compatible with the GPL version 3
+(MIT, Apache-2.0, BSD, ISC, Zlib, MPL-2.0... not GPL-2.0-only, not
+proprietary): `packaging/third-party/about.toml` lists the accepted ones.
+
 ## Build and test
 
 ```sh
@@ -58,10 +75,11 @@ AI assistants are built from [`gameviber/prompts/`](gameviber/prompts/).
 | `ebpf` | eBPF probe on the `EVIOCSFF` / `EVIOCRMFF` ioctls, plus passive evdev reading of play / stop | yes | the real gamepad, unchanged |
 | `none` | no interception (simulator only) | no | — |
 
-The eBPF probe is derived from
-[linux-game-haptics-router](https://github.com/madrigal-eschat/linux-game-haptics-router)
-(Apache-2.0, see `LICENSE-APACHE-linux-game-haptics-router`), with the
-addition of capturing the ioctl's fd to know which gamepad is targeted.
+The eBPF source was first based on
+[linux-game-haptics-router](https://github.com/madrigal-eschat/linux-game-haptics-router),
+whose idea it follows (watching the `EVIOCSFF` / `EVIOCRMFF` ioctls); its probe
+was since rewritten. It is loaded into the kernel as "Dual MIT/GPL", which lets
+it read the effect from the game's memory (`bpf_probe_read_user`).
 
 ### Privileged helper
 
@@ -111,9 +129,17 @@ AGENTS.md, Platforms.
 Without a package (the `.tar.gz`), GameViber installs the overlay for the user
 under `~/.local/share` itself.
 
+Packages and the archive carry GameViber's licenses and
+`THIRD-PARTY-LICENSES.txt`, made by
+[`packaging/third-party/licenses.sh`](packaging/third-party/licenses.sh): the
+crates' licenses ([cargo-about](https://github.com/EmbarkStudios/cargo-about)),
+Luau's, and ONNX Runtime's with its third-party notices (stored in
+`packaging/third-party/` for the version `ort` downloads; the script fails
+when that version changes).
+
 ```sh
 cargo build --release && cargo build-overlay32
-packaging/linux/package.sh     # deb, rpm, Arch package, .tar.gz and SHA256SUMS in target/package/ (needs nfpm)
+packaging/linux/package.sh     # deb, rpm, Arch package, .tar.gz and SHA256SUMS in target/package/ (needs nfpm and cargo-about)
 ```
 
 On GitHub, the **CI** workflow runs the tests and the Windows check; the

@@ -1,3 +1,4 @@
+-- SPDX-License-Identifier: MIT
 -- Racing games (Forza, Gran Turismo...). The throttle (RT) drives a pulsing vibration
 -- whose rate and strength rise like engine RPM; the brake (LT) slows it down. The game's
 -- rumble adds road texture and sharp rises in rumble become impact pulses.

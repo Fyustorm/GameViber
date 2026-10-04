@@ -1,3 +1,4 @@
+-- SPDX-License-Identifier: MIT
 -- Exploration, platformers and cosy games (Mario, Hollow Knight, Zelda...). A slow, soft
 -- wave plays in the background with the game's rumble on top. The wave fades out when
 -- nothing happens (menus, pause) and comes back as soon as you play.

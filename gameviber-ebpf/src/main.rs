@@ -1,9 +1,11 @@
-//! eBPF probe: captures force-feedback effect uploads (EVIOCSFF) and
-//! erasures (EVIOCRMFF) made by any process.
+//! eBPF probe: reports the force-feedback effects any process uploads to an
+//! evdev device (EVIOCSFF) or erases (EVIOCRMFF), which games do not show to
+//! other readers of the device. Playing and stopping them needs no probe: the
+//! kernel sends those to every reader of the device.
 //!
-//! Derived from linux-game-haptics-router (Apache-2.0). Play/stop do not go
-//! through here: the kernel echoes them to every evdev reader, the daemon
-//! reads them directly from the gamepads.
+//! On the way in, an ioctl's command, file descriptor and argument are noted;
+//! on the way out, if it succeeded, the effect is read from the caller's
+//! memory (the kernel has written its id back by then) and recorded.
 #![no_std]
 #![no_main]
 
@@ -11,96 +13,88 @@ use aya_ebpf::helpers::{bpf_get_current_pid_tgid, bpf_probe_read_user_buf};
 use aya_ebpf::macros::{map, tracepoint};
 use aya_ebpf::maps::{LruHashMap, RingBuf};
 use aya_ebpf::programs::TracePointContext;
-use gameviber_common::{
-    EnterScratch, FfEffect, ProbeEvent, EVIOCRMFF_NR, EVIOCSFF_NR, FF_UNION_WORDS,
-    PROBE_EVENT_KIND_ERASED, PROBE_EVENT_KIND_UPLOADED,
-};
+use gameviber_common::{ProbeRecord, EVIOCRMFF, EVIOCSFF, FF_EFFECT_SIZE};
 
-// Argument offsets in the syscalls:sys_enter_ioctl tracepoint context.
-const ARG_FD: usize = 16;
-const ARG_CMD: usize = 24;
-const ARG_PTR: usize = 32;
+/// The kernel only lets programs under a GPL-compatible license read a
+/// process's memory (`bpf_probe_read_user`).
+#[no_mangle]
+#[link_section = "license"]
+pub static LICENSE: [u8; 13] = *b"Dual MIT/GPL\0";
 
-/// tgid<<32|pid -> pending upload. LRU: a killed thread never reaches sys_exit.
+// Field offsets in the syscalls:sys_enter_ioctl and sys_exit_ioctl records
+// (/sys/kernel/tracing/events/syscalls/sys_*_ioctl/format).
+const ENTER_FD: usize = 16;
+const ENTER_CMD: usize = 24;
+const ENTER_ARG: usize = 32;
+const EXIT_RET: usize = 16;
+
+/// An ioctl of interest, between its entry and its exit.
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct Pending {
+    cmd: u32,
+    fd: i32,
+    arg: u64,
+}
+
+/// Calls in progress, by thread. LRU: a thread killed during the call never exits it.
 #[map]
-static ENTER_SCRATCH: LruHashMap<u64, EnterScratch> = LruHashMap::with_max_entries(1024, 0);
+static PENDING: LruHashMap<u64, Pending> = LruHashMap::with_max_entries(1024, 0);
 
+/// Records for GameViber.
 #[map]
-static EVENTS: RingBuf = RingBuf::with_byte_size(256 * 1024, 0);
+static RECORDS: RingBuf = RingBuf::with_byte_size(256 * 1024, 0);
 
 #[tracepoint]
-pub fn sys_enter_ioctl(ctx: TracePointContext) -> i32 {
-    let _ = try_enter(&ctx);
+pub fn ioctl_enter(ctx: TracePointContext) -> i32 {
+    let _ = note(&ctx);
     0
 }
 
 #[tracepoint]
-pub fn sys_exit_ioctl(_ctx: TracePointContext) -> i32 {
-    let _ = try_exit();
+pub fn ioctl_exit(ctx: TracePointContext) -> i32 {
+    let _ = record(&ctx);
     0
 }
 
-fn try_enter(ctx: &TracePointContext) -> Result<(), i64> {
-    let cmd = unsafe { ctx.read_at::<u64>(ARG_CMD)? } as u32;
-    if cmd != EVIOCSFF_NR && cmd != EVIOCRMFF_NR {
+fn note(ctx: &TracePointContext) -> Result<(), i64> {
+    // SAFETY: offsets of the tracepoint's own fields.
+    let cmd = unsafe { ctx.read_at::<u64>(ENTER_CMD)? } as u32;
+    if cmd != EVIOCSFF && cmd != EVIOCRMFF {
         return Ok(());
     }
-    let fd = unsafe { ctx.read_at::<u64>(ARG_FD)? } as i32;
-    let arg = unsafe { ctx.read_at::<u64>(ARG_PTR)? };
-    let tgid_pid = bpf_get_current_pid_tgid();
-
-    if cmd == EVIOCRMFF_NR {
-        // The argument is the effect id itself.
-        submit(PROBE_EVENT_KIND_ERASED, (tgid_pid >> 32) as u32, fd, arg as i32 as i16, FfEffect::default());
-        return Ok(());
-    }
-
-    // struct ff_effect (LP64): 0 type, 2 id, 4 direction, 6-8 trigger,
-    // 10 replay.length, 12 replay.delay, 16 union u.
-    let mut raw = [0u8; 16 + FF_UNION_WORDS * 2];
-    unsafe { bpf_probe_read_user_buf(arg as *const u8, &mut raw)? };
-    let u16_at = |off: usize| u16::from_ne_bytes([raw[off], raw[off + 1]]);
-
-    let mut effect = FfEffect {
-        kind: u16_at(0),
-        id: 0, // assigned by the kernel, read back on syscall exit
-        direction: u16_at(4),
-        replay_length: u16_at(10),
-        replay_delay: u16_at(12),
-        u: [0; FF_UNION_WORDS],
+    let pending = Pending {
+        cmd,
+        fd: unsafe { ctx.read_at::<u64>(ENTER_FD)? } as i32,
+        arg: unsafe { ctx.read_at::<u64>(ENTER_ARG)? },
     };
-    let mut i = 0;
-    while i < FF_UNION_WORDS {
-        effect.u[i] = u16_at(16 + i * 2);
-        i += 1;
-    }
-
-    let scratch = EnterScratch { ff_effect_ptr: arg, fd, _pad: 0, effect };
-    ENTER_SCRATCH.insert(&tgid_pid, &scratch, 0)?;
+    PENDING.insert(&bpf_get_current_pid_tgid(), &pending, 0)?;
     Ok(())
 }
 
-fn try_exit() -> Result<(), i64> {
-    let tgid_pid = bpf_get_current_pid_tgid();
-    let scratch = match unsafe { ENTER_SCRATCH.get(&tgid_pid) } {
-        Some(s) => *s,
-        None => return Ok(()),
-    };
-    ENTER_SCRATCH.remove(&tgid_pid)?;
-
-    let mut id_bytes = [0u8; 2];
-    unsafe { bpf_probe_read_user_buf((scratch.ff_effect_ptr + 2) as *const u8, &mut id_bytes)? };
-    let mut effect = scratch.effect;
-    effect.id = i16::from_ne_bytes(id_bytes);
-    submit(PROBE_EVENT_KIND_UPLOADED, (tgid_pid >> 32) as u32, scratch.fd, effect.id, effect);
-    Ok(())
-}
-
-fn submit(kind: u8, tgid: u32, fd: i32, effect_id: i16, effect: FfEffect) {
-    if let Some(mut entry) = EVENTS.reserve::<ProbeEvent>(0) {
-        entry.write(ProbeEvent { kind, tgid, fd, effect_id, _pad: 0, effect });
-        entry.submit(0);
+fn record(ctx: &TracePointContext) -> Result<(), i64> {
+    let thread = bpf_get_current_pid_tgid();
+    // SAFETY: the map's values are only written by `note`.
+    let Some(pending) = (unsafe { PENDING.get(&thread) }).copied() else { return Ok(()) };
+    PENDING.remove(&thread)?;
+    let ret = unsafe { ctx.read_at::<i64>(EXIT_RET)? };
+    if ret != 0 {
+        return Ok(());
     }
+    let mut effect = [0u8; FF_EFFECT_SIZE];
+    if pending.cmd == EVIOCSFF {
+        // SAFETY: a user pointer, read through the helper that checks it.
+        unsafe { bpf_probe_read_user_buf(pending.arg as *const u8, &mut effect)? };
+    } else {
+        let id = (pending.arg as i16).to_ne_bytes();
+        effect[2] = id[0];
+        effect[3] = id[1];
+    }
+    if let Some(mut slot) = RECORDS.reserve::<ProbeRecord>(0) {
+        slot.write(ProbeRecord { pid: (thread >> 32) as u32, fd: pending.fd, cmd: pending.cmd, effect });
+        slot.submit(0);
+    }
+    Ok(())
 }
 
 #[panic_handler]

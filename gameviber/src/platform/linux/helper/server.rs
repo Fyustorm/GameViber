@@ -9,9 +9,8 @@ use std::thread::JoinHandle;
 use anyhow::Context;
 use aya::maps::{MapData, RingBuf};
 use aya::Ebpf;
-use gameviber_common::ProbeEvent;
 
-use super::{Reply, Request, WireProbe};
+use super::{read_record, Reply, Request, WireProbe};
 use crate::platform::linux::hider::DeviceHider;
 use crate::source::linux::load_probe;
 
@@ -56,11 +55,9 @@ fn read_ring(mut ring: RingBuf<MapData>, stop: &AtomicBool, out: &Output) {
             continue;
         }
         while let Some(item) = ring.next() {
-            if item.len() < std::mem::size_of::<ProbeEvent>() {
-                continue;
+            if let Some(record) = read_record(&item) {
+                send(out, &Reply::Probe(WireProbe::from(&record)));
             }
-            let ev: ProbeEvent = unsafe { std::ptr::read_unaligned(item.as_ptr() as *const ProbeEvent) };
-            send(out, &Reply::Probe(WireProbe::from(&ev)));
         }
     }
 }

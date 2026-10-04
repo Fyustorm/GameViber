@@ -1,3 +1,4 @@
+-- SPDX-License-Identifier: MIT
 -- Demanding games and souls-likes (Elden Ring, Sekiro, Hades...). A reward gauge slowly
 -- fills while you play without taking big hits; a strong vibration (often a hit taken)
 -- empties it with a short punishment pulse. The longer you survive, the stronger it gets.

@@ -1,3 +1,4 @@
+-- SPDX-License-Identifier: MIT
 -- Action and shooter games (Ratchet & Clank, Doom...). The near-continuous weapon rumble
 -- is compressed into a light texture and only sharp peaks stand out. Firing heats a
 -- gauge that drives a background vibration; a full gauge triggers an overheat.

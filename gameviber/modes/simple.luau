@@ -1,3 +1,4 @@
+-- SPDX-License-Identifier: MIT
 -- Forwards the game's rumble, like the Intiface Game Haptics Router.
 mode {
   api = 1,

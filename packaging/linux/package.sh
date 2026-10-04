@@ -2,7 +2,7 @@
 # Makes every Linux release file in target/package/, from the release builds:
 #   cargo build --release && cargo build-overlay32
 #   packaging/linux/package.sh
-# deb, rpm and Arch packages (nfpm, which must be in PATH), an archive for
+# deb, rpm and Arch packages (nfpm and cargo-about must be in PATH), an archive for
 # installing without a package (immutable distros, SteamOS), and SHA256SUMS.
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
@@ -35,6 +35,7 @@ cp target/release/gameviber "$out/$name/"
 cp "target/release/$lib" "$out/$name/"
 cp "target/i686-unknown-linux-gnu/release/$lib" "$out/$name/lib32/"
 cp packaging/linux/archive-readme.txt "$out/$name/README.txt"
+cp LICENSE LICENSE-MIT "$out/root/usr/share/licenses/gameviber/THIRD-PARTY-LICENSES.txt" "$out/$name/"
 # How GameViber was installed, for its updates: it replaces these files itself.
 printf 'archive\n' > "$out/$name/distribution"
 tar -C "$out" -czf "$out/$name.tar.gz" "$name"

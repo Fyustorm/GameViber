@@ -1,3 +1,4 @@
+-- SPDX-License-Identifier: MIT
 -- Action metroidvanias (Prince of Persia: The Lost Crown, Hollow Knight, Dead Cells...).
 -- Platforming stays quiet: only the game's rumble plays. Fights wake up a pulsing glow
 -- driven by a surge gauge that fills with every hit and much faster with parries (a

@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use gameviber_common::{FfEffect, FF_CONSTANT, FF_PERIODIC, FF_RAMP, FF_RUMBLE};
+use gameviber_common::{FF_CONSTANT, FF_EFFECT_SIZE, FF_PERIODIC, FF_RAMP, FF_RUMBLE};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Envelope {
@@ -35,26 +35,31 @@ pub struct Effect {
 }
 
 impl Effect {
-    /// Converts the raw eBPF probe capture (union at kernel offsets).
-    pub fn from_probe(raw: &FfEffect) -> Self {
-        let u = &raw.u;
-        let env = |at: usize| Envelope {
-            attack_length: u[at],
-            attack_level: u[at + 1],
-            fade_length: u[at + 2],
-            fade_level: u[at + 3],
+    /// Decodes a `struct ff_effect` as the kernel lays it out (the eBPF probe
+    /// sends it raw): 0 type, 2 id, 4 direction, 6 trigger, 10 replay length,
+    /// 12 replay delay, 16 the union of the effect types.
+    pub fn from_kernel(raw: &[u8; FF_EFFECT_SIZE]) -> Self {
+        let word = |at: usize| u16::from_ne_bytes([raw[at], raw[at + 1]]);
+        let signed = |at: usize| word(at) as i16;
+        // struct ff_envelope: attack length and level, fade length and level.
+        let envelope = |at: usize| Envelope {
+            attack_length: word(at),
+            attack_level: word(at + 2),
+            fade_length: word(at + 4),
+            fade_level: word(at + 6),
         };
-        let kind = match raw.kind {
-            FF_RUMBLE => EffectKind::Rumble { strong: u[0], weak: u[1] },
-            // ff_periodic_effect: waveform, period, magnitude, offset, phase, envelope
-            FF_PERIODIC => EffectKind::Periodic { magnitude: u[2] as i16, envelope: env(5) },
-            // ff_constant_effect: level, envelope
-            FF_CONSTANT => EffectKind::Constant { level: u[0] as i16, envelope: env(1) },
-            // ff_ramp_effect: start_level, end_level, envelope
-            FF_RAMP => EffectKind::Ramp { start: u[0] as i16, end: u[1] as i16, envelope: env(2) },
+        let kind = match word(0) {
+            // strong_magnitude, weak_magnitude
+            FF_RUMBLE => EffectKind::Rumble { strong: word(16), weak: word(18) },
+            // waveform, period, magnitude, offset, phase, envelope
+            FF_PERIODIC => EffectKind::Periodic { magnitude: signed(20), envelope: envelope(26) },
+            // level, envelope
+            FF_CONSTANT => EffectKind::Constant { level: signed(16), envelope: envelope(18) },
+            // start_level, end_level, envelope
+            FF_RAMP => EffectKind::Ramp { start: signed(16), end: signed(18), envelope: envelope(20) },
             _ => EffectKind::Unsupported,
         };
-        Self { kind, length_ms: raw.replay_length, delay_ms: raw.replay_delay }
+        Self { kind, length_ms: word(10), delay_ms: word(12) }
     }
 
     /// (strong, weak) in 0..0xFFFF, `elapsed` since the effect actually started.
@@ -298,12 +303,15 @@ mod tests {
     }
 
     #[test]
-    fn probe_capture_decodes_periodic_envelope() {
-        let mut raw = FfEffect { kind: FF_PERIODIC, replay_length: 500, ..Default::default() };
-        raw.u[2] = (-1000i16) as u16; // magnitude
-        raw.u[5] = 10; // attack_length
-        raw.u[8] = 0x1234; // fade_level
-        let e = Effect::from_probe(&raw);
+    fn a_kernel_effect_is_decoded() {
+        let mut raw = [0u8; FF_EFFECT_SIZE];
+        let mut put = |at: usize, value: u16| raw[at..at + 2].copy_from_slice(&value.to_ne_bytes());
+        put(0, FF_PERIODIC);
+        put(10, 500); // replay length
+        put(20, (-1000i16) as u16); // magnitude
+        put(26, 10); // attack length
+        put(32, 0x1234); // fade level
+        let e = Effect::from_kernel(&raw);
         assert_eq!(e.length_ms, 500);
         match e.kind {
             EffectKind::Periodic { magnitude, envelope } => {

@@ -1,3 +1,4 @@
+-- SPDX-License-Identifier: MIT
 -- Every vibration and every press of the bonus button adds points.
 -- The game's rumble is scaled by the points, which drain while idle.
 mode {

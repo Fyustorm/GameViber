@@ -66,6 +66,14 @@ Everything stays on your computer. The game's sound is never saved, and only
 the screen captures you take yourself are kept. Nothing is sent to an AI
 assistant unless you copy and paste it.
 
+## License
+
+GameViber is free software under the [GNU GPL version 3](LICENSE) or later:
+use it, share it and improve it, as long as what you share stays free too.
+The built-in modes, the mode API and the AI requests are under the
+[MIT license](LICENSE-MIT): copy them freely into your own modes. Modes you
+write are yours.
+
 ## Learn more
 
 - [User guide](docs/user-guide.md): every page of the app, a game's signals
