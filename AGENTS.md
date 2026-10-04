@@ -37,6 +37,7 @@ script) → **safety layer** → **Intiface output**.
 | `gameviber/src/screen/` | the game's image: frames copied by the overlay, measures (brightness, motion, flashes), `clip` (image scene model: PIL-exact preprocessing, encoder thread), `zones` (shown-or-not and bar zones) |
 | `gameviber/src/game.rs` | games (`~/.config/gameviber/games/<id>.json`, captures as PNG in `games/<id>/`), identified by name: linked executables (optional), scenes, captures per scene (also the scene examples), zones drawn on them, declared inputs, sound source, modes; migration of the older exe-keyed profiles |
 | `gameviber/src/shortcuts/` | keyboard shortcuts for the combos' actions; `linux`: the desktop's global shortcuts portal (needs a desktop entry for the app id, written on first use) |
+| `gameviber/src/update/` | new versions from the GitHub releases, installed according to how GameViber was installed (the `distribution` file of `packaging/linux/`): package through pkexec, archive in place, only announced for stores and source builds; `gui/updates.rs`: banner and Settings card |
 | `gameviber/src/inputs/` | values and events other programs send: local WebSocket (browsers refused) and, `linux`, a named pipe |
 | `gameviber/src/engine.rs` | engine thread: sources, audio, image, mode, safety layer, routing, output |
 | `gameviber/src/session.rs` | recorded play sessions (rumble, buttons, axes, sound and image measures, hits, flashes, zones, scene embeddings, values from other programs) and their replay |
@@ -120,7 +121,8 @@ no eBPF, an overlay of its own) is planned. Keep the way open:
 - **Where it goes**: things the whole app needs (paths, time, signals, the
   privileged helper) in `platform/`; a part's backend next to that part
   (`source/linux/`, `audio/capture/linux.rs`, `overlay/linux/`,
-  `shortcuts/linux.rs`, `inputs/linux.rs`, `gameviber-overlay/src/linux/`).
+  `shortcuts/linux.rs`, `inputs/linux.rs`, `update/linux.rs`,
+  `gameviber-overlay/src/linux/`).
   The part's `mod.rs` holds the neutral types and logic and re-exports the
   backend's items under the same names for every OS.
 - **Other systems** get each part's `unsupported.rs` (same API, "not available

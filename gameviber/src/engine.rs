@@ -149,6 +149,8 @@ pub enum Command {
     SetKeyboardShortcuts(bool),
     /// Opens the desktop's settings of the keyboard shortcuts.
     ConfigureShortcuts,
+    /// New versions are looked for automatically, or not.
+    SetCheckUpdates(bool),
     /// Port other programs send values and events to; 0 turns the WebSocket off.
     SetInputsPort(u16),
     Shutdown,
@@ -831,6 +833,10 @@ impl Engine {
                 self.settings.keyboard_shortcuts = on;
                 self.settings.save();
                 self.shortcuts = on.then(Shortcuts::start);
+            }
+            Command::SetCheckUpdates(on) => {
+                self.settings.check_updates = on;
+                self.settings.save();
             }
             Command::ConfigureShortcuts => {
                 if let Some(shortcuts) = &self.shortcuts {

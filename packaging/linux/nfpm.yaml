@@ -36,6 +36,8 @@ contents:
   - src: target/package/root/usr/lib/gameviber/i686/libgameviber_overlay.so
     dst: /usr/lib/gameviber/i686/libgameviber_overlay.so
     file_info: { mode: 0755 }
+  - src: target/package/root/usr/lib/gameviber/distribution
+    dst: /usr/lib/gameviber/distribution
   - src: x86_64
     dst: /usr/lib/gameviber/haswell
     type: symlink

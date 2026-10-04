@@ -87,7 +87,7 @@ impl Helper {
     fn spawn(&self, process: &mut Process) -> std::io::Result<()> {
         let exe = std::env::current_exe()?;
         log::info!("starting the privileged helper (pkexec {} {SUBCOMMAND})", exe.display());
-        super::dialog::prepare();
+        super::dialog::prepare(super::polkit_action());
         let mut child = Command::new("pkexec")
             .arg(&exe)
             .arg(SUBCOMMAND)

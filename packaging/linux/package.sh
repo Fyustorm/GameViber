@@ -35,6 +35,8 @@ cp target/release/gameviber "$out/$name/"
 cp "target/release/$lib" "$out/$name/"
 cp "target/i686-unknown-linux-gnu/release/$lib" "$out/$name/lib32/"
 cp packaging/linux/archive-readme.txt "$out/$name/README.txt"
+# How GameViber was installed, for its updates: it replaces these files itself.
+printf 'archive\n' > "$out/$name/distribution"
 tar -C "$out" -czf "$out/$name.tar.gz" "$name"
 rm -rf "$out/root" "$out/$name"
 

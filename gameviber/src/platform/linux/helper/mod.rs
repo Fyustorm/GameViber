@@ -21,7 +21,7 @@ const PACKAGE_ACTION: &str = "io.github.gameviber.GameViber.helper";
 const PACKAGE_POLICY: &str = "/usr/share/polkit-1/actions/io.github.gameviber.GameViber.policy";
 const PACKAGE_EXE: &str = "/usr/bin/gameviber";
 /// The action pkexec checks for any other program.
-const PKEXEC_ACTION: &str = "org.freedesktop.policykit.exec";
+pub const PKEXEC_ACTION: &str = "org.freedesktop.policykit.exec";
 
 /// The polkit action pkexec will check when starting the helper.
 pub fn polkit_action() -> &'static str {

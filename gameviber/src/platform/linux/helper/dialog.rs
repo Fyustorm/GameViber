@@ -86,30 +86,30 @@ pub fn forget_window() {
     update(|gui| *gui = Gui::default());
 }
 
-/// Lets the next pkexec password dialog open in front of the GUI window.
-/// Blocks (briefly) until the window has the focus.
-pub fn prepare() {
+/// Lets the next pkexec password dialog, for the polkit `action`, open in
+/// front of the GUI window. Blocks (briefly) until the window has the focus.
+pub fn prepare(action: &str) {
     let gui = GUI.lock().unwrap();
     let ready = |gui: &mut Gui| !gui.expected || (gui.window.is_some() && gui.focused);
     // The lock is held until the token is handed over, so `forget_window`
     // cannot let the window be destroyed while its surface is in use.
     let (gui, _) = GUI_CHANGED.wait_timeout_while(gui, WINDOW_WAIT, |gui| !ready(gui)).unwrap();
     let Some(window) = gui.window else { return };
-    if let Err(e) = tell_kde_agent(window) {
+    if let Err(e) = tell_kde_agent(window, action) {
         log::debug!("cannot raise the password dialog: {e:#}");
     }
 }
 
-fn tell_kde_agent(window: Window) -> anyhow::Result<()> {
+fn tell_kde_agent(window: Window, action: &str) -> anyhow::Result<()> {
     let bus = zbus::blocking::Connection::session()?;
     let reply = match window {
         Window::Wayland { display, surface } => {
             let token = activation_token(display, surface)?;
-            let body = (super::polkit_action(), token.as_str());
+            let body = (action, token.as_str());
             bus.call_method(Some(KDE_AGENT), KDE_AGENT_PATH, Some(KDE_AGENT_INTERFACE), "setActivationTokenForAction", &body)
         }
         Window::X11(id) => {
-            let body = (super::polkit_action(), id);
+            let body = (action, id);
             bus.call_method(Some(KDE_AGENT), KDE_AGENT_PATH, Some(KDE_AGENT_INTERFACE), "setWIdForAction", &body)
         }
     };

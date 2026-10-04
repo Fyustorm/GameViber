@@ -1,6 +1,6 @@
-//! Settings page: the language of the requests to AI assistants, the request
-//! templates (editable, with the shipped version one click away), and the
-//! setup guide.
+//! Settings page: updates (`updates.rs`), the language of the requests to AI
+//! assistants, the request templates (editable, with the shipped version one
+//! click away) and the setup guide.
 
 use eframe::egui::{self, Margin, RichText};
 
@@ -34,6 +34,11 @@ impl App {
         egui::CentralPanel::default().frame(frame).show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 heading(ui, "Settings");
+                ui.add_space(8.0);
+                card(PANEL).inner_margin(Margin::same(16)).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    self.updates_card(ui, s);
+                });
                 ui.add_space(8.0);
                 card(PANEL).inner_margin(Margin::same(16)).show(ui, |ui| {
                     ui.set_width(ui.available_width());

@@ -28,6 +28,7 @@ mod signals;
 mod theme;
 mod toys;
 mod tour;
+mod updates;
 
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -102,6 +103,10 @@ pub struct App {
     watching_screen: bool,
     /// Development: screenshots of every page (`GAMEVIBER_SCREENSHOTS`).
     tour: Option<tour::Tour>,
+    /// New versions: started once the settings are known.
+    updater: Option<crate::update::Updater>,
+    /// The banner announcing a new version was closed ("Later") for this session.
+    update_banner_closed: bool,
 }
 
 impl App {
@@ -135,6 +140,8 @@ impl App {
             signals: signals::State::default(),
             watching_screen: false,
             tour: tour::Tour::from_env(),
+            updater: None,
+            update_banner_closed: false,
         }
     }
 
@@ -197,6 +204,7 @@ impl eframe::App for App {
                 self.onboarding = Some(0);
             }
         }
+        self.start_updater(&s);
         self.tour(ui.ctx(), &s);
         if let Some(step) = self.onboarding.filter(|_| self.tour.is_none()) {
             self.onboarding_ui(ui, &s, step);
@@ -205,6 +213,7 @@ impl eframe::App for App {
         }
 
         self.status_bar(ui, &s);
+        self.update_banner(ui);
         self.rail(ui);
         let mode_page = self.page == Page::Games && matches!(self.route, Route::FreeMode | Route::Game { view: GameView::Mode, .. });
         // The fix page needs the room.

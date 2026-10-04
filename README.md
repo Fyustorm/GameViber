@@ -20,6 +20,9 @@ Download the package for your system from the
 | Arch, CachyOS, Manjaro | `.pkg.tar.zst` | `sudo pacman -U gameviber-*.pkg.tar.zst` |
 | SteamOS, Bazzite, other systems | `.tar.gz` | extract it and run `./gameviber` (see its `README.txt`) |
 
+GameViber tells you when a new version is out and, with these files, installs
+it for you (**Settings › Updates**).
+
 You also need [Intiface Central](https://intiface.com/central/) to connect your
 toys, and PipeWire for the game's sound (the default on recent systems).
 

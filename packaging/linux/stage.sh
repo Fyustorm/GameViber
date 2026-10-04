@@ -29,6 +29,10 @@ else
     echo "warning: no 32-bit overlay (cargo build-overlay32): left out" >&2
 fi
 
+# How GameViber was installed, for its updates: one of our packages,
+# installed through the package manager (a store build writes its own name).
+printf 'package\n' > "$dest/usr/lib/gameviber/distribution"
+
 install -Dm644 "$here/60-gameviber-uinput.rules" "$dest/usr/lib/udev/rules.d/60-gameviber-uinput.rules"
 install -Dm644 "$here/io.github.gameviber.GameViber.policy" "$dest/usr/share/polkit-1/actions/io.github.gameviber.GameViber.policy"
 install -Dm644 "$here/io.github.gameviber.GameViber.desktop" "$dest/usr/share/applications/io.github.gameviber.GameViber.desktop"

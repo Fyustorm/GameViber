@@ -22,6 +22,7 @@ mod screen;
 mod session;
 mod shortcuts;
 mod source;
+mod update;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -128,5 +129,8 @@ fn main() -> anyhow::Result<()> {
             Ok(Box::new(gui::App::new(&cc.egui_ctx, shared, logs, commands, engine)))
         }),
     )
-    .map_err(|e| anyhow::anyhow!("GUI error: {e}"))
+    .map_err(|e| anyhow::anyhow!("GUI error: {e}"))?;
+    // After an update, the engine has stopped with the GUI: start the new version.
+    update::restart_if_requested();
+    Ok(())
 }

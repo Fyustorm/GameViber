@@ -20,6 +20,9 @@ png = "0.18"
 # CLAP audio scene model (docs/spec-modes.md §6.3); ONNX Runtime is linked statically.
 ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "download-binaries", "tls-native", "api-22"] }
 rustfft = "6"
+# Updates: comparing versions, checking downloads.
+semver = "1"
+sha2 = "0.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokenizers = { version = "0.22", default-features = false, features = ["fancy-regex"] }

@@ -137,6 +137,25 @@ Fallbacks per game genre, for when you have no mode made for your game:
 The rumble does not say who took a hit, so settings such as a parry window
 need tuning per game.
 
+## Updates
+
+GameViber looks for a new version when it starts, then every few hours (turn
+this off in **Settings › Updates**, which also has **Check now**). When one is
+out, a banner says so; **See the update** shows what's new. Then, depending on
+how you installed GameViber:
+
+- **`.deb`, `.rpm` or Arch package**: **Download and install** downloads it,
+  checks it, and installs it with your package manager after asking for your
+  password.
+- **`.tar.gz` archive**: **Download and install** replaces the files where you
+  extracted it (keep the `distribution` file there).
+- **Installed from a store or a package repository**: GameViber only tells
+  you; update it there.
+
+Then **Restart GameViber now**: toys stop during the restart, and running
+games keep the old overlay until you restart them. Your settings, games and
+modes are kept. While GameViber is an alpha, alpha versions are offered too.
+
 ## Where things are saved
 
 - Settings, games, your modes and recorded sessions: `~/.config/gameviber/`

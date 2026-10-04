@@ -17,3 +17,5 @@ Run ./gameviber from this directory (keep the libraries next to it). Then:
 - eBPF source and hiding the real gamepad: GameViber asks for your password
   through pkexec when needed.
 - The sound needs PipeWire's tools (pw-record, pw-dump, pw-link).
+- Updates: GameViber tells you when a new version is out, and installs it
+  here itself (Settings › Updates). Keep the "distribution" file.

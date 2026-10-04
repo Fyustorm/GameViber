@@ -127,3 +127,18 @@ git tag v0.1.0-alpha.1 && git push origin v0.1.0-alpha.1
 ```
 
 The packages are attached to a draft release, published by hand.
+
+### Updates
+
+GameViber checks the repository's GitHub releases (`gameviber/src/update/`):
+pre-releases only while it is one itself, drafts never. How it updates comes
+from a `distribution` file shipped with it: `package` in
+`/usr/lib/gameviber/` (our packages: downloaded, checked against
+`SHA256SUMS`, installed with the package manager through pkexec), `archive`
+next to the executable (the archive's files are replaced in place). Any other
+value names the store or repository that updates it (a future Flathub or
+distribution package writes its own), and GameViber only announces new
+versions; so does a build from source, which has no such file. A release must
+therefore keep its file names (`.deb`, `.rpm`, `.pkg.tar.zst`, `.tar.gz`) and
+its `SHA256SUMS`. `GAMEVIBER_RELEASES_URL` points the check at another server
+answering like GitHub's API (the tests run one).
