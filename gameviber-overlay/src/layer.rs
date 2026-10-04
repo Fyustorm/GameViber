@@ -218,6 +218,8 @@ unsafe extern "system" fn create_device(
     }
     let gpu = Gpu {
         device: ash_device,
+        instance: inst.instance.clone(),
+        physical,
         memory: inst.instance.get_physical_device_memory_properties(physical),
         set_loader_data,
     };
@@ -245,10 +247,16 @@ unsafe extern "system" fn create_swapchain(
 ) -> vk::Result {
     let Some(data) = device_data(key(device)) else { return vk::Result::ERROR_INITIALIZATION_FAILED };
     let mut data = data.lock().unwrap();
-    // The overlay renders into the images.
+    // The overlay renders into the images, and copies them for GameViber.
+    let requested = (*info).image_usage;
     let mut info = *info;
-    info.image_usage |= vk::ImageUsageFlags::COLOR_ATTACHMENT;
-    let result = (data.swapchain_fn.create_swapchain_khr)(device, &info, alloc, out);
+    info.image_usage |= vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_SRC;
+    let mut result = (data.swapchain_fn.create_swapchain_khr)(device, &info, alloc, out);
+    if result != vk::Result::SUCCESS && !requested.contains(vk::ImageUsageFlags::TRANSFER_SRC) {
+        // Some surfaces cannot be copied from: draw without copying.
+        info.image_usage &= !vk::ImageUsageFlags::TRANSFER_SRC;
+        result = (data.swapchain_fn.create_swapchain_khr)(device, &info, alloc, out);
+    }
     if result != vk::Result::SUCCESS {
         return result;
     }
@@ -289,7 +297,8 @@ impl DeviceData {
             }
         }
         let renderer = self.renderer.as_mut().unwrap();
-        match renderer.add_swapchain(&self.gpu, swapchain, &images, info.image_format, info.image_extent) {
+        let transfer = info.image_usage.contains(vk::ImageUsageFlags::TRANSFER_SRC);
+        match renderer.add_swapchain(&self.gpu, swapchain, &images, info.image_format, info.image_extent, transfer) {
             Ok(()) => vk::Result::SUCCESS,
             Err(e) => e,
         }
@@ -331,7 +340,7 @@ impl DeviceData {
         let image = *info.p_image_indices;
         let wait = std::slice::from_raw_parts(info.p_wait_semaphores, info.wait_semaphore_count as usize);
         let renderer = self.renderer.as_mut()?;
-        match renderer.draw(&self.gpu, queue, family, swapchain, image, wait, &state) {
+        match renderer.draw(&self.gpu, queue, family, swapchain, image, wait, &state, &mut self.client) {
             Ok(semaphore) => semaphore,
             Err(e) => {
                 crate::log(&format!("overlay draw failed: {e}"));

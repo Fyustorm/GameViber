@@ -3,7 +3,8 @@
 //! (with the panic stop) sits above the pages: Play (mode tiles, then the
 //! chosen mode's page with its settings), Toys (with Intiface Central),
 //! Gamepad (capture and troubleshooting), Sound (the game's sound and the
-//! scene model), Keybindings (gamepad combos),
+//! scene model), Screen (the game's image copied by the overlay),
+//! Keybindings (gamepad combos),
 //! Overlay (in-game overlay) and Creator (mode editor, graphs, simulator,
 //! sessions, logs). Dialogs help players get a mode made for their game by an
 //! AI assistant, and get one fixed when it does not feel right.
@@ -17,7 +18,9 @@ mod keybindings;
 mod luau;
 mod onboarding;
 mod overlay;
+mod settings;
 mod play;
+mod screen;
 mod theme;
 mod toys;
 
@@ -42,9 +45,11 @@ enum Page {
     Toys,
     Gamepad,
     Audio,
+    Screen,
     Keybindings,
     Overlay,
     Creator,
+    Settings,
 }
 
 pub struct App {
@@ -60,9 +65,13 @@ pub struct App {
     play: play::State,
     toys: toys::State,
     overlay: overlay::State,
+    settings: settings::State,
     creator: creator::State,
     generator: generator::State,
     feedback: feedback::State,
+    screen: screen::State,
+    /// The engine was told the Screen page is open.
+    watching_screen: bool,
 }
 
 impl App {
@@ -85,9 +94,12 @@ impl App {
             play: play::State::default(),
             toys: toys::State::default(),
             overlay: overlay::State::default(),
+            settings: settings::State::default(),
             creator: creator::State::default(),
             generator: generator::State::default(),
             feedback: feedback::State::default(),
+            screen: screen::State::default(),
+            watching_screen: false,
         }
     }
 
@@ -148,16 +160,18 @@ impl eframe::App for App {
         }
         if let Some(step) = self.onboarding {
             self.onboarding_ui(ui, &s, step);
-            self.generator_ui(ui.ctx());
+            self.generator_ui(ui.ctx(), &s);
             return;
         }
 
         self.status_bar(ui, &s);
         self.rail(ui);
-        if matches!(self.page, Page::Play | Page::Toys) {
+        // The fix page needs the room.
+        let fixing = self.page == Page::Play && self.feedback.open;
+        if matches!(self.page, Page::Play | Page::Toys) && !fixing {
             live_strip(ui, &s);
         }
-        if self.page == Page::Play {
+        if self.page == Page::Play && !fixing {
             gamepad_strip(ui, &s);
         }
         match self.page {
@@ -165,13 +179,20 @@ impl eframe::App for App {
             Page::Toys => self.toys_ui(ui, &s),
             Page::Gamepad => self.gamepad_ui(ui, &s),
             Page::Audio => self.audio_ui(ui, &s),
+            Page::Screen => self.screen_ui(ui, &s),
             Page::Keybindings => self.keybindings_ui(ui, &s),
             Page::Overlay => self.overlay_ui(ui, &s),
             Page::Creator => self.creator_ui(ui, &s),
+            Page::Settings => self.settings_ui(ui, &s),
         }
-        self.generator_ui(ui.ctx());
-        self.feedback_ui(ui.ctx(), &s);
+        self.generator_ui(ui.ctx(), &s);
         self.update_simulated_rumble();
+        // The overlay copies the game's image only while it is looked at.
+        let watching = self.page == Page::Screen;
+        if watching != self.watching_screen {
+            self.watching_screen = watching;
+            self.send(Command::WatchScreen(watching));
+        }
     }
 
     fn on_exit(&mut self) {
@@ -254,6 +275,7 @@ impl App {
                     (Page::Toys, "📳", "Toys"),
                     (Page::Gamepad, "🎮", "Gamepad"),
                     (Page::Audio, "🔊", "Sound"),
+                    (Page::Screen, "🖼", "Screen"),
                     (Page::Keybindings, "⌨", "Keybindings"),
                     (Page::Overlay, "🖵", "Overlay"),
                     (Page::Creator, "🔧", "Creator"),
@@ -267,8 +289,8 @@ impl App {
                     }
                 }
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
-                    if nav_item(ui, "⚙", "Setup", false).on_hover_text("Run the setup guide again").clicked() {
-                        self.onboarding = Some(0);
+                    if nav_item(ui, "⚙", "Settings", self.page == Page::Settings).clicked() {
+                        self.page = Page::Settings;
                     }
                 });
             });

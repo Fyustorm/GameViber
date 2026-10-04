@@ -494,12 +494,34 @@ fn surge_fills_with_parries_and_spends_on_a_surge() {
 
 #[test]
 fn ai_prompt_names_the_game_and_embeds_the_api() {
-    let text = prompt::new_mode_prompt("  Hades II ");
+    let text = prompt::new_mode_prompt(&prompt::Templates::builtin(), "  Hades II ", "Français");
     assert!(text.contains("**Hades II**"));
     assert!(text.contains("category = \"Hades II\""));
-    assert!(text.contains("name = \"Surge\""), "example");
-    assert!(text.contains("## 14. Examples"), "spec");
-    assert!(!text.contains("{{"), "every placeholder replaced");
+    assert!(text.contains("answer in Français"), "language");
+    assert!(text.contains("Continuous beats intermittent"), "rules");
+    assert!(text.contains("## 3. Mode file") && text.contains("### 4.2 Feedback questions"), "spec");
+    assert!(text.contains("## 10. Execution and sandbox"), "the section after a left-out one");
+    for left_out in ["## 1. ", "## 2. ", "### 4.1 ", "## 11. ", "## 12. ", "## 13. ", "## 14. "] {
+        assert!(!text.contains(left_out), "{left_out}");
+    }
+    assert!(!text.contains("{{") && !text.contains("<!--"), "every placeholder and marker replaced");
+}
+
+#[test]
+fn left_out_spec_sections_exist() {
+    let spec = include_str!("../../../docs/spec-modes.md");
+    for heading in ["## 1. Goal", "## 2. Architecture", "### 4.1 Presets", "## 11. Errors", "## 12. Safety", "## 13. Planned", "## 14. Examples"] {
+        assert!(spec.lines().any(|l| l.starts_with(heading)), "{heading}");
+    }
+}
+
+#[test]
+fn templates_keep_their_placeholders() {
+    for template in prompt::Template::ALL {
+        for placeholder in template.placeholders() {
+            assert!(template.builtin().contains(placeholder), "{placeholder} in {}", template.title());
+        }
+    }
 }
 
 #[test]
@@ -509,28 +531,39 @@ fn feel_prompt_holds_the_problem_settings_and_session() {
     let mut values = rt.param_values().clone();
     values.insert("window".into(), ParamValue::Number(0.45));
     let problems = ["Parries are not detected".to_owned(), "too strong while exploring".to_owned()];
-    let report = prompt::FeelReport {
+    let mut report = prompt::FeelReport {
         name: "Surge",
         game: "Hollow Knight",
         problems: &problems,
-        fine: &["Fight glow".to_owned()],
         history: &["2026-10-03: quick fix".to_owned()],
         params: &rt.info().params,
         values: &values,
         source,
         session: Some("### Vibrations sent by the game (0)\n"),
+        full: true,
+        language: "English",
     };
-    let text = prompt::feel_prompt(&report);
+    let templates = prompt::Templates::builtin();
+    let text = prompt::feel_prompt(&templates, &report);
     assert!(text.contains("to the player in **Hollow Knight**"));
     assert!(text.contains("- Parries are not detected\n- too strong while exploring"));
-    assert!(text.contains("They found these fine, keep them as they are: Fight glow."));
     assert!(text.contains("# Earlier attempts\n\n- 2026-10-03: quick fix"));
     assert!(text.contains("| Parry window (s) | `window` | 0.45 | 0.3 |"), "{text}");
     assert!(text.contains("| Parry button (also the surge modifier) | `parry` | \"LT\" | \"LT\" |"));
     assert!(text.contains("name = \"Surge\""), "source");
     assert!(text.contains("### Vibrations sent by the game (0)"), "session");
-    assert!(text.contains("## 14. Examples"), "spec");
-    assert!(!text.contains("{{"), "every placeholder replaced");
+    assert!(text.contains("Continuous beats intermittent"), "rules");
+    assert!(text.contains("## 5. Callbacks") && !text.contains("## 14. Examples"), "spec");
+    assert!(!text.contains("{{") && !text.contains("<!--"), "every placeholder and marker replaced");
+
+    // For the conversation that wrote the mode: no context, rules or API.
+    report.full = false;
+    let short = prompt::feel_prompt(&templates, &report);
+    assert!(short.contains("- Parries are not detected") && short.contains("| Parry window (s) | `window` | 0.45 | 0.3 |"));
+    assert!(!short.contains("name = \"Surge\""), "the conversation has the code");
+    assert!(!short.contains("Continuous beats intermittent") && !short.contains("## 5. Callbacks"));
+    assert!(!short.contains("turns what a game does") && !short.contains("\n\n\n"));
+    assert!(short.len() * 3 < text.len());
     assert!(prompt::has_script("```lua\nmode { api = 1 }\n```"));
     assert!(!prompt::has_script("Set the parry window to 0.5 s."));
 }

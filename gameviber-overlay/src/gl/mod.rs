@@ -7,6 +7,7 @@
 //! libraries untouched. Like the Vulkan layer, nothing is drawn while
 //! GameViber is not running.
 
+mod capture;
 mod render;
 
 use std::collections::HashMap;
@@ -288,12 +289,11 @@ unsafe fn draw_egl(dpy: Ptr, surface: Ptr) {
 }
 
 unsafe fn draw(ctx: usize, width: u32, height: u32, load: impl FnMut(&CStr) -> *const c_void) {
-    let state = {
-        let mut client = CLIENT.lock().unwrap();
-        match client.get_or_insert_with(|| Client::new("opengl")).poll() {
-            Some(state) => state.clone(),
-            None => return,
-        }
+    let mut client = CLIENT.lock().unwrap();
+    let client = client.get_or_insert_with(|| Client::new("opengl"));
+    let state = match client.poll() {
+        Some(state) => state.clone(),
+        None => return,
     };
     let mut renderers = RENDERERS.lock().unwrap();
     let renderer = renderers.get_or_insert_with(HashMap::new).entry(ctx).or_insert_with(|| match Renderer::new(load) {
@@ -307,6 +307,6 @@ unsafe fn draw(ctx: usize, width: u32, height: u32, load: impl FnMut(&CStr) -> *
         }
     });
     if let Some(renderer) = renderer {
-        renderer.draw(&state, width, height);
+        renderer.draw(&state, width, height, client);
     }
 }

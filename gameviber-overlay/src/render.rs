@@ -2,6 +2,11 @@
 //! the game presents it, in its own command buffer submitted on the present
 //! queue. The submission waits for the game's semaphores and signals one of
 //! ours, which the present then waits for.
+//!
+//! When GameViber wants the game's image, the same command buffer first
+//! shrinks the swapchain image on the GPU (a blit, then halvings through mip
+//! levels, which averages instead of skipping pixels) and copies the result
+//! to a host buffer, read once the frame's fence says it is done.
 
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -9,8 +14,9 @@ use std::ffi::c_void;
 use ash::prelude::VkResult;
 use ash::vk::{self, Handle};
 use epaint::{ColorImage, ImageData, Primitive, TextureId};
-use gameviber_common::overlay::OverlayState;
+use gameviber_common::overlay::{frames, OverlayState};
 
+use crate::client::Client;
 use crate::hud::{Frame as HudFrame, Hud};
 
 const SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/overlay.spv"));
@@ -18,12 +24,16 @@ const SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/overlay.spv"));
 const FENCE_TIMEOUT_NS: u64 = 100_000_000;
 /// epaint vertex: pos (2 x f32), uv (2 x f32), color (4 x u8).
 const VERTEX_SIZE: u64 = 20;
+/// At most this many halvings after the first blit.
+const MAX_HALVINGS: u32 = 6;
 
 pub type SetDeviceLoaderData = unsafe extern "system" fn(vk::Device, *mut c_void) -> vk::Result;
 
 /// What the renderer needs from the device the layer wraps.
 pub struct Gpu {
     pub device: ash::Device,
+    pub instance: ash::Instance,
+    pub physical: vk::PhysicalDevice,
     pub memory: vk::PhysicalDeviceMemoryProperties,
     pub set_loader_data: SetDeviceLoaderData,
 }
@@ -37,11 +47,21 @@ impl Gpu {
 
     /// Host-visible buffer, persistently mapped.
     unsafe fn buffer(&self, size: u64, usage: vk::BufferUsageFlags) -> VkResult<Buffer> {
+        self.buffer_in(size, usage, vk::MemoryPropertyFlags::empty())
+    }
+
+    /// Host-visible buffer the CPU reads: cached memory when there is some.
+    unsafe fn readback_buffer(&self, size: u64) -> VkResult<Buffer> {
+        self.buffer_in(size, vk::BufferUsageFlags::TRANSFER_DST, vk::MemoryPropertyFlags::HOST_CACHED)
+    }
+
+    unsafe fn buffer_in(&self, size: u64, usage: vk::BufferUsageFlags, preferred: vk::MemoryPropertyFlags) -> VkResult<Buffer> {
         let d = &self.device;
         let buffer = d.create_buffer(&vk::BufferCreateInfo::default().size(size).usage(usage), None)?;
         let req = d.get_buffer_memory_requirements(buffer);
         let flags = vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT;
-        let Some(kind) = self.memory_type(req.memory_type_bits, flags) else {
+        let kind = self.memory_type(req.memory_type_bits, flags | preferred).or_else(|| self.memory_type(req.memory_type_bits, flags));
+        let Some(kind) = kind else {
             d.destroy_buffer(buffer, None);
             return Err(vk::Result::ERROR_OUT_OF_DEVICE_MEMORY);
         };
@@ -93,7 +113,34 @@ struct Texture {
     fresh: bool,
 }
 
+/// The shrunk copy of a swapchain image and the buffer it is read from.
+struct Capture {
+    image: vk::Image,
+    memory: vk::DeviceMemory,
+    format: vk::Format,
+    /// Size of mip level 0; each next level is half as large.
+    top: (u32, u32),
+    /// Halvings after the first blit: the copy is the last level.
+    halvings: u32,
+    buffer: Buffer,
+    /// A copy was recorded and not read yet, of an image of this size.
+    pending: Option<(u32, u32)>,
+}
+
+impl Capture {
+    fn size(&self) -> (u32, u32) {
+        (self.top.0 >> self.halvings, self.top.1 >> self.halvings)
+    }
+
+    unsafe fn destroy(&self, d: &ash::Device) {
+        d.destroy_image(self.image, None);
+        d.free_memory(self.memory, None);
+        self.buffer.destroy(d);
+    }
+}
+
 struct Frame {
+    image: vk::Image,
     view: vk::ImageView,
     framebuffer: vk::Framebuffer,
     /// Command buffer and the queue family of its pool.
@@ -103,12 +150,15 @@ struct Frame {
     vertices: Option<Buffer>,
     indices: Option<Buffer>,
     staging: Option<Buffer>,
+    capture: Option<Capture>,
 }
 
 struct Swapchain {
     format: vk::Format,
     extent: vk::Extent2D,
     frames: Vec<Frame>,
+    /// Its images can be copied from (transfer usage and a blittable format).
+    capturable: bool,
 }
 
 pub struct Renderer {
@@ -203,8 +253,12 @@ impl Renderer {
         images: &[vk::Image],
         format: vk::Format,
         extent: vk::Extent2D,
+        transfer: bool,
     ) -> VkResult<()> {
         let d = &gpu.device;
+        let features = gpu.instance.get_physical_device_format_properties(gpu.physical, format).optimal_tiling_features;
+        let capturable =
+            transfer && features.contains(vk::FormatFeatureFlags::BLIT_SRC | vk::FormatFeatureFlags::SAMPLED_IMAGE_FILTER_LINEAR);
         let render_pass = self.pipeline(gpu, format)?.0;
         let mut frames = Vec::new();
         for &image in images {
@@ -229,6 +283,7 @@ impl Renderer {
             let fence = d.create_fence(&vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED), None)?;
             let semaphore = d.create_semaphore(&vk::SemaphoreCreateInfo::default(), None)?;
             frames.push(Frame {
+                image,
                 view,
                 framebuffer,
                 cmd: None,
@@ -237,9 +292,10 @@ impl Renderer {
                 vertices: None,
                 indices: None,
                 staging: None,
+                capture: None,
             });
         }
-        self.swapchains.insert(swapchain, Swapchain { format, extent, frames });
+        self.swapchains.insert(swapchain, Swapchain { format, extent, frames, capturable });
         Ok(())
     }
 
@@ -259,6 +315,9 @@ impl Renderer {
         }
         for buffer in [frame.vertices, frame.indices, frame.staging].into_iter().flatten() {
             buffer.destroy(d);
+        }
+        if let Some(capture) = frame.capture {
+            capture.destroy(d);
         }
         d.destroy_fence(frame.fence, None);
         d.destroy_semaphore(frame.semaphore, None);
@@ -289,9 +348,11 @@ impl Renderer {
         d.destroy_shader_module(self.shader, None);
     }
 
-    /// Records and submits the overlay for `image` of `swapchain`. Returns the
-    /// semaphore the present must wait for instead of `wait`, or `None` when
-    /// nothing was drawn (the present then keeps the game's semaphores).
+    /// Records and submits the overlay for `image` of `swapchain`, and a copy
+    /// of the image when `client` wants one. Returns the semaphore the present
+    /// must wait for instead of `wait`, or `None` when nothing was submitted
+    /// (the present then keeps the game's semaphores).
+    #[allow(clippy::too_many_arguments)]
     pub unsafe fn draw(
         &mut self,
         gpu: &Gpu,
@@ -301,19 +362,32 @@ impl Renderer {
         image: u32,
         wait: &[vk::Semaphore],
         state: &OverlayState,
+        client: &mut Client,
     ) -> VkResult<Option<vk::Semaphore>> {
         let d = &gpu.device;
-        let Some(sc) = self.swapchains.get(&swapchain) else { return Ok(None) };
-        let (extent, format) = (sc.extent, sc.format);
-        let Some(frame) = sc.frames.get(image as usize) else { return Ok(None) };
+        let Some(sc) = self.swapchains.get_mut(&swapchain) else { return Ok(None) };
+        let (extent, format, capturable) = (sc.extent, sc.format, sc.capturable);
+        let Some(frame) = sc.frames.get_mut(image as usize) else { return Ok(None) };
         if d.wait_for_fences(&[frame.fence], true, FENCE_TIMEOUT_NS).is_err() {
             return Ok(None);
         }
+        // The copy recorded the last time this image was presented is done.
+        if let (Some(capture), Some(shared)) = (frame.capture.as_mut(), client.frames()) {
+            if let Some(source) = capture.pending.take() {
+                let (w, h) = capture.size();
+                let pixels = std::slice::from_raw_parts(capture.buffer.ptr, (w * h * 4) as usize);
+                shared.publish(w, h, source, pixels, w as usize * 4, false);
+            }
+        }
+        let copy = match state.capture {
+            Some(request) if capturable && client.capture_due() => Some(request.width),
+            _ => None,
+        };
         let hud = self.hud.build(state, extent.width, extent.height);
         if let Some(delta) = &hud.texture {
             self.apply_texture_delta(delta);
         }
-        if hud.primitives.is_empty() {
+        if hud.primitives.is_empty() && copy.is_none() {
             return Ok(None);
         }
         let upload = self.atlas_dirty;
@@ -361,13 +435,57 @@ impl Renderer {
             }
         }
 
+        if let Some(width) = copy {
+            if let Err(e) = prepare_capture(gpu, frame, format, extent, width) {
+                crate::log(&format!("cannot copy the game's image: {e}"));
+            }
+        }
+
         d.reset_fences(&[frame.fence])?;
         d.reset_command_buffer(cmd, vk::CommandBufferResetFlags::empty())?;
         d.begin_command_buffer(cmd, &vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT))?;
         if upload {
             self.record_upload(gpu, cmd, swapchain, image)?;
         }
+        let frame = &mut self.swapchains.get_mut(&swapchain).unwrap().frames[image as usize];
+        if copy.is_some() {
+            if let Some(capture) = frame.capture.as_mut() {
+                record_capture(d, cmd, frame.image, extent, capture);
+            }
+        }
+        if !hud.primitives.is_empty() {
+            self.record_hud(gpu, cmd, swapchain, image, &hud, render_pass, pipeline);
+        }
+        d.end_command_buffer(cmd)?;
+
         let frame = &self.swapchains[&swapchain].frames[image as usize];
+        let stages = vec![vk::PipelineStageFlags::ALL_COMMANDS; wait.len()];
+        let cmds = [cmd];
+        let signal = [frame.semaphore];
+        let submit = vk::SubmitInfo::default()
+            .wait_semaphores(wait)
+            .wait_dst_stage_mask(&stages)
+            .command_buffers(&cmds)
+            .signal_semaphores(&signal);
+        d.queue_submit(queue, &[submit], frame.fence)?;
+        Ok(Some(frame.semaphore))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn record_hud(
+        &self,
+        gpu: &Gpu,
+        cmd: vk::CommandBuffer,
+        swapchain: vk::SwapchainKHR,
+        image: u32,
+        hud: &HudFrame,
+        render_pass: vk::RenderPass,
+        pipeline: vk::Pipeline,
+    ) {
+        let d = &gpu.device;
+        let sc = &self.swapchains[&swapchain];
+        let (extent, format) = (sc.extent, sc.format);
+        let frame = &sc.frames[image as usize];
         let area = vk::Rect2D { offset: vk::Offset2D::default(), extent };
         d.cmd_begin_render_pass(
             cmd,
@@ -387,7 +505,7 @@ impl Renderer {
             max_depth: 1.0,
         };
         d.cmd_set_viewport(cmd, 0, &[viewport]);
-        let params = push_constants(&hud, extent, is_srgb(format));
+        let params = push_constants(hud, extent, is_srgb(format));
         d.cmd_push_constants(cmd, self.pipeline_layout, vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT, 0, &params);
         let (mut voff, mut ioff) = (0i32, 0u32);
         for p in &hud.primitives {
@@ -400,18 +518,6 @@ impl Renderer {
             ioff += m.indices.len() as u32;
         }
         d.cmd_end_render_pass(cmd);
-        d.end_command_buffer(cmd)?;
-
-        let stages = vec![vk::PipelineStageFlags::ALL_COMMANDS; wait.len()];
-        let cmds = [cmd];
-        let signal = [frame.semaphore];
-        let submit = vk::SubmitInfo::default()
-            .wait_semaphores(wait)
-            .wait_dst_stage_mask(&stages)
-            .command_buffers(&cmds)
-            .signal_semaphores(&signal);
-        d.queue_submit(queue, &[submit], frame.fence)?;
-        Ok(Some(frame.semaphore))
     }
 
     fn apply_texture_delta(&mut self, delta: &epaint::ImageDelta) {
@@ -642,6 +748,150 @@ impl Renderer {
         self.pipelines.insert(format, (render_pass, pipeline));
         Ok((render_pass, pipeline))
     }
+}
+
+/// (Re)creates `frame`'s copy resources for a copy `width` pixels wide of an `extent` image.
+unsafe fn prepare_capture(gpu: &Gpu, frame: &mut Frame, source: vk::Format, extent: vk::Extent2D, width: u32) -> VkResult<()> {
+    let d = &gpu.device;
+    let (w, h) = frames::copy_size(width, (extent.width, extent.height));
+    let mut halvings = 0;
+    while halvings < MAX_HALVINGS && (w << (halvings + 1)) <= extent.width && (h << (halvings + 1)) <= extent.height {
+        halvings += 1;
+    }
+    let top = (w << halvings, h << halvings);
+    // The blit converts: keep gamma-encoded values whatever the game's format.
+    let format = if is_srgb(source) { vk::Format::R8G8B8A8_SRGB } else { vk::Format::R8G8B8A8_UNORM };
+    if frame.capture.as_ref().is_some_and(|c| c.top == top && c.halvings == halvings && c.format == format) {
+        return Ok(());
+    }
+    if let Some(old) = frame.capture.take() {
+        old.destroy(d);
+    }
+    let image = d.create_image(
+        &vk::ImageCreateInfo::default()
+            .image_type(vk::ImageType::TYPE_2D)
+            .format(format)
+            .extent(vk::Extent3D { width: top.0, height: top.1, depth: 1 })
+            .mip_levels(halvings + 1)
+            .array_layers(1)
+            .samples(vk::SampleCountFlags::TYPE_1)
+            .tiling(vk::ImageTiling::OPTIMAL)
+            .usage(vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::TRANSFER_DST)
+            .initial_layout(vk::ImageLayout::UNDEFINED),
+        None,
+    )?;
+    let req = d.get_image_memory_requirements(image);
+    let kind = gpu
+        .memory_type(req.memory_type_bits, vk::MemoryPropertyFlags::DEVICE_LOCAL)
+        .or_else(|| gpu.memory_type(req.memory_type_bits, vk::MemoryPropertyFlags::empty()));
+    let memory = match kind.map(|k| d.allocate_memory(&vk::MemoryAllocateInfo::default().allocation_size(req.size).memory_type_index(k), None)) {
+        Some(Ok(m)) => m,
+        Some(Err(e)) => {
+            d.destroy_image(image, None);
+            return Err(e);
+        }
+        None => {
+            d.destroy_image(image, None);
+            return Err(vk::Result::ERROR_OUT_OF_DEVICE_MEMORY);
+        }
+    };
+    let buffer = d.bind_image_memory(image, memory, 0).and_then(|()| gpu.readback_buffer((w * h * 4) as u64));
+    match buffer {
+        Ok(buffer) => {
+            frame.capture = Some(Capture { image, memory, format, top, halvings, buffer, pending: None });
+            Ok(())
+        }
+        Err(e) => {
+            d.destroy_image(image, None);
+            d.free_memory(memory, None);
+            Err(e)
+        }
+    }
+}
+
+/// Shrinks the swapchain image into `capture` and copies the result to its buffer.
+unsafe fn record_capture(d: &ash::Device, cmd: vk::CommandBuffer, source: vk::Image, extent: vk::Extent2D, capture: &mut Capture) {
+    let level = |mip: u32| vk::ImageSubresourceRange { base_mip_level: mip, level_count: 1, ..color_range() };
+    let layers = |mip: u32| vk::ImageSubresourceLayers { aspect_mask: vk::ImageAspectFlags::COLOR, mip_level: mip, base_array_layer: 0, layer_count: 1 };
+    let barrier = |image, range, from, to, src_access, dst_access| {
+        vk::ImageMemoryBarrier::default()
+            .old_layout(from)
+            .new_layout(to)
+            .src_access_mask(src_access)
+            .dst_access_mask(dst_access)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .image(image)
+            .subresource_range(range)
+    };
+    let corner = |w: u32, h: u32| [vk::Offset3D::default(), vk::Offset3D { x: w as i32, y: h as i32, z: 1 }];
+    let blit = |src, src_mip, (sw, sh): (u32, u32), dst_mip, (dw, dh): (u32, u32)| {
+        let region = vk::ImageBlit {
+            src_subresource: layers(src_mip),
+            src_offsets: corner(sw, sh),
+            dst_subresource: layers(dst_mip),
+            dst_offsets: corner(dw, dh),
+        };
+        d.cmd_blit_image(cmd, src, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, capture.image, vk::ImageLayout::TRANSFER_DST_OPTIMAL, &[region], vk::Filter::LINEAR);
+    };
+    let all_levels = vk::ImageSubresourceRange { level_count: capture.halvings + 1, ..color_range() };
+    d.cmd_pipeline_barrier(
+        cmd,
+        vk::PipelineStageFlags::ALL_COMMANDS,
+        vk::PipelineStageFlags::TRANSFER,
+        vk::DependencyFlags::empty(),
+        &[],
+        &[],
+        &[
+            barrier(source, color_range(), vk::ImageLayout::PRESENT_SRC_KHR, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, vk::AccessFlags::MEMORY_WRITE, vk::AccessFlags::TRANSFER_READ),
+            barrier(capture.image, all_levels, vk::ImageLayout::UNDEFINED, vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::AccessFlags::empty(), vk::AccessFlags::TRANSFER_WRITE),
+        ],
+    );
+    blit(source, 0, (extent.width, extent.height), 0, capture.top);
+    for mip in 0..=capture.halvings {
+        d.cmd_pipeline_barrier(
+            cmd,
+            vk::PipelineStageFlags::TRANSFER,
+            vk::PipelineStageFlags::TRANSFER,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &[barrier(capture.image, level(mip), vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, vk::AccessFlags::TRANSFER_WRITE, vk::AccessFlags::TRANSFER_READ)],
+        );
+        if mip < capture.halvings {
+            let size = (capture.top.0 >> mip, capture.top.1 >> mip);
+            blit(capture.image, mip, size, mip + 1, (size.0 / 2, size.1 / 2));
+        }
+    }
+    let (w, h) = capture.size();
+    let region = vk::BufferImageCopy::default()
+        .image_subresource(layers(capture.halvings))
+        .image_extent(vk::Extent3D { width: w, height: h, depth: 1 });
+    d.cmd_copy_image_to_buffer(cmd, capture.image, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, capture.buffer.buffer, &[region]);
+    let host = vk::BufferMemoryBarrier::default()
+        .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+        .dst_access_mask(vk::AccessFlags::HOST_READ)
+        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .buffer(capture.buffer.buffer)
+        .size(vk::WHOLE_SIZE);
+    d.cmd_pipeline_barrier(
+        cmd,
+        vk::PipelineStageFlags::TRANSFER,
+        vk::PipelineStageFlags::HOST | vk::PipelineStageFlags::ALL_COMMANDS,
+        vk::DependencyFlags::empty(),
+        &[],
+        &[host],
+        &[barrier(
+            source,
+            color_range(),
+            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+            vk::ImageLayout::PRESENT_SRC_KHR,
+            vk::AccessFlags::TRANSFER_READ,
+            vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE,
+        )],
+    );
+    capture.pending = Some((extent.width, extent.height));
 }
 
 unsafe fn destroy_texture(d: &ash::Device, t: Texture) {

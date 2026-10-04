@@ -13,6 +13,7 @@ mod logging;
 mod mode;
 mod overlay;
 mod rumble;
+mod screen;
 mod session;
 mod source;
 

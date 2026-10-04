@@ -10,6 +10,7 @@
 //! through the `gameviber-overlay` launcher, which also preloads the
 //! library. `DISABLE_GAMEVIBER_OVERLAY=1` turns both off.
 
+mod capture;
 mod client;
 mod gl;
 mod hud;

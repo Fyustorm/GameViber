@@ -27,7 +27,8 @@ again from **Setup** at the bottom of the left bar. Then the GUI provides:
   gamepad, configurable on the Keybindings page);
 - **Play**: your modes (or the built-in ones) as tiles, then a page for the
   chosen mode with its explanation, its main settings, all its settings and
-  named **presets** (e.g. one per game). It opens on the last session's mode;
+  named **presets** (e.g. one per game); your own modes can be duplicated,
+  edited or deleted there. It opens on the last session's mode;
 - **Toys**: the connection to Intiface Central (status, address), the toys it
   found, a test buzz, which mode channels each one plays, and how it renders
   them: weakest and strongest intensity and a response curve, with buttons to
@@ -38,7 +39,13 @@ again from **Setup** at the bottom of the left bar. Then the GUI provides:
 - **Sound**: which sound modes hear (automatic: the game showing the overlay,
   else everything; everything; one application, all its streams; off), what is heard right now (loudness,
   bass / mids / treble, hits), and the **scene model** to download (see below);
+- **Screen**: the game's image as the in-game overlay copies it (a small live
+  preview, brightness, motion). Groundwork for modes reading the screen; the
+  overlay copies frames only while this page is open;
 - **Keybindings**: the panic stop and mark-a-moment gamepad combos;
+- **Settings** (bottom of the left bar): the language AI assistants answer and
+  write modes in, the templates of the requests sent to them (editable, with
+  GameViber's version one click away), and the setup guide;
 - **Creator**: mode editing with hot reload (Ctrl+S), graphs of the rumble,
   outputs and `plot()` values, a simulator (fake rumble and buttons), recorded
   play **sessions** (the game's rumble and your inputs, replayed into a freshly
@@ -53,21 +60,25 @@ Claude, Gemini, Le Chat...):
 
 1. type the game's name;
 2. copy the request GameViber builds and paste it in a new conversation. It holds
-   the context, the full mode API, the rules (every button the mode uses is a
-   setting defaulting to the game's own binding, heuristics stay tunable) and an
-   example; an assistant with web search can check the game's default controls;
+   the context, the mode API, what makes a mode feel good (a continuous, varying
+   vibration rather than isolated buzzes) and the rules (every button the mode uses
+   is a setting defaulting to the game's own binding, heuristics stay tunable); an
+   assistant with web search can check the game's default controls;
 3. paste the answer (or just its code, or drop the `.luau` file on the window):
    GameViber checks that the mode loads, creates it and activates it. If it does
    not load, copy the fix request and send it back to the assistant.
 
-The request template is [`gameviber/prompts/new-mode.md`](gameviber/prompts/new-mode.md).
+The request template is [`gameviber/prompts/new-mode.md`](gameviber/prompts/new-mode.md),
+with [`rules.md`](gameviber/prompts/rules.md); both can be edited from Settings.
 
 When a mode does not feel right, **Doesn't feel right?** (Play page) asks the
 mode's own questions ("Parry detection: Often missed | Good | Also on hits
 taken", declared with `ask()`, or generic ones). Many answers come with a
 **quick fix** that adjusts the matching setting in one click. Otherwise pick a
 recorded session (or save the last 2 minutes of play, which GameViber always
-keeps in memory) and copy the request.
+keeps in memory) and copy the request: the page lists what goes into it, and
+it can be a full one for a new conversation or a short one for the
+conversation that wrote the mode.
 
 While playing, hold **BACK + RS** (configurable on the Keybindings page) to
 **mark a moment** that felt wrong: the overlay confirms, and the last 2
@@ -110,7 +121,9 @@ it starts with a newer version; restart running games to get it):
   `eglSwapBuffers` (GLX and EGL, OpenGL 3.0+ and OpenGL ES 3.0+), like MangoHud.
 
 It works fullscreen or not, on any desktop, in 64-bit and 32-bit games (see
-Build). Not supported yet: Flatpak Steam.
+Build). When GameViber asks for it (the **Screen** page), the overlay also
+copies small images of the game (480 pixels wide, 10 per second), shrunk on the
+GPU and passed through shared memory; they are never saved. Not supported yet: Flatpak Steam.
 `DISABLE_GAMEVIBER_OVERLAY=1` turns it off for one game;
 `GAMEVIBER_OVERLAY_DEBUG=1` prints its errors on the game's stderr.
 

@@ -6,6 +6,7 @@ use eframe::egui::{self, RichText};
 
 use super::theme::*;
 use super::{App, Page};
+use crate::engine::Shared;
 use crate::mode::{prompt, ModeRuntime};
 
 const ASSISTANTS: [(&str, &str); 4] = [
@@ -31,7 +32,7 @@ impl App {
         self.generator.open = true;
     }
 
-    pub(super) fn generator_ui(&mut self, ctx: &egui::Context) {
+    pub(super) fn generator_ui(&mut self, ctx: &egui::Context, s: &Shared) {
         if !self.generator.open {
             return;
         }
@@ -56,7 +57,7 @@ impl App {
             ui.horizontal(|ui| {
                 let game = g.game.trim().to_owned();
                 if ui.add_enabled(!game.is_empty(), primary("📋 Copy the request")).clicked() {
-                    ui.ctx().copy_text(prompt::new_mode_prompt(&game));
+                    ui.ctx().copy_text(prompt::new_mode_prompt(&prompt::Templates::load(), &game, &s.settings.language));
                     g.copied = Some(game.clone());
                 }
                 if g.copied.as_deref() == Some(game.as_str()) {

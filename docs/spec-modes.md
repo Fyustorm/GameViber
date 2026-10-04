@@ -150,7 +150,7 @@ feedback = {
 - Questions are shown in declaration order; their keys only identify them.
 
 Answers away from the default go into the request sent to the AI assistant, together
-with the questions answered "fine", the earlier rounds of fixes for this mode, and a
+with the setting each one is linked to, the earlier rounds of fixes for this mode, and a
 recorded session replayed into the mode. Scripts never see the answers.
 
 ## 5. Callbacks
@@ -293,7 +293,7 @@ audio_scene_window = 10,   -- seconds the probabilities are averaged over (2 to 
 
   **A wave never goes down to 0**: its low point is a parameter above 0 (e.g. 0.05 to
   0.15, with a minimum above 0 too), not silence. GameViber plays any value of 0.01 or
-  more at least at each toy's weakest intensity (§12), so the low point is felt as the
+  more at least at each toy's weakest intensity (set by the player per toy), so the low point is felt as the
   toy's gentlest vibration and the wave never stops while the phase lasts. Fade the
   background in and out over a few seconds, so a late or wrong scene is barely felt:
 

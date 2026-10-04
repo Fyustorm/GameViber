@@ -62,7 +62,7 @@ impl App {
 
     fn setup_footer(&mut self, ui: &mut egui::Ui, s: &Shared, step: usize) {
         if step == 0 {
-            if ui.button("Skip setup").on_hover_text("You can run it again from Setup, at the bottom of the left bar").clicked() {
+            if ui.button("Skip setup").on_hover_text("You can run it again from Settings").clicked() {
                 self.finish_setup();
             }
         } else if ui.button("Back").clicked() {

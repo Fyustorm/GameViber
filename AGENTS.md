@@ -28,17 +28,19 @@ script) → **safety layer** → **Intiface output**.
 | `gameviber/src/rumble.rs` | evdev force-feedback semantics (ff-memless) → strong/weak levels |
 | `gameviber/src/gamepad.rs` | button/axis normalization (Xbox layout), panic combo |
 | `gameviber/src/mode/` | Luau runtime: `library.rs` (script API), `outputs.rs` (channels, pulses, patterns), `rumble_events.rs`, `audio_events.rs` (audio scenes), `prompt.rs` (AI requests: a per-game mode, a fix for a mode that feels wrong), `report.rs` (a session replayed offline into a mode, for the fix request), `tests.rs` |
-| `gameviber/src/engine.rs` | engine thread: sources, audio, mode, safety layer, routing, output |
+| `gameviber/src/screen.rs` | the game's image: frames copied by the overlay, measures on them (brightness, motion) |
+| `gameviber/src/engine.rs` | engine thread: sources, audio, image, mode, safety layer, routing, output |
 | `gameviber/src/session.rs` | recorded play sessions (rumble, buttons, axes, sound levels, hits and scene embeddings) and their replay |
-| `gameviber/src/gui/` | egui GUI: setup guide (`onboarding`), pages (`play`, `toys`, `gamepad`, `audio`, `keybindings`, `overlay`, `creator`), AI dialogs (`generator`: a mode for a game, `feedback`: a fix for the active mode), Luau highlighting (`luau`), `theme` |
+| `gameviber/src/gui/` | egui GUI: setup guide (`onboarding`), pages (`play`, `toys`, `gamepad`, `audio`, `screen`, `keybindings`, `overlay`, `creator`, `settings`), AI requests (`generator` dialog: a mode for a game; `feedback` page: a fix for the active mode), Luau highlighting (`luau`), `theme` |
 | `gameviber/src/helper/` | privileged helper (`gameviber helper`, started through pkexec) |
 | `gameviber/src/config.rs` | config files, built-in mode registry (`BUILTIN_MODES`) |
 | `gameviber/modes/` | built-in modes, embedded in the binary |
 | `gameviber/prompts/new-mode.md` | template of the request asking an AI assistant to write a mode for one game |
-| `gameviber/prompts/fix-feel.md` | template of the request asking an AI assistant to fix a mode that does not feel right |
-| `gameviber-ebpf/`, `gameviber-common/` | eBPF probe and types shared with it; `gameviber-common/src/overlay.rs`: overlay protocol |
-| `gameviber-overlay/` | in-game overlay: implicit Vulkan layer (`layer.rs`, `render.rs`), OpenGL swap hooks when preloaded (`gl/`), panel layout with epaint (`hud.rs`), socket client |
-| `gameviber/src/overlay.rs` | overlay socket server and layer installation |
+| `gameviber/prompts/fix-feel.md` | template of the request asking an AI assistant to fix a mode that does not feel right (`<!-- full -->` blocks are left out of the short request for the conversation that wrote the mode) |
+| `gameviber/prompts/rules.md` | what makes a mode feel good and the script rules, shared by both requests; players can override the three templates from the Settings page (`~/.config/gameviber/prompts/`) |
+| `gameviber-ebpf/`, `gameviber-common/` | eBPF probe and types shared with it; `gameviber-common/src/overlay.rs`: overlay protocol and the shared frame memory (`frames`) |
+| `gameviber-overlay/` | in-game overlay: implicit Vulkan layer (`layer.rs`, `render.rs`), OpenGL swap hooks when preloaded (`gl/`), panel layout with epaint (`hud.rs`), socket client, copies of the game's image (`capture.rs`, `render.rs`, `gl/capture.rs`) |
+| `gameviber/src/overlay.rs` | overlay socket server (with the games' frame memory) and layer installation |
 | `docs/spec-modes.md` | mode API specification (source of truth for the script API) |
 | `prototype/` | original Python prototype (reference only) |
 | `tools/` | test helpers: fake gamepad, SDL rumble game |
@@ -70,9 +72,11 @@ Run `cargo test` after any change to the runtime or to a mode.
   linked to the parameter that fixes it.
 - **Per-game modes come first**: built-in modes are genre fallbacks; players are steered
   towards a mode written by an AI assistant for their game. The requests
-  (`gameviber/prompts/new-mode.md`, and `fix-feel.md` for fixes) embed
-  `docs/spec-modes.md` (and `modes/surge.luau` as the example), so keep their rules in
-  line with the mode style rules and the known pitfalls below.
+  (`gameviber/prompts/new-mode.md`, and `fix-feel.md` for fixes) share
+  `prompts/rules.md` (what feels good, script rules) and embed `docs/spec-modes.md`
+  without the sections listed in `SPEC_LEFT_OUT` (`mode/prompt.rs`). Keep the rules
+  short, in line with the mode style rules and the known pitfalls below, and do not
+  repeat in them what the spec already says.
 - **Safety stays outside scripts**: the global cap, STOP ALL / panic combo and
   zeroing outputs on source loss live in the engine, never in a mode.
 - **Privileges**: the GUI and the main process must never run as root. Root-only work
@@ -97,5 +101,11 @@ Run `cargo test` after any change to the runtime or to a mode.
   (a faded background in tense phases: a slow wave in battles, a heartbeat in tense
   games, whose low point never goes to 0), the rumble and buttons make the peaks.
   Two or three contrasted scenes described as sound beat many close ones.
+- Image copies (overlay): made before the panel is drawn, so the panel never
+  shows in them; one frame's copy is read when that swapchain image (Vulkan) or
+  the pixel buffer's fence (OpenGL) comes back, never by waiting on the GPU.
+  GameViber maps a game's frame memory only once its size is sealed: a game
+  shrinking it would otherwise crash GameViber. Not handled yet: multisampled
+  OpenGL back buffers, and HDR swapchains (values are clamped to 8 bits).
 - The CLAP mel spectrogram (`audio/clap.rs`) must match `transformers`'
   `ClapFeatureExtractor`; its test holds reference values computed with it.

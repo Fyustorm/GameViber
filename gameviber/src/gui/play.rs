@@ -28,6 +28,8 @@ pub struct State {
     new_preset_name: String,
     /// Preset whose deletion waits for confirmation.
     confirm_delete: Option<String>,
+    /// Mode whose deletion waits for confirmation.
+    confirm_delete_mode: Option<String>,
 }
 
 impl State {
@@ -41,7 +43,9 @@ impl App {
     pub(super) fn play_ui(&mut self, ui: &mut egui::Ui, s: &Shared) {
         let frame = egui::Frame::new().fill(BG).inner_margin(Margin::symmetric(24, 20));
         egui::CentralPanel::default().frame(frame).show(ui, |ui| {
-            if self.play.list || s.mode.id.is_empty() {
+            if self.feedback.open {
+                self.feedback_page(ui, s);
+            } else if self.play.list || s.mode.id.is_empty() {
                 self.mode_list(ui, s);
             } else {
                 egui::ScrollArea::vertical().show(ui, |ui| self.mode_page(ui, s));
@@ -150,7 +154,23 @@ impl App {
                     if ui.button("Duplicate and edit").on_hover_text("Copy this mode to change how it works").clicked() {
                         self.duplicate_mode(&mode.id);
                     }
+                } else if self.play.confirm_delete_mode.as_deref() == Some(mode.id.as_str()) {
+                    if ui.button("Cancel").clicked() {
+                        self.play.confirm_delete_mode = None;
+                    }
+                    let delete = egui::Button::new(RichText::new("Delete for good").color(egui::Color32::WHITE)).fill(DANGER);
+                    if ui.add(delete).clicked() {
+                        self.send(Command::DeleteMode(mode.id.clone()));
+                        self.play.confirm_delete_mode = None;
+                        self.play.list = true;
+                        self.play.builtin = false;
+                    }
+                    ui.label(RichText::new("Delete this mode, its settings and presets?").color(DANGER_TEXT));
+                    return;
                 } else {
+                    if ui.button("🗑 Delete").on_hover_text("Delete this mode, its settings and presets").clicked() {
+                        self.play.confirm_delete_mode = Some(mode.id.clone());
+                    }
                     if ui.button("Edit in Creator").clicked() {
                         self.page = Page::Creator;
                     }

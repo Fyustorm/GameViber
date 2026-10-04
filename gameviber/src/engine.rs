@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::sync::{mpsc as std_mpsc, Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
-use gameviber_common::overlay::{Event, Gauge, Hello, OverlayState};
+use gameviber_common::overlay::{CaptureRequest, Event, Gauge, Hello, OverlayState};
 
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::mpsc;
@@ -23,6 +23,7 @@ use crate::intiface::{Intiface, IntifaceStatus, Toy, ToyOutputs};
 use crate::mode::rumble_events::RumbleLevels;
 use crate::mode::{HudGauge, ModeEvent, ModeInfo, ModeRuntime, ParamValue};
 use crate::overlay;
+use crate::screen::{self, ScreenView};
 use crate::rumble::RumbleState;
 use crate::session::{self, AudioTick, Player, Recorder, RecordingInfo};
 use crate::source::ebpf::EbpfSource;
@@ -66,6 +67,10 @@ pub enum Command {
     /// Re-reads the active mode file (hot reload).
     ReloadMode,
     RefreshModes,
+    /// Language of the requests to AI assistants.
+    SetLanguage(String),
+    /// Deletes a user mode; the default mode takes over if it was active.
+    DeleteMode(String),
     SetParam(String, ParamValue),
     /// Applies a named preset of the active mode.
     LoadPreset(String),
@@ -109,6 +114,8 @@ pub enum Command {
     SetAudio(AudioSource),
     /// Downloads the audio scene model.
     DownloadAudioModel,
+    /// Whether the GUI shows the game's image (the overlay copies it meanwhile).
+    WatchScreen(bool),
     Shutdown,
 }
 
@@ -191,6 +198,7 @@ pub struct Shared {
     /// Saved recordings, newest first.
     pub recordings: Vec<RecordingInfo>,
     pub audio: AudioView,
+    pub screen: ScreenView,
     pub time: f64,
     pub stopped: bool,
 }
@@ -308,6 +316,10 @@ struct Engine {
     scene_request: Option<Vec<String>>,
     /// Descriptions that could not be encoded (not tried again).
     scene_failed: Option<Vec<String>>,
+    /// Someone wants the game's image: the overlay copies it.
+    screen_watch: bool,
+    screen: screen::Analyzer,
+    screen_view: ScreenView,
     ticks: u64,
 }
 
@@ -379,6 +391,9 @@ async fn run_async(
         scene_texts: std_mpsc::channel(),
         scene_request: None,
         scene_failed: None,
+        screen_watch: false,
+        screen: screen::Analyzer::default(),
+        screen_view: ScreenView::default(),
         ticks: 0,
     };
     engine.apply_combos();
@@ -562,6 +577,21 @@ impl Engine {
             Command::SelectMode(id) => self.select_mode(&id),
             Command::ReloadMode => self.reload_mode(),
             Command::RefreshModes => self.refresh_modes(),
+            Command::SetLanguage(language) => {
+                let language = language.trim();
+                self.settings.language = if language.is_empty() { config::DEFAULT_LANGUAGE.into() } else { language.into() };
+                self.settings.save();
+            }
+            Command::DeleteMode(id) => {
+                if self.mode.as_ref().is_some_and(|m| m.entry.id == id) {
+                    self.select_mode(config::DEFAULT_MODE);
+                }
+                match ModeEntry::from_id(&id).delete() {
+                    Ok(()) => log::info!("mode {id} deleted"),
+                    Err(e) => log::error!("cannot delete {id}: {e}"),
+                }
+                self.refresh_modes();
+            }
             Command::SetParam(name, value) => self.set_param(&name, &value),
             Command::LoadPreset(name) => self.load_preset(&name),
             Command::SavePreset(name) => self.save_preset(&name),
@@ -651,6 +681,13 @@ impl Engine {
                 self.settings.save();
             }
             Command::DownloadAudioModel => clap::start_download(),
+            Command::WatchScreen(watch) => {
+                self.screen_watch = watch;
+                if !watch {
+                    self.screen.reset();
+                    self.screen_view = ScreenView::default();
+                }
+            }
             Command::Shutdown => {}
         }
         self.publish_mode();
@@ -1079,6 +1116,7 @@ impl Engine {
             let state = self.overlay_state(time, output, hud, &toys);
             self.overlay.update(&state);
         }
+        self.poll_screen(time);
 
         let mut shared = self.shared.lock().unwrap();
         shared.time = time;
@@ -1102,6 +1140,7 @@ impl Engine {
         });
         shared.overlay_clients = self.overlay.clients();
         shared.audio = self.audio_view(audio_levels);
+        shared.screen = self.screen_view.clone();
         shared.overlay_unavailable = self.overlay.unavailable();
         shared.history.push_back(Sample { t: time, strong: levels.strong, weak: levels.weak, channels });
         while shared.history.front().is_some_and(|s| time - s.t > HISTORY_SECS) {
@@ -1164,7 +1203,26 @@ impl Engine {
             gauges: hud.into_iter().map(|g| Gauge { label: g.label, value: g.value as f32, max: g.max as f32 }).collect(),
             events: self.overlay_events.iter().map(|(text, t)| Event { text: text.clone(), age: (time - t) as f32 }).collect(),
             alerts,
+            capture: self.screen_watch.then(CaptureRequest::default),
             ..OverlayState::default()
+        }
+    }
+
+    /// Reads the newest copy of the game's image, while someone wants it.
+    fn poll_screen(&mut self, time: f64) {
+        if !self.screen_watch {
+            return;
+        }
+        const STALE_SECS: f64 = 2.0;
+        if let Some((hello, frame)) = self.overlay.frame() {
+            self.screen_view.levels = Some(self.screen.push(time, &frame));
+            self.screen_view.game = Some(hello.exe);
+            self.screen_view.frame = Some(Arc::new(frame));
+            self.screen_view.rate = self.screen.rate();
+        } else if self.screen.last().is_some_and(|t| time - t > STALE_SECS) {
+            // The game stopped sending (closed, or paused rendering).
+            self.screen.reset();
+            self.screen_view = ScreenView::default();
         }
     }
 

@@ -31,6 +31,7 @@ const BUILTIN_MODES: [(&str, &str); 10] = [
 ];
 
 pub const DEFAULT_MODE: &str = "builtin:simple";
+pub const DEFAULT_LANGUAGE: &str = "English";
 
 /// Template for modes created from the GUI.
 pub const NEW_MODE_TEMPLATE: &str = r#"mode {
@@ -82,6 +83,9 @@ pub struct Settings {
     pub overlay: OverlaySettings,
     /// Where the game's sound is captured from (docs/spec-modes.md §6.3).
     pub audio: AudioSource,
+    /// Language AI assistants answer in, and write the texts players see in a mode
+    /// (the GUI itself is in English for now).
+    pub language: String,
 }
 
 /// Which sound the audio analysis listens to.
@@ -169,6 +173,7 @@ impl Default for Settings {
             onboarded: false,
             overlay: OverlaySettings::default(),
             audio: AudioSource::Auto,
+            language: DEFAULT_LANGUAGE.into(),
         }
     }
 }
@@ -418,6 +423,24 @@ impl ModeEntry {
 
     pub fn save_feedback(&self, history: &FeedbackHistory) {
         write_toml(&self.feedback_path(), history);
+    }
+
+    /// Deletes a user mode's file, its backup, and its saved parameters,
+    /// presets and feedback history, so a new mode with the same name starts
+    /// afresh.
+    pub fn delete(&self) -> io::Result<()> {
+        let Some(path) = self.path() else {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied, "built-in modes cannot be deleted"));
+        };
+        fs::remove_file(&path)?;
+        for file in [path.with_extension("luau.bak"), self.params_path(), self.presets_path(), self.feedback_path()] {
+            if let Err(e) = fs::remove_file(&file) {
+                if e.kind() != io::ErrorKind::NotFound {
+                    log::warn!("cannot delete {}: {e}", file.display());
+                }
+            }
+        }
+        Ok(())
     }
 }
 

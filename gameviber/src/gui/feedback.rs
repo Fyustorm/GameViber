@@ -1,4 +1,4 @@
-//! "Doesn't feel right?" dialog: the player answers the mode's questions
+//! "Doesn't feel right?" page: the player answers the mode's questions
 //! (`ask()`, or common complaints when it has none), tries the quick fixes
 //! they offer, and picks a recorded session; GameViber replays the session
 //! into the mode and builds a request for an AI assistant with all of it and
@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use eframe::egui::{self, RichText};
+use eframe::egui::{self, Margin, RichText, Vec2};
 
 use super::theme::*;
 use super::{App, Page};
@@ -27,6 +27,8 @@ const PROBLEMS: [&str; 7] = [
     "Reacts too late, or lasts too long",
     "Monotonous: not enough variation",
 ];
+/// Below this width the page shows its two columns one above the other.
+const TWO_COLUMNS_WIDTH: f32 = 860.0;
 
 #[derive(Default)]
 pub struct State {
@@ -43,6 +45,9 @@ pub struct State {
     /// The last minutes were just saved: select the new recording once listed
     /// (holds the number of recordings before).
     select_new: Option<usize>,
+    /// The request goes to the conversation that wrote the mode, which already
+    /// has the context, rules and API.
+    short: bool,
     copied: bool,
     answer: String,
     error: Option<String>,
@@ -55,7 +60,7 @@ impl App {
     pub(super) fn open_feedback(&mut self, s: &Shared) {
         let f = &mut self.feedback;
         if f.mode_id != s.mode.id {
-            *f = State { mode_id: s.mode.id.clone(), game: std::mem::take(&mut f.game), ..State::default() };
+            *f = State { mode_id: s.mode.id.clone(), game: std::mem::take(&mut f.game), short: f.short, ..State::default() };
         }
         f.open = true;
         f.note = None;
@@ -63,14 +68,13 @@ impl App {
             f.session = s.recordings.first().map(|r| r.path.clone());
         }
         if f.game.is_empty() {
-            f.game = s.overlay_clients.first().map(|c| c.exe.clone()).unwrap_or_default();
+            // Proton games all run as wine64-preloader: not a game name.
+            f.game = s.overlay_clients.iter().map(|c| c.exe.clone()).find(|exe| !exe.starts_with("wine")).unwrap_or_default();
         }
     }
 
-    pub(super) fn feedback_ui(&mut self, ctx: &egui::Context, s: &Shared) {
-        if !self.feedback.open {
-            return;
-        }
+    /// The page, shown on Play in place of the mode while open.
+    pub(super) fn feedback_page(&mut self, ui: &mut egui::Ui, s: &Shared) {
         if let Some(before) = self.feedback.select_new {
             if s.recordings.len() > before {
                 self.feedback.session = s.recordings.first().map(|r| r.path.clone());
@@ -81,140 +85,67 @@ impl App {
             self.feedback.open = false;
             return;
         };
+        ui.horizontal(|ui| {
+            if ui.button(format!("⏴ Back to {}", info.name)).clicked() {
+                self.feedback.open = false;
+            }
+            ui.add_space(8.0);
+            heading(ui, &format!("{} doesn't feel right?", info.name));
+        });
+        ui.label(muted(
+            "Say what feels wrong with a few clicks. Some answers can be fixed right away; the rest goes into a \
+             request for an AI assistant, with a session you recorded replayed into the mode.",
+        ));
+        ui.add_space(10.0);
+        let mut quick_fix = None;
+        let mut save_recent = false;
         let mut copy = false;
         let mut apply = false;
-        let mut save_recent = false;
-        let mut quick_fix = None;
-        let modal = egui::Modal::new(egui::Id::new("mode-feedback")).show(ctx, |ui| {
-            ui.set_width(600.0);
-            let f = &mut self.feedback;
-            heading(ui, &format!("{} doesn't feel right?", info.name));
-            ui.label(muted(
-                "Say what feels wrong with a few clicks. Some answers can be fixed right away; for the rest, \
-                 GameViber replays a session you recorded into the mode and prepares a request for an AI \
-                 assistant with everything it needs; you paste the answer back.",
-            ));
-            ui.add_space(8.0);
-            egui::ScrollArea::vertical().max_height(ctx.content_rect().height() * 0.7).show(ui, |ui| {
-                step(ui, 1, "What feels wrong?");
-                for q in &info.feedback {
-                    let answer = f.answers.entry(q.id.clone()).or_insert(q.default);
-                    if let Some(fix) = question_ui(ui, q, answer, &info, &s.mode.values) {
-                        quick_fix = Some((q.clone(), *answer, fix));
-                    }
-                }
-                let generic = |ui: &mut egui::Ui, ticked: &mut [bool; PROBLEMS.len()]| {
-                    for (problem, ticked) in PROBLEMS.iter().zip(ticked.iter_mut()) {
-                        ui.checkbox(ticked, *problem);
-                    }
-                };
-                if info.feedback.is_empty() {
-                    generic(ui, &mut f.ticked);
-                } else {
-                    egui::CollapsingHeader::new("Other problems").show(ui, |ui| generic(ui, &mut f.ticked));
-                }
-                ui.add(
-                    egui::TextEdit::multiline(&mut f.words)
-                        .hint_text("In your own words: when it happens, what you expected to feel...")
-                        .desired_width(f32::INFINITY)
-                        .desired_rows(3),
-                );
-                ui.horizontal(|ui| {
-                    ui.label("Game");
-                    ui.add(egui::TextEdit::singleline(&mut f.game).hint_text("optional").desired_width(260.0));
-                });
-                ui.add_space(10.0);
-
-                step(ui, 2, "Show what happened");
-                ui.label(muted(format!(
-                    "Pick a recorded session where it felt wrong (⚑: moments you marked with {} while \
-                     playing). Just played it? Save the last minutes.",
-                    crate::gamepad::combo_text(&s.settings.mark_combo)
-                )));
-                ui.horizontal(|ui| {
-                    let label = |path: &Option<PathBuf>| match path {
-                        None => "No session".to_owned(),
-                        Some(p) => s.recordings.iter().find(|r| r.path == *p).map_or("?".to_owned(), |r| {
-                            let what = r.header.game.as_deref().unwrap_or(&r.header.mode);
-                            let marks = match r.header.marks {
-                                0 => String::new(),
-                                n => format!(" · ⚑ {n}"),
-                            };
-                            format!("{} · {what} · {:.0} s{marks}", r.header.started, r.header.duration)
-                        }),
-                    };
-                    egui::ComboBox::from_id_salt("feedback-session").width(330.0).selected_text(label(&f.session)).show_ui(
-                        ui,
-                        |ui| {
-                            ui.selectable_value(&mut f.session, None, "No session");
-                            for r in &s.recordings {
-                                let path = Some(r.path.clone());
-                                let text = label(&path);
-                                ui.selectable_value(&mut f.session, path, text);
-                            }
-                        },
-                    );
-                    let save = ui
-                        .add_enabled(f.select_new.is_none(), egui::Button::new(format!("⏺ Save the last {:.0} min", RECENT_SECS / 60.0)))
-                        .on_hover_text("GameViber always keeps the last minutes of play in memory");
-                    if save.clicked() {
-                        f.select_new = Some(s.recordings.len());
-                        save_recent = true;
-                    }
-                });
-                ui.add_space(10.0);
-
-                step(ui, 3, "Send the request to an AI assistant");
-                ui.horizontal(|ui| {
-                    copy = ui.add(primary("📋 Copy the request")).clicked();
-                    if f.copied {
-                        ui.label(RichText::new("✔ Copied: paste it in a new conversation").color(OK));
-                    }
-                });
-                ui.label(muted("The conversation that wrote the mode works best, if you still have it.").size(12.0));
-                ui.add_space(10.0);
-
-                step(ui, 4, "Paste the answer");
-                ui.label(muted("If it only suggests new settings, set them on the Play page instead."));
-                let edit = egui::TextEdit::multiline(&mut f.answer)
-                    .code_editor()
-                    .hint_text("mode { api = 1, ... }")
-                    .desired_width(f32::INFINITY)
-                    .desired_rows(6);
-                if ui.add(edit).changed() {
-                    f.error = None;
-                    f.note = None;
-                }
-                if let Some(error) = &f.error {
-                    ui.label(RichText::new(error).color(DANGER_TEXT).monospace().size(12.0));
-                    ui.horizontal(|ui| {
-                        if ui.button("📋 Copy a fix request").clicked() {
-                            ui.ctx().copy_text(prompt::fix_prompt(error));
-                            f.fix_copied = true;
-                        }
-                        let note = if f.fix_copied {
-                            "✔ Copied: send it to the assistant, then paste its new answer."
-                        } else {
-                            "and send it to the assistant."
-                        };
-                        ui.label(muted(note));
-                    });
-                }
-                if let Some(note) = &f.note {
-                    ui.label(RichText::new(note).color(OK));
-                }
+        let mut left = |app: &mut Self, ui: &mut egui::Ui| {
+            card(PANEL).inner_margin(Margin::same(16)).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                quick_fix = app.questions_ui(ui, s, &info);
             });
             ui.add_space(12.0);
-            ui.horizontal(|ui| {
-                apply = ui.add_enabled(!f.answer.trim().is_empty(), primary("Apply the fix")).clicked();
-                if ui.button("Close").clicked() {
-                    f.open = false;
-                }
+            card(PANEL).inner_margin(Margin::same(16)).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                save_recent = app.session_ui(ui, s);
             });
+        };
+        let mut right = |app: &mut Self, ui: &mut egui::Ui| {
+            card(PANEL).inner_margin(Margin::same(16)).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                copy = app.request_ui(ui, s, &info);
+            });
+            ui.add_space(12.0);
+            card(PANEL).inner_margin(Margin::same(16)).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                apply = app.answer_ui(ui);
+            });
+        };
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            if ui.available_width() >= TWO_COLUMNS_WIDTH {
+                let gap = 16.0;
+                let width = (ui.available_width() - gap) / 2.0;
+                ui.horizontal_top(|ui| {
+                    ui.spacing_mut().item_spacing.x = gap;
+                    let layout = egui::Layout::top_down(egui::Align::Min);
+                    ui.allocate_ui_with_layout(Vec2::new(width, 0.0), layout, |ui| {
+                        ui.set_width(width);
+                        left(self, ui);
+                    });
+                    ui.allocate_ui_with_layout(Vec2::new(width, 0.0), layout, |ui| {
+                        ui.set_width(width);
+                        right(self, ui);
+                    });
+                });
+            } else {
+                left(self, ui);
+                ui.add_space(12.0);
+                right(self, ui);
+            }
         });
-        if modal.should_close() {
-            self.feedback.open = false;
-        }
+
         if save_recent {
             self.send(Command::SaveRecent);
         }
@@ -224,7 +155,7 @@ impl App {
         if copy {
             match self.feel_request(s) {
                 Ok(request) => {
-                    ctx.copy_text(request);
+                    ui.ctx().copy_text(request);
                     self.feedback.copied = true;
                     self.feedback.error = None;
                 }
@@ -234,6 +165,190 @@ impl App {
         if apply {
             self.apply_feedback_answer(s);
         }
+    }
+
+    /// Step 1; returns a quick fix to apply.
+    fn questions_ui(&mut self, ui: &mut egui::Ui, s: &Shared, info: &ModeInfo) -> Option<(Question, usize, f64)> {
+        let f = &mut self.feedback;
+        let mut quick_fix = None;
+        step(ui, 1, "What feels wrong?");
+        ui.label(
+            muted("Any answer other than the one picked at first (\"Good\") goes into the request. When a setting \
+                   fixes it, you can also apply that fix now instead.")
+            .size(12.5),
+        );
+        ui.add_space(4.0);
+        for q in &info.feedback {
+            let answer = f.answers.entry(q.id.clone()).or_insert(q.default);
+            if let Some(fix) = question_ui(ui, q, answer, info, &s.mode.values) {
+                quick_fix = Some((q.clone(), *answer, fix));
+            }
+        }
+        let generic = |ui: &mut egui::Ui, ticked: &mut [bool; PROBLEMS.len()]| {
+            for (problem, ticked) in PROBLEMS.iter().zip(ticked.iter_mut()) {
+                ui.checkbox(ticked, *problem);
+            }
+        };
+        if info.feedback.is_empty() {
+            generic(ui, &mut f.ticked);
+        } else {
+            egui::CollapsingHeader::new("Other problems").show(ui, |ui| generic(ui, &mut f.ticked));
+        }
+        ui.add(
+            egui::TextEdit::multiline(&mut f.words)
+                .hint_text("In your own words: when it happens, what you expected to feel...")
+                .desired_width(f32::INFINITY)
+                .desired_rows(3),
+        );
+        ui.horizontal(|ui| {
+            ui.label("Game");
+            ui.add(egui::TextEdit::singleline(&mut f.game).hint_text("optional").desired_width(260.0));
+        });
+        quick_fix
+    }
+
+    /// Step 2; returns true to save the last minutes of play.
+    fn session_ui(&mut self, ui: &mut egui::Ui, s: &Shared) -> bool {
+        let f = &mut self.feedback;
+        let mut save_recent = false;
+        step(ui, 2, "Show what happened (optional)");
+        ui.label(muted(format!(
+            "Pick a recorded session where it felt wrong (⚑: moments you marked with {} while playing). Just \
+             played it? Save the last minutes.",
+            crate::gamepad::combo_text(&s.settings.mark_combo)
+        )));
+        let label = |path: &Option<PathBuf>| match path {
+            None => "No session".to_owned(),
+            Some(p) => s.recordings.iter().find(|r| r.path == *p).map_or("?".to_owned(), |r| {
+                let what = r.header.game.as_deref().unwrap_or(&r.header.mode);
+                let marks = match r.header.marks {
+                    0 => String::new(),
+                    n => format!(" · ⚑ {n}"),
+                };
+                format!("{} · {what} · {:.0} s{marks}", r.header.started, r.header.duration)
+            }),
+        };
+        egui::ComboBox::from_id_salt("feedback-session")
+            .width(ui.available_width().min(380.0))
+            .selected_text(label(&f.session))
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut f.session, None, "No session");
+                for r in &s.recordings {
+                    let path = Some(r.path.clone());
+                    let text = label(&path);
+                    ui.selectable_value(&mut f.session, path, text);
+                }
+            });
+        let save = ui
+            .add_enabled(f.select_new.is_none(), egui::Button::new(format!("⏺ Save the last {:.0} min", RECENT_SECS / 60.0)))
+            .on_hover_text("GameViber always keeps the last minutes of play in memory");
+        if save.clicked() {
+            f.select_new = Some(s.recordings.len());
+            save_recent = true;
+        }
+        save_recent
+    }
+
+    /// Step 3: what the request holds, which conversation it is for; returns
+    /// true to copy it.
+    fn request_ui(&mut self, ui: &mut egui::Ui, s: &Shared, info: &ModeInfo) -> bool {
+        let f = &mut self.feedback;
+        step(ui, 3, "Send the request to an AI assistant");
+        let (problems, _) = answers(f, info);
+        let nothing_said = problems.is_empty() && f.words.trim().is_empty();
+        if nothing_said {
+            card(PANEL).stroke(egui::Stroke::new(1.0, WARN)).inner_margin(Margin::same(12)).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(RichText::new("⚠ Say what feels wrong first (step 1)").color(WARN).strong());
+                ui.label(muted("Pick an answer other than \"Good\", tick a problem or describe it in your own words."));
+            });
+        } else {
+            card(RAISED).inner_margin(Margin::same(12)).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                eyebrow(ui, "The request says");
+                for problem in &problems {
+                    ui.label(format!("• {}", problem.replace("**", "")));
+                }
+                if !f.words.trim().is_empty() {
+                    ui.label("• What you wrote");
+                }
+                match f.session.as_ref().and_then(|p| s.recordings.iter().find(|r| r.path == *p)) {
+                    Some(r) => {
+                        ui.label(muted(format!("With the session of {}, replayed into the mode.", r.header.started)).size(12.5));
+                    }
+                    None => {
+                        ui.label(
+                            RichText::new("No session: the assistant can only guess from the code. Pick one in step 2 if you can.")
+                                .color(WARN)
+                                .size(12.5),
+                        );
+                    }
+                }
+            });
+        }
+        ui.add_space(6.0);
+        ui.radio_value(&mut f.short, false, "New conversation: with the full context (GameViber, rules, API)");
+        ui.radio_value(&mut f.short, true, "The conversation that wrote the mode: shorter, it already knows the rest");
+        if f.short {
+            ui.label(
+                muted("Without the mode's code: if it changed since that conversation (edited, or fixed elsewhere), \
+                       pick a new conversation.")
+                .size(12.0),
+            );
+        }
+        ui.add_space(4.0);
+        let mut copy = false;
+        ui.horizontal(|ui| {
+            copy = ui.add_enabled(!nothing_said, primary("📋 Copy the request")).clicked();
+            if f.copied {
+                let note = if f.short { "✔ Copied: paste it in that conversation" } else { "✔ Copied: paste it in a new conversation" };
+                ui.label(RichText::new(note).color(OK));
+            }
+        });
+        ui.label(muted(format!("The assistant answers in {} (Settings).", s.settings.language)).size(12.0));
+        copy
+    }
+
+    /// Step 4; returns true to apply the pasted answer.
+    fn answer_ui(&mut self, ui: &mut egui::Ui) -> bool {
+        let f = &mut self.feedback;
+        step(ui, 4, "Paste the answer");
+        ui.label(muted("If it only suggests new settings, set them on the mode's page instead."));
+        let edit = egui::TextEdit::multiline(&mut f.answer)
+            .code_editor()
+            .hint_text("mode { api = 1, ... }")
+            .desired_width(f32::INFINITY)
+            .desired_rows(10);
+        egui::ScrollArea::vertical().id_salt("feedback-answer").max_height(260.0).show(ui, |ui| {
+            if ui.add(edit).changed() {
+                f.error = None;
+                f.note = None;
+            }
+        });
+        ui.add_space(4.0);
+        let apply = ui.add_enabled(!f.answer.trim().is_empty(), primary("Apply the fix")).clicked();
+        if let Some(error) = &f.error {
+            card(PANEL).stroke(egui::Stroke::new(1.0, DANGER)).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(RichText::new(error).color(DANGER_TEXT).monospace().size(12.0));
+                ui.horizontal(|ui| {
+                    if ui.button("📋 Copy a fix request").clicked() {
+                        ui.ctx().copy_text(prompt::fix_prompt(error));
+                        f.fix_copied = true;
+                    }
+                    let note = if f.fix_copied {
+                        "✔ Copied: send it to the assistant, then paste its new answer."
+                    } else {
+                        "and send it to the assistant."
+                    };
+                    ui.label(muted(note));
+                });
+            });
+        }
+        if let Some(note) = &f.note {
+            ui.label(RichText::new(note).color(OK));
+        }
+        apply
     }
 
     /// Sets the parameter a question is linked to, notes it in the mode's history
@@ -279,37 +394,30 @@ impl App {
             }
             None => None,
         };
-        // Only answers away from "fine" are problems; the others are worth keeping.
-        let (mut problems, mut fine) = (Vec::new(), Vec::new());
-        for q in &info.feedback {
-            let answer = f.answers.get(&q.id).copied().unwrap_or(q.default);
-            match (q.options.is_empty(), answer == q.default) {
-                (true, true) => {}
-                (true, false) => problems.push(q.label.clone()),
-                (false, true) => fine.push(q.label.clone()),
-                (false, false) => {
-                    let link = q.param.as_ref().map_or(String::new(), |p| format!(", setting `{p}`"));
-                    problems.push(format!("{}: **{}** (fine would be \"{}\"{link})", q.label, q.options[answer], q.options[q.default]));
-                }
-            }
-        }
-        problems.extend(PROBLEMS.iter().zip(f.ticked).filter(|(_, ticked)| *ticked).map(|(p, _)| p.to_string()));
+        let (problems, settings) = answers(f, info);
         let answers = problems.clone();
+        // The assistant also gets the setting each answer is about.
+        let mut problems: Vec<String> = problems
+            .into_iter()
+            .enumerate()
+            .map(|(i, p)| settings.get(&i).map_or(p.clone(), |setting| format!("{p} (setting `{setting}`)")))
+            .collect();
         if !f.words.trim().is_empty() {
             problems.push(format!("In the player's words: {}", f.words.trim()));
         }
         let mut history = entry.load_feedback();
         let earlier = history.lines();
-        let request = prompt::feel_prompt(&prompt::FeelReport {
+        let request = prompt::feel_prompt(&prompt::Templates::load(), &prompt::FeelReport {
             name: &info.name,
             game: &f.game,
             problems: &problems,
-            fine: &fine,
             history: &earlier,
             params: &info.params,
             values: &s.mode.values,
             source: &source,
             session: session.as_deref(),
+            full: !f.short,
+            language: &s.settings.language,
         });
         history.push(FeedbackRound::Request {
             date: session::local_time(),
@@ -364,7 +472,7 @@ impl App {
                 self.send(Command::ReloadMode);
             }
             None => {
-                *f = State { game: std::mem::take(&mut f.game), ..State::default() };
+                *f = State { game: std::mem::take(&mut f.game), short: f.short, ..State::default() };
                 // The history follows the tuned copy.
                 if let Some(copy) = self.create_mode(&format!("{}-tuned", entry.key), &script) {
                     copy.save_feedback(&history);
@@ -374,6 +482,27 @@ impl App {
             }
         }
     }
+}
+
+/// The answers away from "fine" then the common complaints ticked, and the
+/// setting linked to each problem (by index).
+fn answers(f: &State, info: &ModeInfo) -> (Vec<String>, BTreeMap<usize, String>) {
+    let (mut problems, mut settings) = (Vec::new(), BTreeMap::new());
+    for q in &info.feedback {
+        let answer = f.answers.get(&q.id).copied().unwrap_or(q.default);
+        match (q.options.is_empty(), answer == q.default) {
+            (_, true) => {}
+            (true, false) => problems.push(q.label.clone()),
+            (false, false) => {
+                problems.push(format!("{}: **{}**", q.label, q.options[answer]));
+                if let Some(p) = &q.param {
+                    settings.insert(problems.len() - 1, p.clone());
+                }
+            }
+        }
+    }
+    problems.extend(PROBLEMS.iter().zip(f.ticked).filter(|(_, ticked)| *ticked).map(|(p, _)| p.to_string()));
+    (problems, settings)
 }
 
 /// One of the mode's questions; returns the quick fix value when its button is clicked.
@@ -399,16 +528,23 @@ fn question_ui(
             }
         }
     });
-    let def = q.param.as_ref().and_then(|name| info.params.iter().find(|p| p.name == *name))?;
-    let current = match values.get(&def.name).unwrap_or(&def.default) {
-        ParamValue::Number(n) => *n,
-        _ => return None,
+    let fix = q.param.as_ref().and_then(|name| info.params.iter().find(|p| p.name == *name)).and_then(|def| {
+        let current = match values.get(&def.name).unwrap_or(&def.default) {
+            ParamValue::Number(n) => *n,
+            _ => return None,
+        };
+        Some((def, current, q.quick_fix(*answer, def, current)?))
+    });
+    let Some((def, current, value)) = fix else {
+        if *answer != q.default {
+            ui.label(RichText::new("In the request.").color(ACCENT_TEXT).size(12.5));
+        }
+        return None;
     };
-    let value = q.quick_fix(*answer, def, current)?;
     let mut apply = false;
-    ui.horizontal(|ui| {
-        ui.label(RichText::new(format!("Quick fix: {} {current} → {value}", def.label)).color(ACCENT_TEXT).size(12.5));
-        apply = ui.small_button("Apply").clicked();
+    ui.horizontal_wrapped(|ui| {
+        ui.label(RichText::new(format!("In the request. Or fix it now: {} {current} → {value}", def.label)).color(ACCENT_TEXT).size(12.5));
+        apply = ui.small_button("Apply now").on_hover_text("Changes the setting and takes the answer out of the request").clicked();
     });
     apply.then_some(value)
 }

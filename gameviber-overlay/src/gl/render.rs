@@ -1,6 +1,7 @@
 //! OpenGL renderer: draws the HUD meshes on the default framebuffer of the
 //! current context right before the game swaps buffers, saving and restoring
-//! every piece of GL state it touches.
+//! every piece of GL state it touches. It also copies the game's image for
+//! GameViber when asked (`capture`).
 
 use std::ffi::{c_void, CStr};
 use std::num::NonZeroU32;
@@ -9,6 +10,8 @@ use epaint::{ImageData, Primitive, TextureId};
 use gameviber_common::overlay::OverlayState;
 use glow::HasContext;
 
+use super::capture::{self, Capture};
+use crate::client::Client;
 use crate::hud::Hud;
 
 const VERTEX_SIZE: i32 = 20;
@@ -51,6 +54,9 @@ pub struct Renderer {
     atlas: Option<epaint::ColorImage>,
     atlas_dirty: bool,
     hud: Hud,
+    capture: Option<Capture>,
+    /// The back buffer is multisampled: it cannot be shrunk by a blit.
+    no_capture: Option<bool>,
 }
 
 impl Renderer {
@@ -125,6 +131,8 @@ impl Renderer {
             atlas: None,
             atlas_dirty: false,
             hud: Hud::new(),
+            capture: None,
+            no_capture: None,
         })
     }
 
@@ -133,10 +141,27 @@ impl Renderer {
         format!("OpenGL{} {}.{}", if v.is_embedded { " ES" } else { "" }, v.major, v.minor)
     }
 
-    /// Draws the overlay on the default framebuffer of `width` x `height` pixels.
-    pub unsafe fn draw(&mut self, state: &OverlayState, width: u32, height: u32) {
+    /// Draws the overlay on the default framebuffer of `width` x `height`
+    /// pixels, and copies the image first when `client` wants it.
+    pub unsafe fn draw(&mut self, state: &OverlayState, width: u32, height: u32, client: &mut Client) {
         if width == 0 || height == 0 {
             return;
+        }
+        if self.capture.is_some() || state.capture.is_some() {
+            let gl = &self.gl;
+            let saved = SavedState::save(gl);
+            let no_capture = *self.no_capture.get_or_insert_with(|| {
+                gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, None);
+                let multisampled = gl.get_parameter_i32(glow::SAMPLE_BUFFERS) > 0;
+                if multisampled {
+                    crate::log("cannot copy the game's image: multisampled back buffer");
+                }
+                multisampled
+            });
+            if !no_capture {
+                capture::update(gl, &mut self.capture, client, width, height);
+            }
+            saved.restore(gl);
         }
         let frame = self.hud.build(state, width, height);
         if let Some(delta) = &frame.texture {
@@ -244,7 +269,9 @@ struct SavedState {
     array_buffer: i32,
     vertex_array: i32,
     unpack_buffer: i32,
+    pack_buffer: i32,
     draw_framebuffer: i32,
+    read_framebuffer: i32,
     viewport: [i32; 4],
     scissor: [i32; 4],
     color_mask: [i32; 4],
@@ -258,6 +285,8 @@ struct SavedState {
     polygon_mode: Option<i32>,
     unpack_alignment: i32,
     unpack_row_length: i32,
+    pack_alignment: i32,
+    pack_row_length: i32,
 }
 
 impl SavedState {
@@ -288,7 +317,9 @@ impl SavedState {
             array_buffer: get(glow::ARRAY_BUFFER_BINDING),
             vertex_array: get(glow::VERTEX_ARRAY_BINDING),
             unpack_buffer: get(glow::PIXEL_UNPACK_BUFFER_BINDING),
+            pack_buffer: get(glow::PIXEL_PACK_BUFFER_BINDING),
             draw_framebuffer: get(glow::DRAW_FRAMEBUFFER_BINDING),
+            read_framebuffer: get(glow::READ_FRAMEBUFFER_BINDING),
             viewport: get4(glow::VIEWPORT),
             scissor: get4(glow::SCISSOR_BOX),
             color_mask: get4(glow::COLOR_WRITEMASK),
@@ -302,6 +333,8 @@ impl SavedState {
             polygon_mode: desktop.then(|| get4(glow::POLYGON_MODE)[0]),
             unpack_alignment: get(glow::UNPACK_ALIGNMENT),
             unpack_row_length: get(glow::UNPACK_ROW_LENGTH),
+            pack_alignment: get(glow::PACK_ALIGNMENT),
+            pack_row_length: get(glow::PACK_ROW_LENGTH),
         }
     }
 
@@ -316,7 +349,9 @@ impl SavedState {
         gl.bind_vertex_array(name(self.vertex_array).map(glow::NativeVertexArray));
         gl.bind_buffer(glow::ARRAY_BUFFER, name(self.array_buffer).map(glow::NativeBuffer));
         gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, name(self.unpack_buffer).map(glow::NativeBuffer));
+        gl.bind_buffer(glow::PIXEL_PACK_BUFFER, name(self.pack_buffer).map(glow::NativeBuffer));
         gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, name(self.draw_framebuffer).map(glow::NativeFramebuffer));
+        gl.bind_framebuffer(glow::READ_FRAMEBUFFER, name(self.read_framebuffer).map(glow::NativeFramebuffer));
         let [x, y, w, h] = self.viewport;
         gl.viewport(x, y, w, h);
         let [x, y, w, h] = self.scissor;
@@ -342,6 +377,8 @@ impl SavedState {
         }
         gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, self.unpack_alignment);
         gl.pixel_store_i32(glow::UNPACK_ROW_LENGTH, self.unpack_row_length);
+        gl.pixel_store_i32(glow::PACK_ALIGNMENT, self.pack_alignment);
+        gl.pixel_store_i32(glow::PACK_ROW_LENGTH, self.pack_row_length);
     }
 }
 
