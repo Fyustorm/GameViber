@@ -260,8 +260,16 @@ fn columns(zone: &Zone, frame: &Frame) -> Vec<Part> {
     let (length, across) = if horizontal { (x1 - x0, y1 - y0) } else { (y1 - y0, x1 - x0) };
     let at = |i: usize, j: usize| if horizontal { pixel(frame, x0 + i, y0 + j) } else { pixel(frame, x0 + j, y0 + i) };
     let distance = |p: [u8; 3], color: [u8; 3]| (0..3).map(|c| (p[c] as f32 - color[c] as f32).powi(2)).sum::<f32>().sqrt();
-    // Distances of a pixel to the full and the empty colors.
-    let distances = |p: [u8; 3]| (distance(p, zone.color), zone.empty_color.map_or(f32::INFINITY, |e| distance(p, e)));
+    // Distances of a pixel to the nearest full and empty colors (a bar may have several shades).
+    let nearest = |p: [u8; 3], colors: &mut dyn Iterator<Item = &[u8; 3]>| colors.map(|c| distance(p, *c)).fold(f32::INFINITY, f32::min);
+    let distances = |p: [u8; 3]| {
+        let full = nearest(p, &mut std::iter::once(&zone.color).chain(&zone.more_colors));
+        let empty = match &zone.empty_color {
+            Some(e) => nearest(p, &mut std::iter::once(e).chain(&zone.more_empty)),
+            None => f32::INFINITY,
+        };
+        (full, empty)
+    };
     let near = |p: [u8; 3]| {
         let (full, empty) = distances(p);
         full.min(empty) <= zone.tolerance
@@ -402,6 +410,35 @@ mod tests {
         assert_eq!(reader.update(&zones, &with_hud(true, 0)), vec![("battle_hud".to_owned(), ZoneValue::Visible(true))]);
         assert_eq!(reader.update(&zones, &with_hud(true, 10)), vec![], "no change, nothing reported");
         assert_eq!(reader.update(&zones, &with_hud(false, 10)), vec![("battle_hud".to_owned(), ZoneValue::Visible(false))]);
+    }
+
+    /// Low on health the bar blinks: its full part turns lighter, then back.
+    #[test]
+    fn bars_with_several_shades() {
+        let bar = |full: [u8; 3]| {
+            frame(move |x, y| match (x, y) {
+                (10..=69, 10..=15) => if x < 25 { full } else { [190, 30, 30] },
+                _ => [25, 25, 35],
+            })
+        };
+        let rect = [5.0 / 160.0, 9.0 / 90.0, 150.0 / 160.0, 8.0 / 90.0];
+        let zone = Zone {
+            name: "hp".into(),
+            kind: ZoneKind::Bar,
+            rect,
+            color: [40, 200, 60],
+            empty_color: Some([190, 30, 30]),
+            tolerance: 40.0,
+            ..Zone::default()
+        };
+        let lit = [170, 250, 170];
+        assert!((measure(&zone, &bar([40, 200, 60])).unwrap() - 0.25).abs() < 0.04);
+        assert!(measure(&zone, &bar(lit)).unwrap() < 0.05, "the lit shade is not the full color");
+        let shades = Zone { more_colors: vec![lit], ..zone };
+        for full in [[40, 200, 60], lit] {
+            let got = measure(&shades, &bar(full)).unwrap();
+            assert!((got - 0.25).abs() < 0.04, "{full:?}: {got}");
+        }
     }
 
     /// Metaphor: a character's stance shifts its health bar sideways, and the

@@ -146,11 +146,20 @@ pub struct Zone {
     /// found in the zone as the longest run of its two colors, so the zone may
     /// be larger than the bar, or cover every place a moving bar can be.
     pub empty_color: Option<[u8; 3]>,
+    /// Bar: other shades of its filled part (a bar blinking when low)...
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub more_colors: Vec<[u8; 3]>,
+    /// ...and of its empty part.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub more_empty: Vec<[u8; 3]>,
     /// Bar: share of the zone's length it covered when drawn. Much less of its
     /// colors found means it is not on screen (menus): its value is unknown.
     pub length: f32,
-    /// The scene of the capture it was drawn on (shown there, for a visible zone).
+    /// The scene of the capture it was drawn on (shown there, for a visible zone)...
     pub scene: Option<String>,
+    /// ...and that capture's file, to show it again when the place is edited.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capture: Option<String>,
     pub direction: Direction,
     /// Bar: how far (0..255 per channel) a pixel may be from `color`.
     pub tolerance: f32,
@@ -166,8 +175,11 @@ impl Default for Zone {
             threshold: 0.45,
             color: [0, 0, 0],
             empty_color: None,
+            more_colors: Vec::new(),
+            more_empty: Vec::new(),
             length: 0.0,
             scene: None,
+            capture: None,
             direction: Direction::Right,
             tolerance: 60.0,
         }

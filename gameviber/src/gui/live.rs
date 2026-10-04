@@ -26,6 +26,17 @@ impl App {
                     heading(ui, "Live");
                     let game = s.game.as_ref().map_or("No game".to_owned(), |g| g.name.clone());
                     ui.label(muted(format!("· {game}")).size(16.0));
+                    // Straight to the game's pages.
+                    if let Some(game) = &s.game {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            for (label, view) in [("Captures and zones ›", GameView::Screen), ("Signals ›", GameView::Signals), ("Game ›", GameView::Modes)] {
+                                if ui.button(label).clicked() {
+                                    self.page = Page::Games;
+                                    self.route = Route::Game { id: game.id.clone(), view };
+                                }
+                            }
+                        });
+                    }
                 });
                 ui.label(muted("What happens while you play: keep it on a second screen."));
                 ui.add_space(8.0);
