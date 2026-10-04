@@ -10,6 +10,7 @@ use super::{gamepad_inputs, App, GameView, Page, Route};
 use crate::engine::{Command, Shared, HISTORY_SECS};
 use crate::gamepad::combo_text;
 use crate::mode::{ParamDef, ZoneValue};
+use crate::shortcuts::{Action, Status as ShortcutStatus};
 
 /// From this width the page shows three columns, else two.
 const THREE_COLUMNS_WIDTH: f32 = 1100.0;
@@ -283,17 +284,25 @@ fn gamepad_card(ui: &mut egui::Ui, s: &Shared) {
         let target = if s.capture_scene.is_empty() { "to sort later".to_owned() } else { format!("into {}", s.capture_scene) };
         let capture = format!("Capture the screen ({target})");
         let combos = [
-            ("⛔", "Stop every toy", combo_text(&s.settings.panic_combo)),
-            ("⚑", "Mark a moment that felt wrong", combo_text(&s.settings.mark_combo)),
-            ("📸", capture.as_str(), combo_text(&s.settings.capture_combo)),
+            ("⛔", "Stop every toy", combo_text(&s.settings.panic_combo), Action::Panic),
+            ("⚑", "Mark a moment that felt wrong", combo_text(&s.settings.mark_combo), Action::Mark),
+            ("📸", capture.as_str(), combo_text(&s.settings.capture_combo), Action::Capture),
         ];
+        // The same actions on the keyboard, when the desktop gave keys.
+        let keys = |action: Action| match &s.shortcuts {
+            ShortcutStatus::Ready(keys) => keys.iter().find(|(a, k)| *a == action && !k.is_empty()).map(|(_, k)| k.clone()),
+            _ => None,
+        };
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = Vec2::new(18.0, 6.0);
-            for (icon, what, combo) in combos {
+            for (icon, what, combo, action) in combos {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 6.0;
                     ui.label(RichText::new(icon).size(15.0));
                     pill(ui, &combo, TEXT, RAISED);
+                    if let Some(keys) = keys(action) {
+                        pill(ui, &format!("⌨ {keys}"), TEXT, RAISED);
+                    }
                     ui.label(muted(what));
                 });
             }

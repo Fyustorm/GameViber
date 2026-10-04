@@ -232,7 +232,10 @@ impl Proxy {
                 }
                 EventType::SYNCHRONIZATION | EventType::FORCEFEEDBACK => {}
                 _ => {
-                    pending.push(ev);
+                    // Extra buttons a combo uses stay out of the game.
+                    if !(ev.event_type() == EventType::KEY && crate::gamepad::reserved(ev.code())) {
+                        pending.push(ev);
+                    }
                     if let Some(kind @ (SourceKind::Button { .. } | SourceKind::Axis { .. })) =
                         translate_input(ev, &self.ranges)
                     {

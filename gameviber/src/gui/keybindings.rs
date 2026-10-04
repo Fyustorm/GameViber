@@ -1,11 +1,13 @@
-//! Keybindings page: the gamepad combos GameViber listens to while playing
-//! (panic stop, mark a moment, capture the screen).
+//! Shortcuts page: the gamepad combos GameViber listens to while playing
+//! (panic stop, mark a moment, capture the screen), and the same actions on
+//! keyboard keys the desktop holds back from the game.
 
 use eframe::egui::{self, Margin, RichText};
 
 use super::theme::*;
 use super::App;
 use crate::engine::{Command, Shared, RECENT_SECS};
+use crate::shortcuts::Status as ShortcutStatus;
 use crate::gamepad::{combo_text, parse_combo, BUTTONS, PANIC_COMBO_MIN};
 
 impl App {
@@ -13,14 +15,22 @@ impl App {
         let frame = egui::Frame::new().fill(BG).inner_margin(Margin::symmetric(24, 20));
         egui::CentralPanel::default().frame(frame).show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
-                heading(ui, "Gamepad combos");
+                heading(ui, "Shortcuts");
                 ui.label(muted(
-                    "Button combos GameViber reacts to while you play. Pick buttons the game does not use together.",
+                    "Keys and button combos GameViber reacts to while you play. A combo is also seen by the game: \
+                     keyboard shortcuts and the gamepad's back paddles are not.",
                 ));
+                ui.add_space(8.0);
+                self.keyboard_card(ui, s);
+                ui.label(muted(
+                    "Back paddles (P1 to P4) and SHARE: kept from the game when a combo uses them. They work if your \
+                     gamepad's driver reports them: press one, it lights up in Setup › Gamepad. Many gamepads in Xbox \
+                     360 mode only copy their paddles onto other buttons (set in the gamepad's own app).",
+                ).size(12.5));
                 ui.add_space(8.0);
                 let (panic, mark, capture) = (&s.settings.panic_combo, &s.settings.mark_combo, &s.settings.capture_combo);
                 let text = format!(
-                    "Hold {} on the gamepad for half a second to stop every toy. At least {PANIC_COMBO_MIN} buttons.",
+                    "Hold {} on the gamepad for half a second to stop every toy. At least {PANIC_COMBO_MIN} buttons, or a back paddle alone.",
                     combo_text(panic)
                 );
                 if let Some(combo) = combo_card(ui, "⛔ Panic stop", &text, panic, &[mark, capture]) {
@@ -50,6 +60,52 @@ impl App {
     }
 }
 
+impl App {
+    /// Keyboard shortcuts through the desktop: on or off, their keys.
+    fn keyboard_card(&mut self, ui: &mut egui::Ui, s: &Shared) {
+        card(PANEL).inner_margin(Margin::same(16)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("⌨ Keyboard shortcuts").strong().size(15.0));
+                let mut on = s.settings.keyboard_shortcuts;
+                if ui.checkbox(&mut on, "Use them").changed() {
+                    self.send(Command::SetKeyboardShortcuts(on));
+                }
+            });
+            ui.label(muted(
+                "The desktop keeps these keys for GameViber, so the game never sees them: capture a dialogue without \
+                 opening the game's menu over it. The desktop asks you to confirm them the first time.",
+            ));
+            match &s.shortcuts {
+                ShortcutStatus::Off => {}
+                ShortcutStatus::Connecting => {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(muted("Waiting for the desktop (confirm the keys in its window)..."));
+                    });
+                }
+                ShortcutStatus::Ready(keys) => {
+                    egui::Grid::new("keyboard-shortcuts").num_columns(2).spacing([16.0, 6.0]).show(ui, |ui| {
+                        for (action, keys) in keys {
+                            let text = if keys.is_empty() { RichText::new("no key").color(WARN) } else { RichText::new(keys).color(ACCENT_TEXT) };
+                            ui.label(text);
+                            ui.label(action.description().trim_start_matches("GameViber: "));
+                            ui.end_row();
+                        }
+                    });
+                    if ui.button("Change the keys").on_hover_text("Opens the desktop's shortcut settings").clicked() {
+                        self.send(Command::ConfigureShortcuts);
+                    }
+                }
+                ShortcutStatus::Failed(error) => {
+                    ui.label(RichText::new(format!("The desktop does not offer global shortcuts: {error}")).color(DANGER_TEXT).size(12.0));
+                }
+            }
+        });
+        ui.add_space(8.0);
+    }
+}
+
 /// Card with a picker of the buttons of a combo, which must differ from the
 /// `others`; returns the new combo.
 fn combo_card(ui: &mut egui::Ui, title: &str, text: &str, combo: &[String], others: &[&Vec<String>]) -> Option<Vec<String>> {
@@ -70,8 +126,8 @@ fn combo_card(ui: &mut egui::Ui, title: &str, text: &str, combo: &[String], othe
                 if !on {
                     new.push(button.to_owned());
                 }
-                let (allowed, why) = if new.len() < PANIC_COMBO_MIN {
-                    (false, format!("A combo needs at least {PANIC_COMBO_MIN} buttons"))
+                let (allowed, why) = if parse_combo(&new).is_none() {
+                    (false, format!("A combo needs at least {PANIC_COMBO_MIN} buttons, or one back paddle (P1 to P4) or SHARE"))
                 } else if same(&new) {
                     (false, "Each combo needs other buttons".to_owned())
                 } else {

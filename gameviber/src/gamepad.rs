@@ -3,13 +3,41 @@
 //! detection of the panic, "mark this moment" and "capture the screen" combos.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::atomic::{AtomicU8, Ordering};
 
 use evdev::{AbsoluteAxisCode as Abs, KeyCode as Key};
 
-pub const BUTTONS: [&str; 17] = [
+pub const BUTTONS: [&str; 22] = [
     "A", "B", "X", "Y", "LB", "RB", "BACK", "START", "GUIDE", "LS", "RS", "DPAD_UP", "DPAD_DOWN",
-    "DPAD_LEFT", "DPAD_RIGHT", "LT", "RT",
+    "DPAD_LEFT", "DPAD_RIGHT", "LT", "RT", "P1", "P2", "P3", "P4", "SHARE",
 ];
+/// Buttons games do not use: the back paddles and the share button (on the
+/// gamepads whose driver reports them). A combo may be one of them alone, and
+/// the proxy does not pass on those a combo uses.
+pub const EXTRA_BUTTONS: [&str; 5] = ["P1", "P2", "P3", "P4", "SHARE"];
+
+/// The extra buttons the combos use (a bit per `EXTRA_BUTTONS` entry), which
+/// the proxy keeps from the game.
+static RESERVED: AtomicU8 = AtomicU8::new(0);
+
+/// The combos (button sets) GameViber listens to now.
+pub fn reserve_extras<'a>(combos: impl IntoIterator<Item = &'a BTreeSet<&'static str>>) {
+    let mut bits = 0;
+    for combo in combos {
+        for (i, extra) in EXTRA_BUTTONS.iter().enumerate() {
+            if combo.contains(extra) {
+                bits |= 1 << i;
+            }
+        }
+    }
+    RESERVED.store(bits, Ordering::Relaxed);
+}
+
+/// A key code is an extra button a combo uses: not for the game.
+pub fn reserved(code: u16) -> bool {
+    let bits = RESERVED.load(Ordering::Relaxed);
+    button_name(code).and_then(|name| EXTRA_BUTTONS.iter().position(|e| *e == name)).is_some_and(|i| bits & (1 << i) != 0)
+}
 pub const AXES: [&str; 6] = ["LX", "LY", "RX", "RY", "LT", "RT"];
 
 /// Normalized sticks below this magnitude count as centered.
@@ -30,11 +58,12 @@ pub const DEFAULT_CAPTURE_COMBO: [&str; 2] = ["BACK", "LS"];
 pub const PANIC_COMBO_MIN: usize = 2;
 
 /// Known button names of a combo, or None if it has fewer than
-/// `PANIC_COMBO_MIN` distinct buttons.
+/// `PANIC_COMBO_MIN` distinct buttons (one is enough when it is an extra button).
 pub fn parse_combo(names: &[String]) -> Option<BTreeSet<&'static str>> {
     let combo: BTreeSet<&'static str> =
         names.iter().filter_map(|n| BUTTONS.iter().find(|b| **b == n.as_str()).copied()).collect();
-    (combo.len() >= PANIC_COMBO_MIN && combo.len() == names.len()).then_some(combo)
+    let enough = combo.len() >= PANIC_COMBO_MIN || (combo.len() == 1 && combo.iter().all(|b| EXTRA_BUTTONS.contains(b)));
+    (enough && combo.len() == names.len()).then_some(combo)
 }
 
 /// "BACK + START"
@@ -62,6 +91,13 @@ fn button_name(code: u16) -> Option<&'static str> {
         Key::BTN_DPAD_RIGHT | Key::BTN_TRIGGER_HAPPY2 => "DPAD_RIGHT",
         Key::BTN_TL2 => "LT",
         Key::BTN_TR2 => "RT",
+        // Back paddles: xpad (Elite Series 2) and newer kernels' BTN_GRIPL, GRIPR, GRIPL2, GRIPR2.
+        Key::BTN_TRIGGER_HAPPY5 | Key(0x224) => "P1",
+        Key::BTN_TRIGGER_HAPPY6 | Key(0x225) => "P2",
+        Key::BTN_TRIGGER_HAPPY7 | Key(0x226) => "P3",
+        Key::BTN_TRIGGER_HAPPY8 | Key(0x227) => "P4",
+        // The share button of Xbox Series and recent gamepads.
+        Key::KEY_RECORD => "SHARE",
         _ => return None,
     })
 }
@@ -390,5 +426,19 @@ mod tests {
         assert_eq!(released, vec![ButtonEvent { name: "A", pressed: false }]);
         assert!(pad.held().is_empty());
         assert_eq!(pad.axes()["LX"], 0.0);
+    }
+
+    #[test]
+    fn a_back_paddle_alone_is_a_combo_kept_from_the_game() {
+        let names = |n: &[&str]| n.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(parse_combo(&names(&["P1"])).is_some());
+        assert!(parse_combo(&names(&["A"])).is_none());
+        let mut pad = PadState::default();
+        assert_eq!(pad.key(Key::BTN_TRIGGER_HAPPY5.0, true, 0.0).map(|e| e.name), Some("P1"));
+        assert_eq!(pad.key(0x227, true, 0.0).map(|e| e.name), Some("P4"));
+        reserve_extras([&parse_combo(&names(&["P1"])).unwrap(), &parse_combo(&names(&["BACK", "START"])).unwrap()]);
+        assert!(reserved(Key::BTN_TRIGGER_HAPPY5.0) && reserved(0x224));
+        assert!(!reserved(Key::BTN_TRIGGER_HAPPY6.0) && !reserved(Key::BTN_SELECT.0));
+        reserve_extras([]);
     }
 }

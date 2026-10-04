@@ -27,6 +27,7 @@ use crate::models::{self, Model, ModelState};
 use crate::overlay;
 use crate::game::Game;
 use crate::screen::zones::ZoneReader;
+use crate::shortcuts::{Action, Shortcuts};
 use crate::screen::{self, ImageScenes, ScreenLevels, ScreenView};
 use crate::rumble::RumbleState;
 use crate::session::{self, Player, Recorder, RecordingInfo, Senses};
@@ -147,6 +148,10 @@ pub enum Command {
     DeleteCapture { game: String, file: String },
     /// Files a capture under another scene.
     MoveCapture { game: String, file: String, scene: String },
+    /// Keyboard shortcuts for the combos' actions (through the desktop), on or off.
+    SetKeyboardShortcuts(bool),
+    /// Opens the desktop's settings of the keyboard shortcuts.
+    ConfigureShortcuts,
     /// Port other programs send values and events to; 0 turns the WebSocket off.
     SetInputsPort(u16),
     Shutdown,
@@ -246,6 +251,7 @@ pub struct Shared {
     pub running_executable: Option<String>,
     pub unlinked_executable: Option<String>,
     pub inputs: InputsView,
+    pub shortcuts: crate::shortcuts::Status,
     /// The scene the capture combo files images under ("": to sort).
     pub capture_scene: String,
     pub time: f64,
@@ -384,6 +390,7 @@ struct Engine {
     example_centroids: Vec<(String, Embedding)>,
     zones: ZoneReader,
     inputs: Inputs,
+    shortcuts: Option<Shortcuts>,
     ticks: u64,
 }
 
@@ -403,6 +410,7 @@ async fn run_async(
     mut commands: mpsc::UnboundedReceiver<Command>,
 ) -> anyhow::Result<()> {
     let mut settings = Settings::load();
+    let shortcuts = settings.keyboard_shortcuts.then(Shortcuts::start);
     if let Some(url) = &opts.url {
         settings.url = url.clone();
     }
@@ -470,6 +478,7 @@ async fn run_async(
         example_centroids: Vec::new(),
         zones: ZoneReader::default(),
         inputs,
+        shortcuts,
         ticks: 0,
     };
     engine.apply_combos();
@@ -580,6 +589,7 @@ impl Engine {
             self.settings.capture_combo = gamepad::DEFAULT_CAPTURE_COMBO.map(str::to_owned).to_vec();
             capture = gamepad::DEFAULT_CAPTURE_COMBO.into_iter().collect();
         }
+        gamepad::reserve_extras([&panic, &mark, &capture]);
         self.pad.set_panic_combo(panic);
         self.pad.set_mark_combo(mark);
         self.pad.set_capture_combo(capture);
@@ -842,6 +852,16 @@ impl Engine {
                     capture.scene = scene;
                 }
             }),
+            Command::SetKeyboardShortcuts(on) => {
+                self.settings.keyboard_shortcuts = on;
+                self.settings.save();
+                self.shortcuts = on.then(Shortcuts::start);
+            }
+            Command::ConfigureShortcuts => {
+                if let Some(shortcuts) = &self.shortcuts {
+                    shortcuts.configure();
+                }
+            }
             Command::SetInputsPort(port) => {
                 self.settings.inputs_port = port;
                 self.settings.save();
@@ -1194,6 +1214,14 @@ impl Engine {
         if self.player.is_none() {
             self.recent.tick(time, levels, &buttons, &self.pad, senses, &self.events);
         }
+        for action in self.shortcuts.as_ref().map(Shortcuts::poll).unwrap_or_default() {
+            match action {
+                Action::Panic => self.trigger_panic("keyboard"),
+                Action::Capture if self.player.is_none() => self.capture(self.capture_scene.clone(), time),
+                Action::Mark if self.player.is_none() => self.mark_moment(time),
+                _ => {}
+            }
+        }
         if self.pad.panic_combo(time) {
             self.trigger_panic(&gamepad::combo_text(&self.settings.panic_combo));
         }
@@ -1321,6 +1349,7 @@ impl Engine {
         shared.running_executable = self.running.clone();
         shared.unlinked_executable = self.running.clone().filter(|exe| !self.games.iter().any(|g| g.runs_as(exe)));
         shared.inputs = self.inputs.view();
+        shared.shortcuts = self.shortcuts.as_ref().map(Shortcuts::status).unwrap_or_default();
         shared.capture_scene = self.capture_scene.clone();
         shared.overlay_unavailable = self.overlay.unavailable();
         shared.history.push_back(Sample { t: time, strong: levels.strong, weak: levels.weak, channels });

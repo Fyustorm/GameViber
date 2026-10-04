@@ -21,7 +21,7 @@ pub enum Tab {
 impl Tab {
     const ALL: [(Tab, &'static str); 5] = [
         (Tab::Gamepad, "Gamepad"),
-        (Tab::Combos, "Gamepad combos"),
+        (Tab::Combos, "Shortcuts"),
         (Tab::Overlay, "In-game overlay"),
         (Tab::Sound, "Sound"),
         (Tab::Programs, "Other programs"),

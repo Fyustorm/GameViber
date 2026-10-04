@@ -89,6 +89,8 @@ pub struct Settings {
     pub screen: bool,
     /// Local port other programs send values and events to (§6.5); 0 turns it off.
     pub inputs_port: u16,
+    /// Keyboard shortcuts for the combos' actions, through the desktop's portal.
+    pub keyboard_shortcuts: bool,
     /// The game last played, by id (`game.rs`).
     pub active_game: Option<String>,
     /// Language AI assistants answer in, and write the texts players see in a mode
@@ -187,6 +189,7 @@ impl Default for Settings {
             audio: AudioSource::Auto,
             screen: true,
             inputs_port: DEFAULT_INPUTS_PORT,
+            keyboard_shortcuts: false,
             active_game: None,
             language: DEFAULT_LANGUAGE.into(),
         }

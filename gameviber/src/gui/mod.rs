@@ -445,10 +445,11 @@ fn gamepad_strip(ui: &mut egui::Ui, s: &Shared) {
 /// The buttons, triggers and sticks the gamepad sends right now, so players
 /// can check their gamepad reaches GameViber.
 fn gamepad_inputs(ui: &mut egui::Ui, s: &Shared) {
-    const LABELS: [(&str, &str); 15] = [
+    const LABELS: [(&str, &str); 20] = [
         ("A", "A"), ("B", "B"), ("X", "X"), ("Y", "Y"), ("LB", "LB"), ("RB", "RB"), ("LS", "LS"), ("RS", "RS"),
         ("BACK", "Back"), ("START", "Start"), ("GUIDE", "Guide"),
         ("DPAD_UP", "⏶"), ("DPAD_DOWN", "⏷"), ("DPAD_LEFT", "⏴"), ("DPAD_RIGHT", "⏵"),
+        ("P1", "P1"), ("P2", "P2"), ("P3", "P3"), ("P4", "P4"), ("SHARE", "Share"),
     ];
     let axis = |name: &str| s.axes.get(name).copied().unwrap_or(0.0);
     let held = |name: &str| s.held.contains(&name);

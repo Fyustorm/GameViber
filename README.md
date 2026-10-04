@@ -49,8 +49,11 @@ again from **Setup** at the bottom of the left bar. Then the GUI provides:
   feel each;
 - **Setup**, what does not depend on the game: the **gamepad** (capture status,
   live buttons and sticks, the capture method, standard proxy or kernel probe,
-  hiding, troubleshooting), the **gamepad combos** (panic stop, mark a moment,
-  capture the screen), the **in-game overlay**, the **sound** listened to by
+  hiding, troubleshooting), the **shortcuts** for the panic stop, marking a
+  moment and capturing the screen: gamepad combos (a back paddle alone works,
+  and is then kept from the game), and keyboard keys through the desktop's
+  global shortcuts portal (KDE Plasma, GNOME 48+...), which the game never
+  sees, the **in-game overlay**, the **sound** listened to by
   default (automatic: the game showing the overlay, else everything; everything;
   one application, all its streams; off) with what is heard right now and the
   sound scene model, and **other programs** (the local port);
@@ -130,7 +133,8 @@ in `~/.config/gameviber/games/`), step by step:
   changes between them. Modes made for the game read their names;
 
 - **captures**: hold the capture combo on the gamepad (BACK + LS by default,
-  Setup) while the game shows a battle, an exploration, a dialogue...: the
+  Setup), or press the capture key (Ctrl + Alt + C suggested; the game does not
+  see it, so a dialogue is captured without the game's menu over it) while the game shows a battle, an exploration, a dialogue...: the
   image is captured without leaving the game, so it keeps the game's gamepad
   prompts, and the in-game overlay confirms. Captures go to the scene picked on
   the captures page, or "to sort" and filed there later. A few

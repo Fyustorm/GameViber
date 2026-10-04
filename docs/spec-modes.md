@@ -228,7 +228,13 @@ Available buttons:
 
 ```
 A B X Y  LB RB  BACK START GUIDE  LS RS  DPAD_UP DPAD_DOWN DPAD_LEFT DPAD_RIGHT
+P1 P2 P3 P4  SHARE
 ```
+
+`P1` to `P4` are the back paddles and `SHARE` the share button, on the gamepads whose
+driver reports them (many gamepads in Xbox 360 mode only copy the paddles onto other
+buttons). The player may keep them for GameViber's combos: the game then never gets them (with
+the proxy source), modes still do.
 
 The d-pad is converted to buttons even when the driver exposes it as axes (hat). Triggers
 stay axes (§7), but `LT` and `RT` also generate a button event when they cross 0.5 up or

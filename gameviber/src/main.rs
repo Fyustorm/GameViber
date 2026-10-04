@@ -18,6 +18,7 @@ mod game;
 mod rumble;
 mod screen;
 mod session;
+mod shortcuts;
 mod source;
 
 use std::path::PathBuf;
@@ -116,7 +117,7 @@ fn main() -> anyhow::Result<()> {
         })?
     };
     let native = eframe::NativeOptions {
-        viewport: eframe::egui::ViewportBuilder::default().with_title("GameViber").with_inner_size([1180.0, 760.0]).with_min_inner_size([960.0, 620.0]),
+        viewport: eframe::egui::ViewportBuilder::default().with_title("GameViber").with_app_id(shortcuts::APP_ID).with_inner_size([1180.0, 760.0]).with_min_inner_size([960.0, 620.0]),
         ..Default::default()
     };
     eframe::run_native(
