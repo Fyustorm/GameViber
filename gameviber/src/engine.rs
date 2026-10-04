@@ -126,10 +126,12 @@ pub enum Command {
     SetScreen(bool),
     /// Replaces the profile of the game being played (zones, inputs...).
     SaveProfile(Profile),
-    /// Adds the game's current image to the profile as an example of a scene.
-    AddExample(String),
-    /// Forgets the profile's examples of a scene.
-    ClearExamples(String),
+    /// Captures the game's current image into its profile, as an example of a scene.
+    CaptureScene(String),
+    /// Deletes a capture of the profile (by file name).
+    DeleteCapture(String),
+    /// Files a capture under another scene.
+    MoveCapture { file: String, scene: String },
     /// Port other programs send values and events to; 0 turns the WebSocket off.
     SetInputsPort(u16),
     Shutdown,
@@ -351,9 +353,10 @@ struct Engine {
     screen_levels: Option<ScreenLevels>,
     screen_view: ScreenView,
     image_scenes: ImageScenes,
-    /// The last embedding of the game's image, and when the last image was submitted.
-    last_image: Option<Embedding>,
+    /// When the last image was submitted for its embedding.
     last_image_submit: f64,
+    /// Embeddings of the profile's captures being computed: game, then (file, embedding) as they come.
+    capture_job: Option<(String, std_mpsc::Receiver<(String, Embedding)>)>,
     /// Profile of the game being played, and the mean of its examples per scene.
     profile: Option<Profile>,
     example_centroids: Vec<(String, Embedding)>,
@@ -436,8 +439,8 @@ async fn run_async(
         screen_levels: None,
         screen_view: ScreenView::default(),
         image_scenes: ImageScenes::start(),
-        last_image: None,
         last_image_submit: f64::NEG_INFINITY,
+        capture_job: None,
         profile: None,
         example_centroids: Vec::new(),
         zones: ZoneReader::default(),
@@ -741,29 +744,29 @@ impl Engine {
                     self.set_profile(Some(profile));
                 }
             }
-            Command::AddExample(scene) => match (&mut self.profile, &self.last_image) {
-                (Some(profile), Some(image)) => {
-                    profile.add_example(&scene, image);
-                    profile.save();
-                    log::info!("example of '{scene}' added to the profile of {}", profile.game);
-                    let profile = profile.clone();
-                    self.set_profile(Some(profile));
-                }
-                _ => log::warn!("no image of the game to add as an example"),
+            Command::CaptureScene(scene) => match (&mut self.profile, &self.screen_view.frame) {
+                (Some(profile), Some(frame)) => match profile.add_capture(&scene, frame) {
+                    Ok(()) => {
+                        profile.save();
+                        log::info!("capture of '{scene}' added to the profile of {}", profile.game);
+                        let profile = profile.clone();
+                        self.set_profile(Some(profile));
+                    }
+                    Err(e) => log::error!("cannot save the capture: {e}"),
+                },
+                _ => log::warn!("no image of the game to capture"),
             },
+            Command::DeleteCapture(file) => self.edit_profile(|p| p.remove_capture(&file)),
+            Command::MoveCapture { file, scene } => self.edit_profile(|p| {
+                if let Some(capture) = p.captures.iter_mut().find(|c| c.file == file) {
+                    capture.scene = scene;
+                }
+            }),
             Command::SetInputsPort(port) => {
                 self.settings.inputs_port = port;
                 self.settings.save();
                 self.inputs.stop();
                 self.inputs = Inputs::start(port);
-            }
-            Command::ClearExamples(scene) => {
-                if let Some(profile) = &mut self.profile {
-                    profile.examples.remove(&scene);
-                    profile.save();
-                    let profile = profile.clone();
-                    self.set_profile(Some(profile));
-                }
             }
             Command::Shutdown => {}
         }
@@ -1328,7 +1331,7 @@ impl Engine {
             }
             let rt = self.mode.as_ref().and_then(|m| m.runtime.as_ref());
             let scenes_use_image = self.settings.screen && rt.is_some_and(|rt| rt.scene_sense(Sense::Screen) || rt.scene_sense(Sense::Examples));
-            if (scenes_use_image || self.screen_watch) && Model::Image.ready() && time - self.last_image_submit >= IMAGE_SCENE_STEP {
+            if scenes_use_image && Model::Image.ready() && time - self.last_image_submit >= IMAGE_SCENE_STEP {
                 self.last_image_submit = time;
                 self.image_scenes.submit(frame.clone());
             }
@@ -1341,7 +1344,6 @@ impl Engine {
             if self.screen.last().is_some() || self.screen_levels.is_some() {
                 self.screen.reset();
                 self.screen_levels = None;
-                self.last_image = None;
                 self.zones.clear();
                 self.screen_view = ScreenView::default();
             }
@@ -1352,15 +1354,76 @@ impl Engine {
         }
         for image in self.image_scenes.poll() {
             if self.screen_levels.is_some() && !replaying {
-                self.events.push(ModeEvent::ScreenClip(image.clone()));
+                self.events.push(ModeEvent::ScreenClip(image));
             }
-            self.last_image = Some(image);
         }
+        self.embed_captures();
         self.screen_view.model = Model::Image.state();
-        self.screen_view.can_tag = self.last_image.is_some() && self.profile.is_some();
         self.screen_view.zones = self.profile.iter().flat_map(|p| &p.zones).map(|z| {
             (z.name.clone(), self.zones.measures.get(&z.name).copied().unwrap_or(0.0), self.zones.values().get(&z.name).copied())
         }).collect();
+    }
+
+    fn edit_profile(&mut self, edit: impl FnOnce(&mut Profile)) {
+        if let Some(mut profile) = self.profile.clone() {
+            edit(&mut profile);
+            profile.save();
+            self.set_profile(Some(profile));
+        }
+    }
+
+    /// Computes the embeddings of the profile's captures that have none, in a
+    /// thread of its own, once the image model is downloaded.
+    fn embed_captures(&mut self) {
+        if let Some((game, rx)) = &self.capture_job {
+            let mut results = Vec::new();
+            let done = loop {
+                match rx.try_recv() {
+                    Ok(result) => results.push(result),
+                    Err(std_mpsc::TryRecvError::Empty) => break false,
+                    Err(std_mpsc::TryRecvError::Disconnected) => break true,
+                }
+            };
+            if self.profile.as_ref().is_some_and(|p| p.game == *game) && !results.is_empty() {
+                self.edit_profile(|p| {
+                    for (file, embedding) in results {
+                        if let Some(capture) = p.captures.iter_mut().find(|c| c.file == file) {
+                            capture.embedding = embedding.to_vec();
+                        }
+                    }
+                });
+            }
+            if done {
+                self.capture_job = None;
+            }
+            return;
+        }
+        let Some(profile) = &self.profile else { return };
+        let missing: Vec<String> = profile.captures.iter().filter(|c| c.embedding.is_empty()).map(|c| c.file.clone()).collect();
+        if missing.is_empty() || !Model::Image.ready() {
+            return;
+        }
+        let game = profile.game.clone();
+        let (tx, rx) = std_mpsc::channel();
+        self.capture_job = Some((game.clone(), rx));
+        std::thread::spawn(move || {
+            let mut encoder = match screen::clip::ImageEncoder::load() {
+                Ok(e) => e,
+                Err(e) => return log::error!("cannot load the image scene model: {e:#}"),
+            };
+            for file in missing {
+                let embedded = crate::profile::load_capture(&game, &file).map(|frame| encoder.embed(&frame));
+                match embedded {
+                    Some(Ok(embedding)) => {
+                        if tx.send((file, embedding)).is_err() {
+                            return;
+                        }
+                    }
+                    Some(Err(e)) => log::warn!("cannot analyse the capture {file}: {e:#}"),
+                    None => log::warn!("cannot read the capture {file}"),
+                }
+            }
+        });
     }
 
     /// The game being played changed, or its profile was edited.

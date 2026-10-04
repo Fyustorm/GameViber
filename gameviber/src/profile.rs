@@ -1,19 +1,22 @@
 //! Game profiles (docs/spec-modes.md §6.5): what the player taught GameViber
-//! about one game, used by every mode while that game runs — zones of its
-//! screen, example images of its scenes, and the values and events other
-//! programs send for it. One JSON file per game in `games/`, named after the
-//! game's executable.
+//! about one game, used by every mode while that game runs — captures of its
+//! scenes (images the player took, which are also the examples scenes are
+//! recognized with), zones of its screen drawn on them, and the values and
+//! events other programs send for it. One JSON file per game in `games/`,
+//! named after the game's executable, and its captures as PNG files in a
+//! directory of the same name.
 
-use std::collections::BTreeMap;
 use std::fs;
+use std::io::BufReader;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
 use crate::config;
+use crate::screen::Frame;
 
-/// A profile keeps at most this many examples per scene (the oldest go first).
-pub const MAX_EXAMPLES: usize = 40;
+/// A profile keeps at most this many captures per scene.
+pub const MAX_CAPTURES: usize = 40;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -21,11 +24,22 @@ pub struct Profile {
     /// Executable name of the game, as the in-game overlay reports it.
     pub game: String,
     pub zones: Vec<Zone>,
-    /// Scene name -> embeddings of example images (`screen::clip`).
-    pub examples: BTreeMap<String, Vec<Vec<f32>>>,
+    /// Images of the game the player captured, by scene.
+    pub captures: Vec<Capture>,
     /// Values and events other programs send while this game runs (§6.5), for
     /// the requests to AI assistants.
     pub inputs: Vec<InputDecl>,
+}
+
+/// An image of the game the player captured as an example of a scene.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Capture {
+    /// PNG file name in the profile's directory.
+    pub file: String,
+    pub scene: String,
+    /// Its embedding (`screen::clip`); empty until the image model computed it.
+    pub embedding: Vec<f32>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -83,8 +97,16 @@ pub struct Zone {
     pub reference: Vec<u8>,
     /// Visible: similarity with the reference (-1..1) above which the element is shown.
     pub threshold: f32,
-    /// Bar: the color of its filled part.
+    /// Bar: the color of its filled part...
     pub color: [u8; 3],
+    /// ...and of its empty part, when the player picked it.
+    pub empty_color: Option<[u8; 3]>,
+    /// Bar: it moves along its axis (a character's stance shifts it): the zone
+    /// covers every place it can be, and the bar is the longest run of its two
+    /// colors in it. Needs `empty_color`.
+    pub floating: bool,
+    /// The scene of the capture it was drawn on (shown there, for a visible zone).
+    pub scene: Option<String>,
     pub direction: Direction,
     /// Bar: how far (0..255 per channel) a pixel may be from `color`.
     pub tolerance: f32,
@@ -99,6 +121,9 @@ impl Default for Zone {
             reference: Vec::new(),
             threshold: 0.45,
             color: [0, 0, 0],
+            empty_color: None,
+            floating: false,
+            scene: None,
             direction: Direction::Right,
             tolerance: 60.0,
         }
@@ -132,13 +157,73 @@ pub fn valid_name(name: &str) -> bool {
         && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Tests keep their profiles out of the player's.
+    static TEST_DIR: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
 fn dir() -> PathBuf {
+    #[cfg(test)]
+    if let Some(dir) = TEST_DIR.with(|d| d.borrow().clone()) {
+        return dir;
+    }
     config::config_dir().join("games")
 }
 
+fn stem(game: &str) -> String {
+    game.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' || c == '.' { c } else { '_' }).collect()
+}
+
 fn path(game: &str) -> PathBuf {
-    let stem: String = game.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' || c == '.' { c } else { '_' }).collect();
-    dir().join(format!("{stem}.json"))
+    dir().join(format!("{}.json", stem(game)))
+}
+
+/// Where a game's captures are.
+fn captures_dir(game: &str) -> PathBuf {
+    dir().join(stem(game))
+}
+
+/// Saves `frame` as a PNG capture of `game`; returns its file name.
+pub fn save_capture(game: &str, scene: &str, frame: &Frame) -> std::io::Result<String> {
+    let dir = captures_dir(game);
+    config::create_dir(&dir)?;
+    let stamp = crate::session::local_time().replace([' ', ':'], "-");
+    let mut file = format!("{scene}-{stamp}.png");
+    let mut n = 2;
+    while dir.join(&file).exists() {
+        file = format!("{scene}-{stamp}-{n}.png");
+        n += 1;
+    }
+    let out = fs::File::create(dir.join(&file))?;
+    let mut encoder = png::Encoder::new(std::io::BufWriter::new(out), frame.width, frame.height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header().map_err(std::io::Error::other)?;
+    writer.write_image_data(&frame.pixels).map_err(std::io::Error::other)?;
+    writer.finish().map_err(std::io::Error::other)?;
+    Ok(file)
+}
+
+/// A capture of `game`, as a frame.
+pub fn load_capture(game: &str, file: &str) -> Option<Frame> {
+    let reader = BufReader::new(fs::File::open(captures_dir(game).join(file)).ok()?);
+    let mut decoder = png::Decoder::new(reader);
+    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::ALPHA);
+    let mut reader = decoder.read_info().ok()?;
+    let mut buffer = vec![0; reader.output_buffer_size()?];
+    let info = reader.next_frame(&mut buffer).ok()?;
+    if info.color_type != png::ColorType::Rgba || info.bit_depth != png::BitDepth::Eight {
+        return None;
+    }
+    buffer.truncate(info.buffer_size());
+    Some(Frame { width: info.width, height: info.height, source_width: info.width, source_height: info.height, count: 0, pixels: buffer })
+}
+
+fn delete_capture(game: &str, file: &str) {
+    if let Err(e) = fs::remove_file(captures_dir(game).join(file)) {
+        log::warn!("cannot delete the capture {file}: {e}");
+    }
 }
 
 impl Profile {
@@ -161,26 +246,45 @@ impl Profile {
         }
     }
 
-    pub fn add_example(&mut self, scene: &str, embedding: &[f32]) {
-        let examples = self.examples.entry(scene.to_owned()).or_default();
-        examples.push(embedding.to_vec());
-        if examples.len() > MAX_EXAMPLES {
-            examples.remove(0);
+    /// Captures `frame` as an example of `scene`; the oldest of the scene goes past `MAX_CAPTURES`.
+    pub fn add_capture(&mut self, scene: &str, frame: &Frame) -> std::io::Result<()> {
+        let file = save_capture(&self.game, scene, frame)?;
+        self.captures.push(Capture { file, scene: scene.to_owned(), embedding: Vec::new() });
+        let of_scene: Vec<usize> = self.captures.iter().enumerate().filter(|(_, c)| c.scene == scene).map(|(i, _)| i).collect();
+        if of_scene.len() > MAX_CAPTURES {
+            self.remove_capture(&self.captures[of_scene[0]].file.clone());
+        }
+        Ok(())
+    }
+
+    /// Forgets a capture and deletes its file.
+    pub fn remove_capture(&mut self, file: &str) {
+        if let Some(i) = self.captures.iter().position(|c| c.file == file) {
+            self.captures.remove(i);
+            delete_capture(&self.game, file);
         }
     }
 
-    /// The mean of each scene's examples: what the image is compared with.
+    /// Scene names of the captures, sorted.
+    pub fn scenes(&self) -> Vec<String> {
+        let mut scenes: Vec<String> = self.captures.iter().map(|c| c.scene.clone()).collect();
+        scenes.sort();
+        scenes.dedup();
+        scenes
+    }
+
+    /// The mean of each scene's capture embeddings: what the image is compared with.
     pub fn example_centroids(&self) -> Vec<(String, crate::models::Embedding)> {
-        self.examples
-            .iter()
-            .filter(|(_, examples)| !examples.is_empty())
-            .map(|(scene, examples)| {
-                let len = examples[0].len();
+        self.scenes()
+            .into_iter()
+            .filter_map(|scene| {
+                let embeddings: Vec<&Vec<f32>> = self.captures.iter().filter(|c| c.scene == scene && !c.embedding.is_empty()).map(|c| &c.embedding).collect();
+                let len = embeddings.first()?.len();
                 let mut mean = vec![0f32; len];
-                for e in examples.iter().filter(|e| e.len() == len) {
-                    mean.iter_mut().zip(e).for_each(|(m, v)| *m += v);
+                for e in embeddings.iter().filter(|e| e.len() == len) {
+                    mean.iter_mut().zip(e.iter()).for_each(|(m, v)| *m += v);
                 }
-                (scene.clone(), crate::models::normalize(&mean))
+                Some((scene, crate::models::normalize(&mean)))
             })
             .collect()
     }
@@ -198,8 +302,11 @@ impl Profile {
                 out.push_str(&format!("- `{}`: {what}\n", z.name));
             }
         }
-        let scenes: Vec<String> =
-            self.examples.iter().filter(|(_, e)| !e.is_empty()).map(|(name, e)| format!("`{name}` ({} images)", e.len())).collect();
+        let scenes: Vec<String> = self
+            .scenes()
+            .iter()
+            .map(|name| format!("`{name}` ({} images)", self.captures.iter().filter(|c| c.scene == *name).count()))
+            .collect();
         if !scenes.is_empty() {
             out.push_str(&format!(
                 "Scenes with example images (declare them in `scenes` with these names): {}\n",
@@ -234,20 +341,35 @@ mod tests {
     }
 
     #[test]
-    fn examples_are_capped_and_described() {
-        let mut profile = Profile { game: "game.exe".into(), ..Profile::default() };
-        for i in 0..MAX_EXAMPLES + 3 {
-            profile.add_example("battle", &[i as f32]);
+    fn captures_are_saved_capped_and_described() {
+        let game = format!("test-game-{}.exe", std::process::id());
+        let dir = std::env::temp_dir().join(format!("gameviber-profile-{}", std::process::id()));
+        TEST_DIR.with(|d| *d.borrow_mut() = Some(dir.clone()));
+        let mut profile = Profile::load(&game);
+        let frame = |v: u8| Frame { width: 4, height: 2, source_width: 4, source_height: 2, count: 0, pixels: vec![v; 32] };
+        for i in 0..MAX_CAPTURES + 2 {
+            profile.add_capture("battle", &frame(i as u8)).unwrap();
         }
-        assert_eq!(profile.examples["battle"].len(), MAX_EXAMPLES);
-        assert_eq!(profile.examples["battle"][0], vec![3.0], "the oldest went first");
+        profile.add_capture("story", &frame(200)).unwrap();
+        assert_eq!(profile.captures.iter().filter(|c| c.scene == "battle").count(), MAX_CAPTURES);
+        assert_eq!(profile.scenes(), ["battle", "story"]);
+        let first = &profile.captures[0];
+        assert_eq!(load_capture(&game, &first.file).unwrap().pixels, vec![2; 32], "the two oldest went first");
+        assert!(profile.example_centroids().is_empty(), "no embedding yet");
+        profile.captures[0].embedding = vec![0.0, 2.0];
+        assert_eq!(profile.example_centroids(), vec![("battle".to_owned(), crate::models::normalize(&[0.0, 1.0]))]);
+
         profile.zones.push(Zone { name: "hp".into(), kind: ZoneKind::Bar, ..Zone::default() });
         profile.inputs.push(InputDecl { name: "kill".into(), kind: InputKind::Event, description: "an enemy died".into() });
         let text = profile.describe();
         assert!(text.contains("`hp`: how full the bar is"), "{text}");
         assert!(text.contains("`battle` (40 images)"), "{text}");
         assert!(text.contains("event `kill`: an enemy died"), "{text}");
-        let json = serde_json::to_string(&profile).unwrap();
-        assert_eq!(serde_json::from_str::<Profile>(&json).unwrap(), profile);
+        profile.save();
+        assert_eq!(Profile::load(&game), profile);
+        let story = profile.captures.last().unwrap().file.clone();
+        profile.remove_capture(&story);
+        assert!(load_capture(&game, &story).is_none(), "its file is deleted");
+        let _ = fs::remove_dir_all(dir);
     }
 }

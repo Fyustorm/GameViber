@@ -2037,6 +2037,7 @@ dependencies = [
  "log",
  "mlua",
  "ort",
+ "png",
  "raw-window-handle",
  "rustfft",
  "serde",

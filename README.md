@@ -40,9 +40,9 @@ again from **Setup** at the bottom of the left bar. Then the GUI provides:
   else everything; everything; one application, all its streams; off), what is heard right now (loudness,
   bass / mids / treble, hits), and the **scene model** to download (see below);
 - **Game**: what GameViber knows about the game being played (see below): its
-  image as the in-game overlay copies it, the **zones** of its screen modes read
-  (drawn on a frozen image), **example images** of its scenes, the image scene
-  model to download, and the values other programs send;
+  image as the in-game overlay copies it, **captures** of its scenes, the
+  **zones** of its screen modes read (drawn on a capture), the image scene model
+  to download, and the values other programs send;
 - **Keybindings**: the panic stop and mark-a-moment gamepad combos;
 - **Settings** (bottom of the left bar): the language AI assistants answer and
   write modes in, the templates of the requests sent to them (editable, with
@@ -108,19 +108,23 @@ through the in-game overlay, and gives modes:
 - the raw measures behind them, for advanced modes.
 
 Scenes come a few seconds late: modes use them for the mood of a phase, not to
-time effects. Nothing leaves the computer; the sound and the images are never
-saved.
+time effects. Nothing leaves the computer; the sound is never saved, and of the
+image only the captures you take.
 
 ### Game profiles
 
 For a game you play a lot, the **Game** page lets you teach GameViber more,
 for every mode (saved in `~/.config/gameviber/games/`):
 
-- **zones**: draw a rectangle around something shown only at times (the battle
-  interface) or around a bar (health); modes read whether it is shown, or how
-  full the bar is, ten times per second;
-- **example images**: press "This is battle now" while the game shows a battle;
-  a few examples per scene make the image recognition much more reliable;
+- **captures**: press "Capture as battle" while the game shows a battle, and
+  likewise for each scene; add more later, in other places. A few captures per
+  scene make the image recognition much more reliable;
+- **zones**: on a capture (zoom in as needed), draw a rectangle around something
+  shown only at times (the battle interface) or around a bar (health, with the
+  colors of its full and empty parts picked on the image; a bar that moves is
+  found anywhere in its zone). The page shows what
+  each zone reads on every capture and suggests a threshold. Modes read whether
+  it is shown, or how full the bar is, ten times per second;
 - **values from other programs**: a game's existing mod, or a script reading a
   game's API, can send JSON to `ws://127.0.0.1:12350` or to the pipe
   `$XDG_RUNTIME_DIR/gameviber/inputs` (`{"set": {"hp": 0.4}}`,

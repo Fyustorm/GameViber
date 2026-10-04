@@ -33,11 +33,11 @@ script) → **safety layer** → **Intiface output**.
 | `gameviber/src/gamepad.rs` | button/axis normalization (Xbox layout), panic combo |
 | `gameviber/src/mode/` | Luau runtime: `library.rs` (script API), `outputs.rs` (channels, pulses, patterns), `rumble_events.rs`, `scenes.rs` (scenes fused from the sound, the image and the profile's examples), `prompt.rs` (AI requests: a per-game mode, a fix for a mode that feels wrong), `report.rs` (a session replayed offline into a mode, for the fix request), `tests.rs` |
 | `gameviber/src/screen/` | the game's image: frames copied by the overlay, measures (brightness, motion, flashes), `clip` (image scene model: PIL-exact preprocessing, encoder thread), `zones` (shown-or-not and bar zones) |
-| `gameviber/src/profile.rs` | game profiles (`~/.config/gameviber/games/<exe>.json`): zones, example images, declared inputs |
+| `gameviber/src/profile.rs` | game profiles (`~/.config/gameviber/games/<exe>.json`, captures as PNG in `games/<exe>/`): captures per scene (also the scene examples), zones drawn on them, declared inputs |
 | `gameviber/src/inputs.rs` | values and events other programs send: local WebSocket (browsers refused) and named pipe |
 | `gameviber/src/engine.rs` | engine thread: sources, audio, image, mode, safety layer, routing, output |
 | `gameviber/src/session.rs` | recorded play sessions (rumble, buttons, axes, sound and image measures, hits, flashes, zones, scene embeddings, values from other programs) and their replay |
-| `gameviber/src/gui/` | egui GUI: setup guide (`onboarding`), pages (`play`, `toys`, `gamepad`, `audio`, `screen` (the Game page: image, zone editor, scene examples, inputs), `keybindings`, `overlay`, `creator`, `settings`), AI requests (`generator` dialog: a mode for a game; `feedback` page: a fix for the active mode), Luau highlighting (`luau`), `theme` |
+| `gameviber/src/gui/` | egui GUI: setup guide (`onboarding`), pages (`play`, `toys`, `gamepad`, `audio`, `screen` (the Game page: live image, captures, zoomable zone editor checked on every capture, inputs), `keybindings`, `overlay`, `creator`, `settings`), AI requests (`generator` dialog: a mode for a game; `feedback` page: a fix for the active mode), Luau highlighting (`luau`), `theme` |
 | `gameviber/src/helper/` | privileged helper (`gameviber helper`, started through pkexec) |
 | `gameviber/src/config.rs` | config files, built-in mode registry (`BUILTIN_MODES`) |
 | `gameviber/modes/` | built-in modes, embedded in the binary |

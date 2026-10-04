@@ -18,6 +18,8 @@ gameviber-common = { path = "../gameviber-common", features = ["user"] }
 libc = "0.2"
 log = "0.4"
 mlua = { version = "0.12", features = ["luau"] }
+# Captures of the game's image kept in game profiles.
+png = "0.18"
 # CLAP audio scene model (docs/spec-modes.md §6.3); ONNX Runtime is linked statically.
 ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "download-binaries", "tls-native", "api-22"] }
 raw-window-handle = "0.6"

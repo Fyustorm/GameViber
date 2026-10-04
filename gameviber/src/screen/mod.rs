@@ -196,8 +196,6 @@ pub struct ScreenView {
     pub model: crate::models::ModelState,
     /// Raw measure of each zone of the game's profile (similarity or fill).
     pub zones: Vec<(String, f32, Option<crate::mode::ZoneValue>)>,
-    /// An embedding of the image is at hand: examples can be added.
-    pub can_tag: bool,
 }
 
 #[cfg(test)]

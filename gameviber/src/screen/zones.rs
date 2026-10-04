@@ -1,7 +1,8 @@
 //! Zones of the game's screen declared in its profile (`profile::Zone`):
 //! whether an element is shown (its look compared with a reference taken when
 //! the zone was drawn) and how full a bar is (the share of it in the bar's
-//! color).
+//! full color rather than its empty one; for a bar that moves, the longest
+//! run of its two colors in the zone is the bar).
 
 use std::collections::BTreeMap;
 
@@ -100,6 +101,31 @@ pub fn bar_color(frame: &Frame, rect: [f32; 4]) -> [u8; 3] {
     sum.map(|s| (s / top.len() as u32) as u8)
 }
 
+/// The color around a point of `frame` (fractions of the image): the mean of 3 x 3 pixels.
+pub fn pick_color(frame: &Frame, x: f32, y: f32) -> [u8; 3] {
+    let (w, h) = (frame.width as i64, frame.height as i64);
+    let (cx, cy) = ((x * w as f32) as i64, (y * h as f32) as i64);
+    let mut sum = [0u32; 3];
+    let mut n = 0;
+    for py in (cy - 1).max(0)..=(cy + 1).min(h - 1) {
+        for px in (cx - 1).max(0)..=(cx + 1).min(w - 1) {
+            let p = pixel(frame, px as usize, py as usize);
+            (0..3).for_each(|c| sum[c] += p[c] as u32);
+            n += 1;
+        }
+    }
+    sum.map(|s| (s / n.max(1)) as u8)
+}
+
+/// A threshold telling the zone's scene apart from the others, from its
+/// similarity on captures of that scene (`shown`) and of the others
+/// (`hidden`): halfway between them when they do not overlap.
+pub fn suggest_threshold(shown: &[f32], hidden: &[f32]) -> Option<f32> {
+    let low = shown.iter().copied().fold(f32::INFINITY, f32::min);
+    let high = hidden.iter().copied().fold(-1.0, f32::max);
+    (!shown.is_empty() && low > high).then(|| ((low + high) / 2.0).clamp(0.1, 0.95))
+}
+
 /// What a zone reads on `frame`: the similarity with its reference (-1..1)
 /// for a visible zone, how full it is (0..1) for a bar.
 pub fn measure(zone: &Zone, frame: &Frame) -> f32 {
@@ -115,31 +141,95 @@ pub fn measure(zone: &Zone, frame: &Frame) -> f32 {
     }
 }
 
-/// Share of the bar's length whose middle line is in the bar's color.
+#[derive(Clone, Copy, PartialEq)]
+enum Part {
+    Full,
+    Empty,
+    /// Neither color: outside the bar.
+    Other,
+}
+
+/// Share of the bar's length whose middle line is in the bar's full color
+/// (and nearer to it than to its empty color, when known). A floating bar is
+/// first found: the longest run of full and empty columns.
 fn fill(zone: &Zone, frame: &Frame) -> f32 {
+    let parts = columns(zone, frame);
+    if let (true, Some(_)) = (zone.floating, zone.empty_color) {
+        // The longest run of bar columns, one stray column allowed inside.
+        let (mut best, mut best_full) = (0, 0);
+        let (mut start, mut gap) = (0, 0);
+        for i in 0..=parts.len() {
+            let inside = parts.get(i).is_some_and(|p| *p != Part::Other);
+            if inside {
+                gap = 0;
+                continue;
+            }
+            gap += 1;
+            if gap > 1 || i == parts.len() {
+                let end = i + 1 - gap;
+                if end > start && end - start > best {
+                    best = end - start;
+                    best_full = parts[start..end].iter().filter(|p| **p == Part::Full).count();
+                }
+                start = i + 1;
+                gap = 0;
+            }
+        }
+        return best_full as f32 / best.max(1) as f32;
+    }
+    let filled = parts.iter().filter(|p| **p == Part::Full).count();
+    filled as f32 / parts.len().max(1) as f32
+}
+
+/// Each column along the bar, by the majority of the middle third across it.
+fn columns(zone: &Zone, frame: &Frame) -> Vec<Part> {
     let (x0, y0, x1, y1) = bounds(frame, zone.rect);
     let horizontal = matches!(zone.direction, Direction::Right | Direction::Left);
     let (length, across) = if horizontal { (x1 - x0, y1 - y0) } else { (y1 - y0, x1 - x0) };
-    let near = |p: [u8; 3]| {
-        let d: f32 = (0..3).map(|c| (p[c] as f32 - zone.color[c] as f32).powi(2)).sum::<f32>().sqrt();
-        d <= zone.tolerance
+    let distance = |p: [u8; 3], color: [u8; 3]| (0..3).map(|c| (p[c] as f32 - color[c] as f32).powi(2)).sum::<f32>().sqrt();
+    let part = |p: [u8; 3]| {
+        let full = distance(p, zone.color);
+        match zone.empty_color {
+            Some(empty) => {
+                let empty = distance(p, empty);
+                if full <= empty && full <= zone.tolerance {
+                    Part::Full
+                } else if empty < full && empty <= zone.tolerance {
+                    Part::Empty
+                } else {
+                    Part::Other
+                }
+            }
+            None if full <= zone.tolerance => Part::Full,
+            None => Part::Other,
+        }
     };
-    let mut filled = 0;
+    let mut parts = Vec::with_capacity(length);
     for i in 0..length {
         // The middle third across the bar: borders and shadows stay out.
         let lines = (across / 3).max(1);
         let start = (across - lines) / 2;
-        let hits = (start..start + lines)
-            .filter(|&j| {
-                let (x, y) = if horizontal { (x0 + i, y0 + j) } else { (x0 + j, y0 + i) };
-                near(pixel(frame, x, y))
-            })
-            .count();
-        if hits * 2 >= lines {
-            filled += 1;
+        let mut counts = [0; 3];
+        for j in start..start + lines {
+            let (x, y) = if horizontal { (x0 + i, y0 + j) } else { (x0 + j, y0 + i) };
+            match part(pixel(frame, x, y)) {
+                Part::Full => counts[0] += 1,
+                Part::Empty => counts[1] += 1,
+                Part::Other => counts[2] += 1,
+            }
         }
+        parts.push(if counts[0] * 2 >= lines {
+            Part::Full
+        } else if counts[1] * 2 >= lines {
+            Part::Empty
+        } else if counts[0] + counts[1] > counts[2] {
+            // Mixed full and empty: the edge between them.
+            if counts[0] >= counts[1] { Part::Full } else { Part::Empty }
+        } else {
+            Part::Other
+        });
     }
-    filled as f32 / length.max(1) as f32
+    parts
 }
 
 /// Reads a profile's zones frame after frame and tells which changed.
@@ -231,6 +321,44 @@ mod tests {
         assert_eq!(reader.update(&zones, &with_hud(false, 10)), vec![("battle_hud".to_owned(), ZoneValue::Visible(false))]);
     }
 
+    /// Metaphor: a character's stance shifts its health bar sideways.
+    #[test]
+    fn floating_bars_are_found_where_they_are() {
+        // Health (green) then wounds (red), 60 px long, starting at `left`, among other colors.
+        let bar = |left: u32, level: f32| {
+            frame(move |x, y| match (x, y) {
+                (_, 10..=15) if (left..left + 60).contains(&x) => {
+                    if ((x - left) as f32) < level * 60.0 { [40, 200, 60] } else { [190, 30, 30] }
+                }
+                (_, 10..=15) if x % 7 == 0 => [230, 230, 230],
+                _ => [25, 25, 35],
+            })
+        };
+        let rect = [5.0 / 160.0, 9.0 / 90.0, 150.0 / 160.0, 8.0 / 90.0];
+        let zone = Zone {
+            name: "hp".into(),
+            kind: ZoneKind::Bar,
+            rect,
+            color: [40, 200, 60],
+            empty_color: Some([190, 30, 30]),
+            floating: true,
+            ..Zone::default()
+        };
+        for (left, level) in [(10, 1.0), (30, 0.5), (85, 0.25), (60, 0.0)] {
+            let got = measure(&zone, &bar(left, level));
+            assert!((got - level).abs() < 0.04, "bar at {left}, {level}: {got}");
+        }
+        let fixed = Zone { floating: false, ..zone };
+        assert!(measure(&fixed, &bar(30, 0.5)) < 0.3, "read as a fixed bar, the zone is mostly outside it");
+    }
+
+    #[test]
+    fn thresholds_are_suggested_from_captures() {
+        assert_eq!(suggest_threshold(&[0.9, 0.8], &[0.1, 0.3]), Some(0.55));
+        assert_eq!(suggest_threshold(&[0.9, 0.2], &[0.1, 0.3]), None, "they overlap");
+        assert_eq!(suggest_threshold(&[], &[0.1]), None);
+    }
+
     #[test]
     fn bars_are_measured_with_their_color() {
         // A red bar from x = 20 to 100, filled up to `level`, on a dark frame with a gray outline.
@@ -251,6 +379,20 @@ mod tests {
         }
         let left = Zone { direction: Direction::Left, ..zone.clone() };
         assert!((measure(&left, &bar(0.5)) - 0.5).abs() < 0.04, "the share filled does not depend on the side");
+
+        // An empty part close to the full color (a darker red) is told apart once picked.
+        let close = |level: f32| {
+            frame(move |x, y| match (x, y) {
+                (20..=99, 10..=15) if (x - 20) as f32 / 80.0 < level => [200, 30, 40],
+                (20..=99, 10..=15) => [150, 40, 50],
+                _ => [20, 20, 30],
+            })
+        };
+        let empty = pick_color(&close(0.0), 0.5, 12.0 / 90.0);
+        assert_eq!(empty, [150, 40, 50]);
+        assert!(measure(&zone, &close(0.5)) > 0.9, "without the empty color both look full");
+        let picked = Zone { empty_color: Some(empty), ..zone.clone() };
+        assert!((measure(&picked, &close(0.5)) - 0.5).abs() < 0.04);
 
         let mut reader = ZoneReader::default();
         let zones = [zone];

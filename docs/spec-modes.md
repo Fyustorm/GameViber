@@ -375,20 +375,25 @@ On the Game page the player can teach GameViber about the game being played; eve
 gets it while that game runs. Everything here exists only once the player set it up:
 **read it defensively** (`input.zones.hp or 1`).
 
-**Zones**: rectangles of the screen the player drew on a frozen image of the game.
+**Captures**: images of the game the player captured per scene ("battle", "dungeon"...).
+They are the examples scenes are recognized with, and zones are drawn on them.
+
+**Zones**: rectangles of the screen the player drew on a capture, and checked on all of
+them.
 
 - A zone that is **shown or not** (the battle interface, a warning) reads `true` while
   the screen there looks like when it was drawn, `false` otherwise.
-- A **bar** (health, stamina) reads how full it is, 0..1, measured with its color.
+- A **bar** (health, stamina) reads how full it is, 0..1, measured with the colors of
+  its full and empty parts. A bar that moves (Metaphor shifts a character's health bar
+  with its stance) is found in a wider zone as the longest run of its two colors.
 - `input.zones.<name>` holds the value; `on_zone(ev)` is called when it changes, with
   `ev.zone`, `ev.value` and `ev.previous` (nil at first). Zones are read ten times per
   second; a bar change below 0.02 is not reported.
 - Zones say exactly what scenes guess (the battle interface is on screen or not) and
   come within 0.1 s: prefer them when the profile has them.
 
-**Example images**: the player tagged images of the game as scenes ("this is battle
-now"). They make the image recognize scenes of the same name much more reliably (§6.3);
-the mode only has to declare the scene with that name.
+**Example images**: the captures make the image recognize scenes of the same name much
+more reliably (§6.3); the mode only has to declare the scene with that name.
 
 **Values from other programs**: a game's existing mod, a script reading a game's API or
 anything else can send JSON to `ws://127.0.0.1:12350` (the port is set on the Game page;
