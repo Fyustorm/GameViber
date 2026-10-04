@@ -106,6 +106,9 @@ pub struct Zone {
     /// covers every place it can be, and the bar is the longest run of its two
     /// colors in it. Needs `empty_color`.
     pub floating: bool,
+    /// Bar: share of the zone's length it covered when drawn. Much less of its
+    /// colors found means it is not on screen (menus): its value is unknown.
+    pub length: f32,
     /// The scene of the capture it was drawn on (shown there, for a visible zone).
     pub scene: Option<String>,
     pub direction: Direction,
@@ -124,6 +127,7 @@ impl Default for Zone {
             color: [0, 0, 0],
             empty_color: None,
             floating: false,
+            length: 0.0,
             scene: None,
             direction: Direction::Right,
             tolerance: 60.0,
@@ -299,7 +303,7 @@ impl Profile {
             for z in &self.zones {
                 let what = match z.kind {
                     ZoneKind::Visible => "true while shown, false otherwise".to_owned(),
-                    ZoneKind::Bar => "how full the bar is, 0 to 1".to_owned(),
+                    ZoneKind::Bar => "how full the bar is, 0 to 1, or nil while it is not on screen (menus, cutscenes)".to_owned(),
                 };
                 out.push_str(&format!("- `{}`: {what}\n", z.name));
             }

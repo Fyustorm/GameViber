@@ -255,6 +255,7 @@ impl Simulation {
                     let value = match value {
                         ZoneValue::Visible(shown) => if *shown { "shown" } else { "hidden" }.to_owned(),
                         ZoneValue::Bar(fill) => format!("{fill:.2}"),
+                        ZoneValue::Unknown => "unknown (not on screen)".to_owned(),
                     };
                     let _ = writeln!(out, "- {t:.2} s: {name} {value}");
                 }

@@ -194,8 +194,9 @@ pub struct ScreenView {
     pub rate: f64,
     /// The image model is ready and scenes or examples use it.
     pub model: crate::models::ModelState,
-    /// Raw measure of each zone of the game's profile (similarity or fill).
-    pub zones: Vec<(String, f32, Option<crate::mode::ZoneValue>)>,
+    /// Raw measure of each zone of the game's profile (similarity or fill;
+    /// None: a bar not on screen), and its value.
+    pub zones: Vec<(String, Option<f32>, Option<crate::mode::ZoneValue>)>,
 }
 
 #[cfg(test)]

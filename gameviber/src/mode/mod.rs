@@ -155,6 +155,8 @@ pub enum ZoneValue {
     Visible(bool),
     /// How full a bar is, 0..1.
     Bar(f64),
+    /// Not found on screen (a bar hidden in menus): nil for modes.
+    Unknown,
 }
 
 /// Plain-data copy of the `persist` table, carried across hot reloads.
@@ -668,6 +670,7 @@ impl ModeRuntime {
                     let lua_value = |v: ZoneValue| match v {
                         ZoneValue::Visible(b) => Value::Boolean(b),
                         ZoneValue::Bar(x) => Value::Number(x),
+                        ZoneValue::Unknown => Value::Nil,
                     };
                     self.input.zones.raw_set(name.as_str(), lua_value(*value)).map_err(lua_err)?;
                     if self.callbacks.on_zone.is_some() {

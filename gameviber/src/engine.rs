@@ -1380,7 +1380,7 @@ impl Engine {
         self.embed_captures();
         self.screen_view.model = Model::Image.state();
         self.screen_view.zones = self.profile.iter().flat_map(|p| &p.zones).map(|z| {
-            (z.name.clone(), self.zones.measures.get(&z.name).copied().unwrap_or(0.0), self.zones.values().get(&z.name).copied())
+            (z.name.clone(), self.zones.measures.get(&z.name).copied().flatten(), self.zones.values().get(&z.name).copied())
         }).collect();
     }
 

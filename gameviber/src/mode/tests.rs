@@ -833,6 +833,9 @@ fn zones_and_external_inputs_reach_the_mode() {
     let events = [zone("hp", ZoneValue::Bar(0.5)), zone("hp", ZoneValue::Bar(0.25)), custom("ammo", serde_json::Value::Null)];
     let out = rt.step(DT, rumble(0.0, 0.0), &PadState::default(), 1e9, &events).unwrap();
     assert_eq!(["hp", "previous_hp", "zone_events", "ammo"].map(|k| plot_value(&out, k)), [0.25, 0.5, 3.0, -1.0]);
+    // A bar not on screen (a menu): nil, not 0.
+    let out = rt.step(DT, rumble(0.0, 0.0), &PadState::default(), 1e9, &[zone("hp", ZoneValue::Unknown)]).unwrap();
+    assert_eq!(["hp", "previous_hp", "zone_events"].map(|k| plot_value(&out, k)), [-1.0, 0.25, 4.0]);
     // The image goes: so do the zones read on it.
     rt.set_screen(None);
     let out = step(&mut rt, rumble(0.0, 0.0));

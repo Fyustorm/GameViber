@@ -17,6 +17,10 @@ pub const REF_HEIGHT: usize = 24;
 const HYSTERESIS: f32 = 0.05;
 /// Bar values are reported when they move this much.
 const BAR_STEP: f64 = 0.02;
+/// A bar is not on screen when less than this share of its drawn length is found...
+const FOUND_SHARE: f32 = 0.6;
+/// ...for this many copies in a row (0.3 s), so that a flash does not hide it.
+const UNKNOWN_FRAMES: u32 = 3;
 
 /// Pixel bounds of a zone in `frame`, at least 2 x 2.
 fn bounds(frame: &Frame, rect: [f32; 4]) -> (usize, usize, usize, usize) {
@@ -127,18 +131,30 @@ pub fn suggest_threshold(shown: &[f32], hidden: &[f32]) -> Option<f32> {
 }
 
 /// What a zone reads on `frame`: the similarity with its reference (-1..1)
-/// for a visible zone, how full it is (0..1) for a bar.
-pub fn measure(zone: &Zone, frame: &Frame) -> f32 {
+/// for a visible zone, how full it is (0..1) for a bar; None when the bar is
+/// not on screen (too little of its colors in the zone, which needs its empty
+/// color to be told from an empty bar).
+pub fn measure(zone: &Zone, frame: &Frame) -> Option<f32> {
     match zone.kind {
         ZoneKind::Visible => {
             if zone.reference.len() != REF_WIDTH * REF_HEIGHT {
-                return 0.0;
+                return Some(0.0);
             }
             let reference: Vec<f32> = zone.reference.iter().map(|&v| v as f32).collect();
-            correlation(&gray(frame, zone.rect), &reference)
+            Some(correlation(&gray(frame, zone.rect), &reference))
         }
-        ZoneKind::Bar => fill(zone, frame),
+        ZoneKind::Bar => {
+            let (fill, length) = bar(zone, frame);
+            let expected = if zone.length > 0.0 { zone.length } else if zone.floating { 0.1 } else { 1.0 };
+            let found = zone.empty_color.is_none() || length >= FOUND_SHARE * expected;
+            found.then_some(fill)
+        }
     }
+}
+
+/// Share of the zone's length a bar covers on `frame` (to save with a zone being drawn).
+pub fn bar_length(zone: &Zone, frame: &Frame) -> f32 {
+    bar(zone, frame).1
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -150,9 +166,10 @@ enum Part {
 }
 
 /// Share of the bar's length whose middle line is in the bar's full color
-/// (and nearer to it than to its empty color, when known). A floating bar is
-/// first found: the longest run of full and empty columns.
-fn fill(zone: &Zone, frame: &Frame) -> f32 {
+/// (and nearer to it than to its empty color, when known), and the share of
+/// the zone's length the bar covers. A floating bar is first found: the
+/// longest run of full and empty columns.
+fn bar(zone: &Zone, frame: &Frame) -> (f32, f32) {
     let parts = columns(zone, frame);
     if let (true, Some(_)) = (zone.floating, zone.empty_color) {
         // The longest run of bar columns, one stray column allowed inside.
@@ -175,10 +192,11 @@ fn fill(zone: &Zone, frame: &Frame) -> f32 {
                 gap = 0;
             }
         }
-        return best_full as f32 / best.max(1) as f32;
+        return (best_full as f32 / best.max(1) as f32, best as f32 / parts.len().max(1) as f32);
     }
     let filled = parts.iter().filter(|p| **p == Part::Full).count();
-    filled as f32 / parts.len().max(1) as f32
+    let covered = parts.iter().filter(|p| **p != Part::Other).count();
+    (filled as f32 / parts.len().max(1) as f32, covered as f32 / parts.len().max(1) as f32)
 }
 
 /// Each column along the bar, by the majority of the middle third across it.
@@ -236,8 +254,10 @@ fn columns(zone: &Zone, frame: &Frame) -> Vec<Part> {
 #[derive(Default)]
 pub struct ZoneReader {
     values: BTreeMap<String, ZoneValue>,
-    /// Raw measures of the last frame, for the GUI.
-    pub measures: BTreeMap<String, f32>,
+    /// Raw measures of the last frame, for the GUI (None: bar not on screen).
+    pub measures: BTreeMap<String, Option<f32>>,
+    /// Copies in a row each bar was not found on.
+    missing: BTreeMap<String, u32>,
 }
 
 impl ZoneReader {
@@ -249,11 +269,16 @@ impl ZoneReader {
             let measure = measure(zone, frame);
             self.measures.insert(zone.name.clone(), measure);
             let previous = self.values.get(&zone.name).copied();
-            let value = match (zone.kind, previous) {
-                (ZoneKind::Visible, Some(ZoneValue::Visible(true))) => ZoneValue::Visible(measure >= zone.threshold - HYSTERESIS),
-                (ZoneKind::Visible, _) => ZoneValue::Visible(measure >= zone.threshold),
-                (ZoneKind::Bar, Some(ZoneValue::Bar(old))) if (measure as f64 - old).abs() < BAR_STEP => ZoneValue::Bar(old),
-                (ZoneKind::Bar, _) => ZoneValue::Bar((measure as f64 * 100.0).round() / 100.0),
+            let missing = self.missing.entry(zone.name.clone()).or_default();
+            *missing = if measure.is_none() { *missing + 1 } else { 0 };
+            let value = match (zone.kind, measure, previous) {
+                (ZoneKind::Visible, Some(m), Some(ZoneValue::Visible(true))) => ZoneValue::Visible(m >= zone.threshold - HYSTERESIS),
+                (ZoneKind::Visible, m, _) => ZoneValue::Visible(m.unwrap_or(0.0) >= zone.threshold),
+                // Briefly lost (a flash, an effect over it): keep the last value.
+                (ZoneKind::Bar, None, Some(old)) if *missing < UNKNOWN_FRAMES => old,
+                (ZoneKind::Bar, None, _) => ZoneValue::Unknown,
+                (ZoneKind::Bar, Some(m), Some(ZoneValue::Bar(old))) if (m as f64 - old).abs() < BAR_STEP => ZoneValue::Bar(old),
+                (ZoneKind::Bar, Some(m), _) => ZoneValue::Bar((m as f64 * 100.0).round() / 100.0),
             };
             if previous != Some(value) {
                 self.values.insert(zone.name.clone(), value);
@@ -270,6 +295,7 @@ impl ZoneReader {
     pub fn clear(&mut self) {
         self.values.clear();
         self.measures.clear();
+        self.missing.clear();
     }
 }
 
@@ -307,10 +333,10 @@ mod tests {
     fn visible_zones_follow_the_element() {
         let rect = [120.0 / 160.0, 60.0 / 90.0, 40.0 / 160.0, 30.0 / 90.0];
         let zone = Zone { name: "battle_hud".into(), rect, reference: reference(&with_hud(true, 0), rect), ..Zone::default() };
-        assert!(measure(&zone, &with_hud(true, 0)) > 0.99);
+        assert!(measure(&zone, &with_hud(true, 0)).unwrap() > 0.99);
         // The scenery moved behind the element: still recognized; gone: not.
-        let moved = measure(&zone, &with_hud(true, 37));
-        let hidden = measure(&zone, &with_hud(false, 37));
+        let moved = measure(&zone, &with_hud(true, 37)).unwrap();
+        let hidden = measure(&zone, &with_hud(false, 37)).unwrap();
         assert!(moved > zone.threshold, "{moved}");
         assert!(hidden < zone.threshold, "{hidden}");
 
@@ -345,11 +371,24 @@ mod tests {
             ..Zone::default()
         };
         for (left, level) in [(10, 1.0), (30, 0.5), (85, 0.25), (60, 0.0)] {
-            let got = measure(&zone, &bar(left, level));
+            let got = measure(&zone, &bar(left, level)).unwrap();
             assert!((got - level).abs() < 0.04, "bar at {left}, {level}: {got}");
         }
+        // In a menu the bar is gone: unknown, not empty.
+        let menu = frame(|x, _| if x % 7 == 0 { [230, 230, 230] } else { [25, 25, 35] });
+        let drawn = Zone { length: bar_length(&zone, &bar(30, 0.5)), ..zone.clone() };
+        assert!((drawn.length - 0.4).abs() < 0.02, "60 px of 150: {}", drawn.length);
+        assert_eq!(measure(&drawn, &menu), None);
+        assert_eq!(measure(&drawn, &bar(85, 0.0)), Some(0.0), "an empty bar is still a bar");
+        let mut reader = ZoneReader::default();
+        let zones = [drawn];
+        let first = reader.update(&zones, &bar(30, 0.5));
+        assert!(matches!(first[..], [(_, ZoneValue::Bar(v))] if (v - 0.5).abs() < 0.02), "{first:?}");
+        assert_eq!(reader.update(&zones, &menu), vec![], "briefly lost: the last value stays");
+        reader.update(&zones, &menu);
+        assert_eq!(reader.update(&zones, &menu), vec![("hp".to_owned(), ZoneValue::Unknown)]);
         let fixed = Zone { floating: false, ..zone };
-        assert!(measure(&fixed, &bar(30, 0.5)) < 0.3, "read as a fixed bar, the zone is mostly outside it");
+        assert_eq!(measure(&fixed, &bar(30, 0.5)), None, "read as a fixed bar filling the zone, it is not found");
     }
 
     #[test]
@@ -374,11 +413,11 @@ mod tests {
         assert!(color[0] > 180 && color[1] < 60, "{color:?}");
         let zone = Zone { name: "hp".into(), kind: ZoneKind::Bar, rect, color, ..Zone::default() };
         for level in [1.0, 0.75, 0.3, 0.0] {
-            let got = measure(&zone, &bar(level));
+            let got = measure(&zone, &bar(level)).unwrap();
             assert!((got - level).abs() < 0.04, "{level}: {got}");
         }
         let left = Zone { direction: Direction::Left, ..zone.clone() };
-        assert!((measure(&left, &bar(0.5)) - 0.5).abs() < 0.04, "the share filled does not depend on the side");
+        assert!((measure(&left, &bar(0.5)).unwrap() - 0.5).abs() < 0.04, "the share filled does not depend on the side");
 
         // An empty part close to the full color (a darker red) is told apart once picked.
         let close = |level: f32| {
@@ -390,9 +429,9 @@ mod tests {
         };
         let empty = pick_color(&close(0.0), 0.5, 12.0 / 90.0);
         assert_eq!(empty, [150, 40, 50]);
-        assert!(measure(&zone, &close(0.5)) > 0.9, "without the empty color both look full");
+        assert!(measure(&zone, &close(0.5)).unwrap() > 0.9, "without the empty color both look full");
         let picked = Zone { empty_color: Some(empty), ..zone.clone() };
-        assert!((measure(&picked, &close(0.5)) - 0.5).abs() < 0.04);
+        assert!((measure(&picked, &close(0.5)).unwrap() - 0.5).abs() < 0.04);
 
         let mut reader = ZoneReader::default();
         let zones = [zone];

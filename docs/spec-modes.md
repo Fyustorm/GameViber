@@ -385,10 +385,12 @@ them.
 - A zone that is **shown or not** (the battle interface, a warning) reads `true` while
   the screen there looks like when it was drawn, `false` otherwise.
 - A **bar** (health, stamina) reads how full it is, 0..1, measured with the colors of
-  its full and empty parts. A bar that moves (Metaphor shifts a character's health bar
+  its full and empty parts, or **nil while it is not on screen** (a menu, a cutscene):
+  not knowing is not 0 health. Keep the last known value when the mode needs one. A bar that moves (Metaphor shifts a character's health bar
   with its stance) is found in a wider zone as the longest run of its two colors.
 - `input.zones.<name>` holds the value; `on_zone(ev)` is called when it changes, with
-  `ev.zone`, `ev.value` and `ev.previous` (nil at first). Zones are read ten times per
+  `ev.zone`, `ev.value` (nil for a bar gone from the screen) and `ev.previous` (nil at
+  first). Zones are read ten times per
   second; a bar change below 0.02 is not reported.
 - Zones say exactly what scenes guess (the battle interface is on screen or not) and
   come within 0.1 s: prefer them when the profile has them.
@@ -445,7 +447,7 @@ input.screen.active      -- true while the game's image is copied (§6.4)
 input.screen.brightness  -- 0..1
 input.screen.motion      -- 0..1, change since the previous copy
 input.screen.action      -- 0..1, motion over the last ~6 s
-input.zones.battle_hud   -- true/false, or 0..1 for a bar; nil if the profile has no such zone (§6.5)
+input.zones.battle_hud   -- true/false, or 0..1 for a bar; nil if unknown (§6.5)
 input.custom.hp          -- what another program set; nil until it does (§6.5)
 ```
 
