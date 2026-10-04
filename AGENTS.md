@@ -28,7 +28,7 @@ Pipeline: **source** (interception) → **mode** (Luau script) → **safety laye
 | `gameviber/src/mode/` | Luau runtime: `library.rs` (script API), `outputs.rs` (channels, pulses, patterns), `rumble_events.rs`, `prompt.rs` (AI requests: a per-game mode, a fix for a mode that feels wrong), `report.rs` (a session replayed offline into a mode, for the fix request), `tests.rs` |
 | `gameviber/src/engine.rs` | engine thread: sources, mode, safety layer, routing, output |
 | `gameviber/src/session.rs` | recorded play sessions (rumble, buttons, axes) and their replay |
-| `gameviber/src/gui/` | egui GUI: setup guide (`onboarding`), pages (`play`, `toys`, `connection`, `creator`), AI dialogs (`generator`: a mode for a game, `feedback`: a fix for the active mode), Luau highlighting (`luau`), `theme` |
+| `gameviber/src/gui/` | egui GUI: setup guide (`onboarding`), pages (`play`, `toys`, `gamepad`, `keybindings`, `overlay`, `creator`), AI dialogs (`generator`: a mode for a game, `feedback`: a fix for the active mode), Luau highlighting (`luau`), `theme` |
 | `gameviber/src/helper/` | privileged helper (`gameviber helper`, started through pkexec) |
 | `gameviber/src/config.rs` | config files, built-in mode registry (`BUILTIN_MODES`) |
 | `gameviber/modes/` | built-in modes, embedded in the binary |

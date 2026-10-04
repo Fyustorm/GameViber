@@ -370,7 +370,7 @@ impl App {
                     copy.save_feedback(&history);
                 }
                 self.page = Page::Play;
-                self.play.show_user_modes();
+                self.play.show_mode();
             }
         }
     }

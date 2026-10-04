@@ -129,7 +129,7 @@ impl App {
         *g = State::default();
         self.create_mode(&stem, &script);
         self.page = Page::Play;
-        self.play.show_user_modes();
+        self.play.show_mode();
     }
 
     /// Loads a .luau file dropped on the window into the answer field.

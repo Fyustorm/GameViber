@@ -1,14 +1,14 @@
 //! First-launch setup: Intiface Central, toys, gamepad and capture method,
-//! then a first mode. Every step can be skipped; it can be run again from
-//! the Connection page.
+//! then a first mode, made for the player's game by an AI assistant if they
+//! can. Every step can be skipped; it can be run again from the rail.
 
 use eframe::egui::{self, Margin, RichText, Vec2};
 
-use super::connection::{capture_methods, INTIFACE_DOWNLOAD};
+use super::gamepad::{capture_methods, rumble_check};
 use super::play::mode_tiles;
 use super::theme::*;
-use super::toys::waiting_for_toys;
-use super::{App, Page};
+use super::toys::{waiting_for_toys, INTIFACE_DOWNLOAD};
+use super::{gamepad_inputs, App, Page};
 use crate::engine::{Command, Shared, SourceHealth, TEST_LEVEL};
 
 const STEPS: [&str; 4] = ["Intiface Central", "Your toys", "Your gamepad", "Pick a mode"];
@@ -62,7 +62,7 @@ impl App {
 
     fn setup_footer(&mut self, ui: &mut egui::Ui, s: &Shared, step: usize) {
         if step == 0 {
-            if ui.button("Skip setup").on_hover_text("You can run it again from Connection").clicked() {
+            if ui.button("Skip setup").on_hover_text("You can run it again from Setup, at the bottom of the left bar").clicked() {
                 self.finish_setup();
             }
         } else if ui.button("Back").clicked() {
@@ -237,35 +237,64 @@ impl App {
                     }
                 }
             });
-            let level = s.history.back().map(|x| x.strong.max(x.weak)).unwrap_or(0.0);
-            ui.horizontal(|ui| {
-                ui.label(muted("Rumble check"));
-                meter(ui, 220.0, level, GAME);
-                match s.last_rumble {
-                    Some(_) => pill(ui, "✔ Rumble received", OK, RAISED),
-                    None => {
-                        ui.label(muted("start a game and get hit: the bar moves"));
-                    }
-                }
-            });
+            ui.add_space(6.0);
+            ui.horizontal_wrapped(|ui| gamepad_inputs(ui, s));
+            ui.add_space(2.0);
+            rumble_check(ui, s);
         });
         ui.add_space(8.0);
         if let Some(command) = capture_methods(ui, s) {
             self.send(command);
         }
-        ui.label(muted("You can switch any time in Connection."));
+        ui.add_space(4.0);
+        ui.label(muted("You can switch any time on the Gamepad page."));
     }
 
     fn setup_mode(&mut self, ui: &mut egui::Ui, s: &Shared) {
         title(ui, "What are you playing?");
-        ui.label(muted("Each mode turns the game's rumble into a different feeling. You can change it any time."));
+        ui.label(muted("A mode turns the game's rumble into feelings. The best ones are written for one game."));
         ui.add_space(12.0);
-        if let Some(id) = mode_tiles(ui, s, false) {
-            self.send(Command::SelectMode(id));
+        card(SELECTED_BG).stroke(egui::Stroke::new(2.0, ACCENT)).inner_margin(Margin::same(18)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("✨ A mode made for your game").size(18.0).strong());
+                pill(ui, "Recommended", ACCENT_TEXT, RAISED);
+            });
+            ui.label(
+                "An AI assistant (ChatGPT, Claude, Gemini...) writes a mode that knows your game's controls and \
+                 mechanics: a dodge, a parry, a combo or a boss fight each get their own feeling.",
+            );
+            ui.label(muted("GameViber prepares the request; you paste the answer back. It takes a minute."));
+            ui.add_space(8.0);
+            if ui.add(primary("  Make a mode for my game  ").min_size(Vec2::new(0.0, 38.0))).clicked() {
+                self.open_generator();
+            }
+        });
+        if s.modes.iter().any(|e| !e.builtin) {
+            ui.add_space(16.0);
+            eyebrow(ui, "Your modes");
+            if let Some(id) = mode_tiles(ui, s, true) {
+                self.send(Command::SelectMode(id));
+            }
         }
-        ui.add_space(12.0);
-        ui.label(muted("These modes suit a whole genre. Later, from the Play page, an AI assistant can make one \
-                        tailored to your game."));
+        ui.add_space(16.0);
+        let builtin_active = s.modes.iter().any(|e| e.builtin && e.id == s.mode.id);
+        egui::CollapsingHeader::new(RichText::new("Just want to try it out quickly? Use a generic mode").color(MUTED))
+            .id_salt("setup-builtin-modes")
+            .default_open(false)
+            .show(ui, |ui| {
+                ui.label(muted(
+                    "These modes suit a whole genre but know nothing about your game. Good for a first test; \
+                     make a mode for your game afterwards from the Play page.",
+                ));
+                ui.add_space(6.0);
+                if let Some(id) = mode_tiles(ui, s, false) {
+                    self.send(Command::SelectMode(id));
+                }
+            });
+        if builtin_active && !s.modes.iter().any(|e| !e.builtin) {
+            ui.label(muted(format!("Active for now: {}", s.mode.info.as_ref().map_or("none", |i| i.name.as_str()))).size(12.0));
+        }
     }
 }
 

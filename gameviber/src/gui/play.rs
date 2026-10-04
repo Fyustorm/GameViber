@@ -1,8 +1,10 @@
-//! Play page: mode tiles, and the active mode's explanation and settings.
+//! Play page: tiles of the player's modes (or the built-in ones), then a page
+//! for the chosen mode with its explanation and settings. It opens on the
+//! mode of the last session.
 
 use std::collections::BTreeMap;
 
-use eframe::egui::{self, Margin, RichText};
+use eframe::egui::{self, Margin, RichText, Vec2};
 
 use super::theme::*;
 use super::{mode_icon, App, Page};
@@ -13,76 +15,98 @@ use crate::mode::{ModeInfo, ParamDef, ParamKind, ParamValue};
 
 const TILE_MIN_WIDTH: f32 = 220.0;
 const TILE_HEIGHT: f32 = 104.0;
+/// Below this width the mode page shows its settings in a single column.
+const TWO_COLUMNS_WIDTH: f32 = 720.0;
 
 #[derive(Default)]
 pub struct State {
-    /// Shows the user's modes instead of the built-in ones.
-    user_modes: bool,
+    /// The list shows the built-in modes instead of the player's.
+    builtin: bool,
+    /// The list of modes is shown instead of the active mode's page.
+    list: bool,
     new_preset_name: String,
     /// Preset whose deletion waits for confirmation.
     confirm_delete: Option<String>,
 }
 
 impl State {
-    pub fn show_user_modes(&mut self) {
-        self.user_modes = true;
+    /// Shows the active mode's page.
+    pub fn show_mode(&mut self) {
+        self.list = false;
     }
 }
 
 impl App {
     pub(super) fn play_ui(&mut self, ui: &mut egui::Ui, s: &Shared) {
-        let frame = egui::Frame::new().fill(SIDEBAR).inner_margin(Margin::symmetric(20, 20));
-        egui::Panel::right("active-mode").frame(frame).exact_size(340.0).resizable(false).show(ui, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| self.mode_panel(ui, s));
-        });
         let frame = egui::Frame::new().fill(BG).inner_margin(Margin::symmetric(24, 20));
         egui::CentralPanel::default().frame(frame).show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.vertical(|ui| {
-                    heading(ui, "What are you playing?");
-                    ui.label(muted("Each mode turns the game's rumble into a different feeling."));
-                });
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.selectable_value(&mut self.play.user_modes, true, "My modes");
-                    ui.selectable_value(&mut self.play.user_modes, false, "Built-in");
-                });
+            if self.play.list || s.mode.id.is_empty() {
+                self.mode_list(ui, s);
+            } else {
+                egui::ScrollArea::vertical().show(ui, |ui| self.mode_page(ui, s));
+            }
+        });
+    }
+
+    fn mode_list(&mut self, ui: &mut egui::Ui, s: &Shared) {
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                heading(ui, "What are you playing?");
+                ui.label(muted("Pick a mode to see how it works and tune it."));
             });
-            ui.add_space(8.0);
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                self.generator_banner(ui);
-                ui.add_space(8.0);
-                if let Some(id) = mode_tiles(ui, s, self.play.user_modes) {
-                    self.send(Command::SelectMode(id));
-                }
-                if self.play.user_modes {
-                    ui.add_space(4.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.selectable_value(&mut self.play.builtin, true, "Built-in");
+                ui.selectable_value(&mut self.play.builtin, false, "My modes");
+            });
+        });
+        ui.add_space(8.0);
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            if self.play.builtin {
+                card(RAISED).inner_margin(Margin::same(12)).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
                     ui.horizontal(|ui| {
-                        if ui.button("✨ Make one with an AI").clicked() {
+                        ui.label(muted(
+                            "Built-in modes suit a whole genre but know nothing about your game: use them to try \
+                             GameViber quickly.",
+                        ));
+                        if ui.link("Make one for your game instead").clicked() {
                             self.open_generator();
                         }
-                        if ui.button("➕ New mode").clicked() {
-                            self.create_mode("my-mode", &NEW_MODE_TEMPLATE.replace("NAME", "My mode"));
-                        }
-                        if ui.button("Duplicate the active mode").clicked() {
-                            self.duplicate_mode(&s.mode.id);
-                        }
-                        ui.label(muted("Modes are small Lua scripts, edited in Creator."));
                     });
+                });
+                ui.add_space(8.0);
+            } else {
+                self.generator_banner(ui);
+                ui.add_space(8.0);
+            }
+            if let Some(id) = mode_tiles(ui, s, !self.play.builtin) {
+                if id != s.mode.id {
+                    self.send(Command::SelectMode(id));
                 }
-            });
+                self.play.list = false;
+            }
+            if !self.play.builtin {
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    if ui.button("➕ New mode").clicked() {
+                        self.create_mode("my-mode", &NEW_MODE_TEMPLATE.replace("NAME", "My mode"));
+                    }
+                    ui.label(muted("Modes are small Lua scripts, edited in Creator."));
+                });
+            }
         });
     }
 
     /// Puts per-game modes forward: the built-in ones are fallbacks.
     fn generator_banner(&mut self, ui: &mut egui::Ui) {
-        card(RAISED).inner_margin(Margin::same(14)).show(ui, |ui| {
+        card(SELECTED_BG).stroke(egui::Stroke::new(1.0, ACCENT)).inner_margin(Margin::same(14)).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
                 ui.vertical(|ui| {
                     ui.label(RichText::new("✨ Get a mode made for your game").size(15.0).strong());
                     ui.label(muted(
-                        "Built-in modes suit a whole genre. An AI assistant (ChatGPT, Claude...) can write one \
-                         tailored to your game's controls and mechanics in a minute.",
+                        "An AI assistant (ChatGPT, Claude...) writes one tailored to your game's controls and \
+                         mechanics in a minute.",
                     ));
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -94,28 +118,56 @@ impl App {
         });
     }
 
-    fn mode_panel(&mut self, ui: &mut egui::Ui, s: &Shared) {
+    /// The active mode: what it does, its presets and settings, what to do when it feels wrong.
+    fn mode_page(&mut self, ui: &mut egui::Ui, s: &Shared) {
         let mode = &s.mode;
         let entry = s.modes.iter().find(|e| e.id == mode.id);
-        let Some(info) = &mode.info else {
-            heading(ui, "No mode loaded");
-            if let Some(error) = &mode.error {
-                ui.label(RichText::new(error).color(DANGER_TEXT).monospace());
-            }
-            return;
-        };
         ui.horizontal(|ui| {
+            if ui.button("⏴ All modes").clicked() {
+                self.play.list = true;
+                self.play.builtin = entry.is_some_and(|e| e.builtin);
+            }
+            ui.add_space(8.0);
             let icon = entry.map(mode_icon).unwrap_or("🎮");
             egui::Frame::new().fill(RAISED).corner_radius(9).inner_margin(Margin::same(8)).show(ui, |ui| {
                 ui.label(RichText::new(icon).size(18.0).color(ACCENT));
             });
             ui.vertical(|ui| {
-                ui.label(RichText::new(&info.name).size(18.0).strong());
-                if !info.category.is_empty() {
-                    ui.label(muted(&info.category));
+                let name = mode.info.as_ref().map_or(entry.map_or("", |e| e.key.as_str()), |i| i.name.as_str());
+                ui.label(RichText::new(name).size(20.0).strong());
+                let mut sub = mode.info.as_ref().map(|i| i.category.clone()).unwrap_or_default();
+                if let Some(info) = mode.info.as_ref().filter(|i| !i.author.is_empty() || !i.version.is_empty()) {
+                    let by = format!("by {} {}", info.author, info.version);
+                    sub = if sub.is_empty() { by.trim().to_owned() } else { format!("{sub} · {}", by.trim()) };
+                }
+                if !sub.is_empty() {
+                    ui.label(muted(sub));
+                }
+            });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if entry.is_some_and(|e| e.builtin) {
+                    if ui.button("Duplicate and edit").on_hover_text("Copy this mode to change how it works").clicked() {
+                        self.duplicate_mode(&mode.id);
+                    }
+                } else {
+                    if ui.button("Edit in Creator").clicked() {
+                        self.page = Page::Creator;
+                    }
+                    if ui.button("Duplicate").clicked() {
+                        self.duplicate_mode(&mode.id);
+                    }
+                }
+                if mode.info.is_some()
+                    && ui
+                        .add(primary("Doesn't feel right?"))
+                        .on_hover_text("Get the mode fixed by an AI assistant, from what you felt and a recorded session")
+                        .clicked()
+                {
+                    self.open_feedback(s);
                 }
             });
         });
+        ui.add_space(12.0);
         if let Some(error) = &mode.error {
             card(PANEL).stroke(egui::Stroke::new(1.0, DANGER)).show(ui, |ui| {
                 ui.set_width(ui.available_width());
@@ -124,56 +176,72 @@ impl App {
                     self.send(Command::Resume);
                 }
             });
+            ui.add_space(8.0);
         }
-        let help = if info.help.is_empty() { &info.description } else { &info.help };
-        if !help.is_empty() {
-            card(RAISED).inner_margin(Margin::same(12)).show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                eyebrow(ui, "How it works");
-                ui.label(help);
-            });
-        }
-        ui.add_space(4.0);
-        self.preset_picker(ui, info, mode);
-        ui.add_space(4.0);
+        let Some(info) = &mode.info else {
+            ui.label(muted("This mode does not load. Fix it in Creator, or pick another one."));
+            return;
+        };
 
         let (main, others): (Vec<&ParamDef>, Vec<&ParamDef>) = if info.main_params.is_empty() {
             (info.params.iter().collect(), Vec::new())
         } else {
             info.params.iter().partition(|def| info.main_params.contains(&def.name))
         };
-        for def in main {
-            self.param(ui, def, mode);
-        }
-        ui.add_space(6.0);
-        let title = if others.is_empty() { "Presets".to_owned() } else { format!("All settings ({})", info.params.len()) };
-        egui::CollapsingHeader::new(title).id_salt(("all-settings", &mode.id)).show(ui, |ui| {
-            for def in others {
-                self.param(ui, def, mode);
+        let help = if info.help.is_empty() { &info.description } else { &info.help };
+        let left = |app: &mut Self, ui: &mut egui::Ui| {
+            if !help.is_empty() {
+                card(RAISED).inner_margin(Margin::same(14)).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    eyebrow(ui, "How it works");
+                    ui.label(help);
+                });
+                ui.add_space(12.0);
             }
-            ui.add_space(6.0);
-            self.preset_management(ui, mode);
-        });
-        ui.add_space(6.0);
-        if !info.author.is_empty() || !info.version.is_empty() {
-            ui.label(muted(format!("by {} {}", info.author, info.version).trim().to_owned()).size(11.5));
-        }
-        ui.horizontal(|ui| {
-            if ui
-                .button("😕 Doesn't feel right?")
-                .on_hover_text("Get the mode fixed by an AI assistant, from what you felt and a recorded session")
-                .clicked()
-            {
-                self.open_feedback(s);
-            }
-            if entry.is_some_and(|e| e.builtin) {
-                if ui.button("Duplicate and edit").on_hover_text("Copy this mode to change how it works").clicked() {
-                    self.duplicate_mode(&mode.id);
+            card(PANEL).inner_margin(Margin::same(14)).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                app.preset_picker(ui, info, mode);
+                ui.add_space(6.0);
+                for def in &main {
+                    app.param(ui, def, mode);
                 }
-            } else if ui.button("Edit in Creator").clicked() {
-                self.page = Page::Creator;
-            }
-        });
+            });
+        };
+        let right = |app: &mut Self, ui: &mut egui::Ui| {
+            card(PANEL).inner_margin(Margin::same(14)).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                if !others.is_empty() {
+                    eyebrow(ui, &format!("More settings ({})", others.len()));
+                    ui.add_space(4.0);
+                    for def in &others {
+                        app.param(ui, def, mode);
+                    }
+                    ui.add_space(8.0);
+                }
+                eyebrow(ui, "Presets");
+                app.preset_management(ui, mode);
+            });
+        };
+        if ui.available_width() >= TWO_COLUMNS_WIDTH {
+            let gap = 16.0;
+            let width = (ui.available_width() - gap) / 2.0;
+            ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing.x = gap;
+                let layout = egui::Layout::top_down(egui::Align::Min);
+                ui.allocate_ui_with_layout(Vec2::new(width, 0.0), layout, |ui| {
+                    ui.set_width(width);
+                    left(self, ui);
+                });
+                ui.allocate_ui_with_layout(Vec2::new(width, 0.0), layout, |ui| {
+                    ui.set_width(width);
+                    right(self, ui);
+                });
+            });
+        } else {
+            left(self, ui);
+            ui.add_space(12.0);
+            right(self, ui);
+        }
     }
 
     fn param(&self, ui: &mut egui::Ui, def: &ParamDef, mode: &ModeView) {

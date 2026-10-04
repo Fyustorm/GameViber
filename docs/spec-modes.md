@@ -342,7 +342,7 @@ resolution is therefore 20 ms.
 - **Global intensity cap**, adjustable in the GUI: default 1.0, applied last, after the
   per-toy response.
 - **Panic button**: BACK + START held for 0.5 s. The combo is configurable on the
-  Connection page (any 2 or more buttons of §6.2).
+  Keybindings page (any 2 or more buttons of §6.2).
   - It stops all toys and suspends the mode until it is re-enabled from the GUI.
   - v1: the combo's presses are still forwarded to the callbacks.
 - **Source loss**: if the gamepad is disconnected or the capture stops, all outputs go to

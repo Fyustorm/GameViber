@@ -1,12 +1,21 @@
-//! Toys page: what Intiface Central found, a test buzz, and which output
-//! channel of the active mode each toy plays.
+//! Toys page: the connection to Intiface Central, what it found, a test buzz,
+//! which output channel of the active mode each toy plays, and per-toy
+//! intensity settings.
 
 use eframe::egui::{self, Margin, RichText, Vec2};
 
 use super::theme::*;
-use super::{App, Page};
+use super::{intiface_status, App};
 use crate::config::ToySettings;
 use crate::engine::{Command, Shared, TEST_LEVEL};
+
+pub const INTIFACE_DOWNLOAD: &str = "https://intiface.com/central/";
+
+#[derive(Default)]
+pub struct State {
+    /// Intiface address being edited (None: show the saved one).
+    url: Option<String>,
+}
 
 impl App {
     pub(super) fn toys_ui(&mut self, ui: &mut egui::Ui, s: &Shared) {
@@ -18,20 +27,9 @@ impl App {
                     "Found by Intiface Central. Turn a toy on and press Start Scanning in Intiface to add it.",
                 ));
                 ui.add_space(8.0);
+                self.intiface_card(ui, s);
+                ui.add_space(8.0);
                 if !s.intiface.connected {
-                    card(PANEL).show(ui, |ui| {
-                        ui.set_width(ui.available_width());
-                        ui.horizontal(|ui| {
-                            dot(ui, WARN);
-                            ui.label(RichText::new("Intiface Central is not running").strong());
-                        });
-                        ui.label(muted(
-                            "GameViber reaches your toys through Intiface Central. Open it and press its Start button.",
-                        ));
-                        if ui.button("Connection settings").clicked() {
-                            self.page = Page::Connection;
-                        }
-                    });
                     return;
                 }
                 if s.intiface.toys.is_empty() {
@@ -71,6 +69,51 @@ impl App {
                 }
             });
         });
+    }
+
+    /// Connection to Intiface Central: its state, how to get it running, its address.
+    fn intiface_card(&mut self, ui: &mut egui::Ui, s: &Shared) {
+        card(PANEL).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            let (color, text) = intiface_status(s);
+            ui.horizontal(|ui| {
+                dot(ui, color);
+                ui.label(RichText::new("🔌 Intiface Central").strong());
+                ui.label(text);
+            });
+            if s.intiface_enabled && !s.intiface.connected {
+                ui.label(muted(
+                    "GameViber reaches your toys through Intiface Central, a free app: open it and press its \
+                     Start button. GameViber connects on its own.",
+                ));
+                ui.hyperlink_to("Get Intiface Central ↗", INTIFACE_DOWNLOAD);
+            }
+            egui::CollapsingHeader::new("Server address").id_salt("intiface-address").show(ui, |ui| {
+                self.intiface_address(ui, s);
+                if let Some(e) = &s.intiface.error {
+                    ui.label(RichText::new(e).monospace().size(12.0).color(MUTED));
+                }
+            });
+        });
+    }
+
+    /// Server address editor (Intiface on another machine or port).
+    pub(super) fn intiface_address(&mut self, ui: &mut egui::Ui, s: &Shared) {
+        ui.horizontal(|ui| {
+            ui.label("Server address");
+            let url = self.toys.url.get_or_insert_with(|| s.settings.url.clone());
+            ui.add(egui::TextEdit::singleline(url).desired_width(260.0).font(egui::TextStyle::Monospace));
+            let changed = *url != s.settings.url;
+            if ui.add_enabled(changed, egui::Button::new("Apply")).clicked() {
+                let url = url.clone();
+                self.send(Command::SetUrl(url));
+            }
+            if !changed {
+                // Follow the saved value until the user edits it.
+                self.toys.url = None;
+            }
+        });
+        ui.label(muted("Intiface Central shows it on its main screen. The default is ws://127.0.0.1:12345.").size(12.0));
     }
 
     fn toy_card(&self, ui: &mut egui::Ui, s: &Shared, name: &str, channels: &[String]) {

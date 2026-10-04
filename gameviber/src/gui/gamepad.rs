@@ -1,32 +1,24 @@
-//! Connection page: gamepad, rumble capture and Intiface status, the capture
-//! method in plain words, and help when the rumble is not detected.
+//! Gamepad page: the gamepad and rumble capture status, the inputs received
+//! right now, the capture method in plain words, and help when the rumble is
+//! not detected.
 
 use eframe::egui::{self, Margin, RichText};
 
 use super::theme::*;
-use super::{capture_status, gamepad_status, intiface_status, App, RECENT_RUMBLE_SECS};
+use super::{capture_status, gamepad_inputs, gamepad_status, App, RECENT_RUMBLE_SECS};
 use crate::config::SourceChoice;
-use crate::engine::{Command, Shared, SourceHealth, RECENT_SECS};
-use crate::gamepad::{combo_text, parse_combo, BUTTONS, PANIC_COMBO_MIN};
-
-pub const INTIFACE_DOWNLOAD: &str = "https://intiface.com/central/";
-
-#[derive(Default)]
-pub struct State {
-    /// Intiface address being edited (None: show the saved one).
-    url: Option<String>,
-}
+use crate::engine::{Command, Shared, SourceHealth};
 
 impl App {
-    pub(super) fn connection_ui(&mut self, ui: &mut egui::Ui, s: &Shared) {
+    pub(super) fn gamepad_ui(&mut self, ui: &mut egui::Ui, s: &Shared) {
         let frame = egui::Frame::new().fill(BG).inner_margin(Margin::symmetric(24, 20));
         egui::CentralPanel::default().frame(frame).show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
-                heading(ui, "Connection");
-                ui.add_space(4.0);
+                heading(ui, "Gamepad");
+                ui.label(muted("GameViber listens to the vibration your games send to the gamepad."));
+                ui.add_space(8.0);
                 let (pad_color, pad_text) = gamepad_status(s);
                 let (rumble_color, rumble_text) = capture_status(s);
-                let (toy_color, toy_text) = intiface_status(s);
                 let last = match s.last_rumble {
                     Some(t) => format!("Last rumble {:.0} s ago", s.time - t),
                     None => "No rumble received yet".to_owned(),
@@ -34,9 +26,8 @@ impl App {
                 let cards = [
                     ("🎮 Gamepad", pad_color, pad_text, if s.buttons_seen { "Buttons received" } else { "Press a button to check" }.to_owned()),
                     ("📳 Rumble capture", rumble_color, rumble_text, last),
-                    ("🔌 Intiface Central", toy_color, toy_text, s.settings.url.clone()),
                 ];
-                tile_grid(ui, cards.len(), 220.0, 96.0, |ui, i, size| {
+                tile_grid(ui, cards.len(), 260.0, 96.0, |ui, i, size| {
                     let (title, color, state, detail) = &cards[i];
                     card(PANEL).show(ui, |ui| {
                         ui.set_width(size.x - 32.0);
@@ -48,6 +39,12 @@ impl App {
                         ui.label(state);
                         ui.label(muted(detail).size(12.0));
                     });
+                });
+                card(PANEL).inner_margin(Margin::symmetric(16, 12)).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    eyebrow(ui, "Received right now");
+                    ui.horizontal_wrapped(|ui| gamepad_inputs(ui, s));
+                    rumble_check(ui, s);
                 });
                 if let SourceHealth::Failed(e) = &s.source_health {
                     card(PANEL).stroke(egui::Stroke::new(1.0, DANGER)).show(ui, |ui| {
@@ -79,102 +76,30 @@ impl App {
                          few hits? Switch to the other method, then restart the game. With the standard method, \
                          start GameViber before the game.",
                     ));
-                    let recent = s.last_rumble.is_some_and(|t| s.time - t < RECENT_RUMBLE_SECS);
-                    let level = s.history.back().map(|x| x.strong.max(x.weak)).unwrap_or(0.0);
-                    ui.horizontal(|ui| {
-                        ui.label(if recent { "Game rumble now" } else { "Game rumble" });
-                        meter(ui, 240.0, level, GAME);
-                    });
-                });
-
-                ui.add_space(12.0);
-                ui.label(RichText::new("Intiface Central").strong().size(15.0));
-                self.intiface_address(ui, s);
-                ui.add_space(12.0);
-                ui.label(RichText::new("Panic stop").strong().size(15.0));
-                let (panic, mark) = (&s.settings.panic_combo, &s.settings.mark_combo);
-                let text = format!(
-                    "Hold {} on the gamepad for half a second to stop every toy. Pick buttons the game does not \
-                     use together, at least {PANIC_COMBO_MIN}.",
-                    combo_text(panic)
-                );
-                if let Some(combo) = combo_picker(ui, &text, panic, mark) {
-                    self.send(Command::SetPanicCombo(combo));
-                }
-                ui.add_space(12.0);
-                ui.label(RichText::new("Mark a moment").strong().size(15.0));
-                let text = format!(
-                    "Something felt wrong? Hold {} for a moment: GameViber notes when, and saves the last \
-                     {:.0} minutes a few seconds later, to fix the mode from \"Doesn't feel right?\".",
-                    combo_text(mark),
-                    RECENT_SECS / 60.0
-                );
-                if let Some(combo) = combo_picker(ui, &text, mark, panic) {
-                    self.send(Command::SetMarkCombo(combo));
-                }
-                ui.add_space(12.0);
-                ui.horizontal(|ui| {
-                    if ui.button("Run the setup guide again").clicked() {
-                        self.onboarding = Some(0);
-                    }
                 });
                 ui.add_space(8.0);
                 egui::CollapsingHeader::new("Technical details").show(ui, |ui| {
                     ui.label(RichText::new(&s.source).monospace().size(12.0));
-                    if let Some(e) = &s.intiface.error {
-                        ui.label(RichText::new(format!("intiface: {e}")).monospace().size(12.0));
-                    }
                 });
             });
         });
     }
-
-    /// Server address editor (Intiface on another machine or port).
-    pub(super) fn intiface_address(&mut self, ui: &mut egui::Ui, s: &Shared) {
-        ui.horizontal(|ui| {
-            ui.label("Server address");
-            let url = self.connection.url.get_or_insert_with(|| s.settings.url.clone());
-            ui.add(egui::TextEdit::singleline(url).desired_width(260.0).font(egui::TextStyle::Monospace));
-            let changed = *url != s.settings.url;
-            if ui.add_enabled(changed, egui::Button::new("Apply")).clicked() {
-                let url = url.clone();
-                self.send(Command::SetUrl(url));
-            }
-            if !changed {
-                // Follow the saved value until the user edits it.
-                self.connection.url = None;
-            }
-        });
-        ui.label(muted("Intiface Central shows it on its main screen. The default is ws://127.0.0.1:12345.").size(12.0));
-    }
 }
 
-/// Picker of the buttons of a combo, which must differ from `other`; returns the new combo.
-fn combo_picker(ui: &mut egui::Ui, text: &str, combo: &[String], other: &[String]) -> Option<Vec<String>> {
-    let mut picked = None;
-    ui.label(muted(text));
-    let same = |a: &[String]| parse_combo(a).is_some() && parse_combo(a) == parse_combo(other);
-    ui.horizontal_wrapped(|ui| {
-        for button in BUTTONS {
-            let on = combo.iter().any(|b| b == button);
-            let mut new: Vec<String> = combo.iter().filter(|b| *b != button).cloned().collect();
-            if !on {
-                new.push(button.to_owned());
-            }
-            let (allowed, why) = if new.len() < PANIC_COMBO_MIN {
-                (false, format!("A combo needs at least {PANIC_COMBO_MIN} buttons"))
-            } else if same(&new) {
-                (false, "The panic stop and the mark need different combos".to_owned())
-            } else {
-                (true, String::new())
-            };
-            let response = ui.add_enabled(allowed, egui::Button::selectable(on, button)).on_disabled_hover_text(why);
-            if response.clicked() {
-                picked = Some(new);
+/// Level of the game's rumble right now, with a hint until some arrived.
+pub(super) fn rumble_check(ui: &mut egui::Ui, s: &Shared) {
+    let level = s.history.back().map(|x| x.strong.max(x.weak)).unwrap_or(0.0);
+    let recent = s.last_rumble.is_some_and(|t| s.time - t < RECENT_RUMBLE_SECS);
+    ui.horizontal(|ui| {
+        ui.label(muted(if recent { "Game rumble now" } else { "Game rumble" }));
+        meter(ui, 220.0, level, GAME);
+        match s.last_rumble {
+            Some(_) => pill(ui, "✔ Rumble received", OK, RAISED),
+            None => {
+                ui.label(muted("start a game and get hit: the bar moves"));
             }
         }
     });
-    picked
 }
 
 /// The two capture methods as tiles with their pros and cons; returns the
@@ -188,19 +113,19 @@ pub(super) fn capture_methods(ui: &mut egui::Ui, s: &Shared) -> Option<Command> 
             "Standard",
             "Recommended",
             "GameViber shows games a virtual copy of your gamepad and listens to what they send it.",
-            &["Works with nearly every game", "No password needed", "Your gamepad can still vibrate too"][..],
-            &["Start GameViber before the game", "Games may see two controllers: hide the real one below (asks for your password)"][..],
+            &["Works with nearly every game", "No root access needed", "Your gamepad can still vibrate too"][..],
+            &["Start GameViber before the game", "Games may see two controllers: hide the real one below"][..],
         ),
         (
             SourceChoice::Ebpf,
             "Kernel probe",
-            "🔒 Password",
+            "🔒 Root",
             "Games keep using your real gamepad; GameViber quietly listens in the background.",
             &["No second controller in games", "Can be turned on while a game is running", "Helps when a game ignores the virtual gamepad"][..],
-            &["Asks for your password once per session", "Needs a recent Linux kernel"][..],
+            &["Needs root access: Linux asks for your password once per session", "Needs a recent Linux kernel"][..],
         ),
     ];
-    tile_grid(ui, methods.len(), 300.0, 220.0, |ui, i, size| {
+    tile_grid(ui, methods.len(), 300.0, 240.0, |ui, i, size| {
         let (choice, name, badge, summary, pros, cons) = methods[i];
         let selected = source == choice;
         let frame = card(if selected { SELECTED_BG } else { PANEL })
@@ -211,7 +136,7 @@ pub(super) fn capture_methods(ui: &mut egui::Ui, s: &Shared) -> Option<Command> 
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::top_down(egui::Align::Min)));
         frame.show(&mut child, |ui| {
             ui.set_width(size.x - 32.0);
-                            ui.set_min_height(size.y - 32.0);
+            ui.set_min_height(size.y - 32.0);
             let mut picked = false;
             ui.horizontal(|ui| {
                 picked = ui.radio(selected, RichText::new(name).strong().size(15.0)).clicked();
@@ -226,8 +151,8 @@ pub(super) fn capture_methods(ui: &mut egui::Ui, s: &Shared) -> Option<Command> 
             }
             if choice == SourceChoice::Proxy && selected {
                 let mut new_hide = hide;
-                ui.checkbox(&mut new_hide, "Hide the real gamepad from games 🔒")
-                    .on_hover_text("Games only see the virtual copy (asks for your password)");
+                ui.checkbox(&mut new_hide, "Hide the real gamepad from games 🔒 root")
+                    .on_hover_text("Games only see the virtual copy. Needs root access: Linux asks for your password");
                 if new_hide != hide {
                     command = Some(Command::SetSource { source, hide: new_hide });
                 }

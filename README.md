@@ -14,24 +14,28 @@ Start Intiface Central ("Start Server"), then, **before the game**:
 ```
 
 Do not run GameViber with `sudo`: the eBPF source and gamepad hiding go
-through a **privileged helper** started on demand via `pkexec` (one password
-prompt per session).
+through a **privileged helper** started on demand via `pkexec` (root access,
+granted with your password once per session).
 
 At first launch, a setup guide walks through Intiface Central, the toys, the
-gamepad (with the choice of capture method) and a first mode. It can be run
-again from the Connection page. Then the GUI provides:
+gamepad (with the choice of capture method and its live buttons) and a first
+mode, preferably one made for your game by an AI assistant. It can be run
+again from **Setup** at the bottom of the left bar. Then the GUI provides:
 
 - a status bar with the gamepad / rumble capture / Intiface state, the global
   maximum intensity and **STOP ALL** (also: BACK + START held for 0.5 s on the
-  gamepad, configurable on the Connection page);
-- **Play**: the modes as tiles, and the active mode's explanation, its main
-  settings, all its settings and named **presets** (e.g. one per game);
-- **Toys**: the toys Intiface found, a test buzz, which mode channels each
-  one plays, and how it renders them: weakest and strongest intensity and a
-  response curve, with buttons to feel each;
-- **Connection**: status, capture method (standard proxy or kernel probe) with
-  their pros and cons, gamepad hiding, Intiface address, panic combo,
-  troubleshooting;
+  gamepad, configurable on the Keybindings page);
+- **Play**: your modes (or the built-in ones) as tiles, then a page for the
+  chosen mode with its explanation, its main settings, all its settings and
+  named **presets** (e.g. one per game). It opens on the last session's mode;
+- **Toys**: the connection to Intiface Central (status, address), the toys it
+  found, a test buzz, which mode channels each one plays, and how it renders
+  them: weakest and strongest intensity and a response curve, with buttons to
+  feel each;
+- **Gamepad**: gamepad and rumble capture status, the buttons and sticks
+  received right now, the capture method (standard proxy or kernel probe, which
+  needs root) with their pros and cons, gamepad hiding, troubleshooting;
+- **Keybindings**: the panic stop and mark-a-moment gamepad combos;
 - **Creator**: mode editing with hot reload (Ctrl+S), graphs of the rumble,
   outputs and `plot()` values, a simulator (fake rumble and buttons), recorded
   play **sessions** (the game's rumble and your inputs, replayed into a freshly
@@ -62,7 +66,7 @@ taken", declared with `ask()`, or generic ones). Many answers come with a
 recorded session (or save the last 2 minutes of play, which GameViber always
 keeps in memory) and copy the request.
 
-While playing, hold **BACK + RS** (configurable on the Connection page) to
+While playing, hold **BACK + RS** (configurable on the Keybindings page) to
 **mark a moment** that felt wrong: the overlay confirms, and the last 2
 minutes are saved 15 s later with the marks, which the request points out. GameViber replays the session into the mode with your settings, so the
 assistant sees when the game vibrated, what you pressed and what the mode

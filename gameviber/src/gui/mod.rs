@@ -1,14 +1,17 @@
 //! egui front end. A first-launch setup guides players through Intiface
 //! Central, their toys, the gamepad and a first mode; afterwards a status bar
-//! (with the panic stop) sits above four pages: Play (mode tiles and their
-//! settings), Toys, Connection (troubleshooting), Overlay (in-game overlay)
-//! and Creator (mode editor, graphs, simulator, sessions, logs). Dialogs help players get a mode
-//! made for their game by an AI assistant, and get one fixed when it does not feel right.
+//! (with the panic stop) sits above the pages: Play (mode tiles, then the
+//! chosen mode's page with its settings), Toys (with Intiface Central),
+//! Gamepad (capture and troubleshooting), Keybindings (gamepad combos),
+//! Overlay (in-game overlay) and Creator (mode editor, graphs, simulator,
+//! sessions, logs). Dialogs help players get a mode made for their game by an
+//! AI assistant, and get one fixed when it does not feel right.
 
-mod connection;
 mod creator;
 mod feedback;
+mod gamepad;
 mod generator;
+mod keybindings;
 mod luau;
 mod onboarding;
 mod overlay;
@@ -35,7 +38,8 @@ const RECENT_RUMBLE_SECS: f64 = 5.0;
 enum Page {
     Play,
     Toys,
-    Connection,
+    Gamepad,
+    Keybindings,
     Overlay,
     Creator,
 }
@@ -51,7 +55,7 @@ pub struct App {
     /// The setup was considered for this session (shown at most once automatically).
     onboarding_checked: bool,
     play: play::State,
-    connection: connection::State,
+    toys: toys::State,
     overlay: overlay::State,
     creator: creator::State,
     generator: generator::State,
@@ -76,7 +80,7 @@ impl App {
             onboarding: None,
             onboarding_checked: false,
             play: play::State::default(),
-            connection: connection::State::default(),
+            toys: toys::State::default(),
             overlay: overlay::State::default(),
             creator: creator::State::default(),
             generator: generator::State::default(),
@@ -141,6 +145,7 @@ impl eframe::App for App {
         }
         if let Some(step) = self.onboarding {
             self.onboarding_ui(ui, &s, step);
+            self.generator_ui(ui.ctx());
             return;
         }
 
@@ -155,7 +160,8 @@ impl eframe::App for App {
         match self.page {
             Page::Play => self.play_ui(ui, &s),
             Page::Toys => self.toys_ui(ui, &s),
-            Page::Connection => self.connection_ui(ui, &s),
+            Page::Gamepad => self.gamepad_ui(ui, &s),
+            Page::Keybindings => self.keybindings_ui(ui, &s),
             Page::Overlay => self.overlay_ui(ui, &s),
             Page::Creator => self.creator_ui(ui, &s),
         }
@@ -182,11 +188,11 @@ impl App {
                 ui.add_space(8.0);
                 let (pad_color, pad_text) = gamepad_status(s);
                 if status_chip(ui, pad_color, "🎮", &pad_text).clicked() {
-                    self.page = Page::Connection;
+                    self.page = Page::Gamepad;
                 }
                 let (rumble_color, rumble_text) = capture_status(s);
                 if status_chip(ui, rumble_color, "📳", &rumble_text).clicked() {
-                    self.page = Page::Connection;
+                    self.page = Page::Gamepad;
                 }
                 let (toy_color, toy_text) = intiface_status(s);
                 if status_chip(ui, toy_color, "🔌", &toy_text).clicked() {
@@ -242,7 +248,8 @@ impl App {
                 for (page, icon, label) in [
                     (Page::Play, "▶", "Play"),
                     (Page::Toys, "📳", "Toys"),
-                    (Page::Connection, "🔌", "Connection"),
+                    (Page::Gamepad, "🎮", "Gamepad"),
+                    (Page::Keybindings, "⌨", "Keybindings"),
                     (Page::Overlay, "🖵", "Overlay"),
                     (Page::Creator, "🔧", "Creator"),
                 ] {
@@ -254,6 +261,11 @@ impl App {
                         self.page = page;
                     }
                 }
+                ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
+                    if nav_item(ui, "⚙", "Setup", false).on_hover_text("Run the setup guide again").clicked() {
+                        self.onboarding = Some(0);
+                    }
+                });
             });
         });
     }
@@ -332,9 +344,21 @@ fn live_strip(ui: &mut egui::Ui, s: &Shared) {
     });
 }
 
-/// Band showing the buttons, triggers and sticks the gamepad sends right now,
-/// so players can check their gamepad reaches GameViber.
+/// Band showing the buttons, triggers and sticks the gamepad sends right now.
 fn gamepad_strip(ui: &mut egui::Ui, s: &Shared) {
+    let frame = egui::Frame::new().fill(SIDEBAR).stroke(egui::Stroke::new(1.0, LINE)).inner_margin(Margin::symmetric(20, 8));
+    egui::Panel::bottom("gamepad").frame(frame).exact_size(42.0).resizable(false).show(ui, |ui| {
+        ui.horizontal_centered(|ui| {
+            eyebrow(ui, "Gamepad");
+            ui.add_space(8.0);
+            gamepad_inputs(ui, s);
+        });
+    });
+}
+
+/// The buttons, triggers and sticks the gamepad sends right now, so players
+/// can check their gamepad reaches GameViber.
+fn gamepad_inputs(ui: &mut egui::Ui, s: &Shared) {
     const LABELS: [(&str, &str); 15] = [
         ("A", "A"), ("B", "B"), ("X", "X"), ("Y", "Y"), ("LB", "LB"), ("RB", "RB"), ("LS", "LS"), ("RS", "RS"),
         ("BACK", "Back"), ("START", "Start"), ("GUIDE", "Guide"),
@@ -342,29 +366,22 @@ fn gamepad_strip(ui: &mut egui::Ui, s: &Shared) {
     ];
     let axis = |name: &str| s.axes.get(name).copied().unwrap_or(0.0);
     let held = |name: &str| s.held.contains(&name);
-    let frame = egui::Frame::new().fill(SIDEBAR).stroke(egui::Stroke::new(1.0, LINE)).inner_margin(Margin::symmetric(20, 8));
-    egui::Panel::bottom("gamepad").frame(frame).exact_size(42.0).resizable(false).show(ui, |ui| {
-        ui.horizontal_centered(|ui| {
-            ui.spacing_mut().item_spacing.x = 4.0;
-            eyebrow(ui, "Gamepad");
-            ui.add_space(8.0);
-            // Triggers show their travel; the half-way button press lights them fully.
-            for name in ["LT", "RT"] {
-                pad_chip(ui, name, if held(name) { 1.0 } else { axis(name) });
-            }
-            ui.add_space(4.0);
-            for (name, label) in LABELS {
-                pad_chip(ui, label, if held(name) { 1.0 } else { 0.0 });
-            }
-            ui.add_space(4.0);
-            stick(ui, "Left stick", axis("LX"), axis("LY"));
-            stick(ui, "Right stick", axis("RX"), axis("RY"));
-            ui.add_space(8.0);
-            if !s.buttons_seen {
-                ui.label(muted("Press a button: it lights up when GameViber receives it.").size(11.5));
-            }
-        });
-    });
+    ui.spacing_mut().item_spacing.x = 4.0;
+    // Triggers show their travel; the half-way button press lights them fully.
+    for name in ["LT", "RT"] {
+        pad_chip(ui, name, if held(name) { 1.0 } else { axis(name) });
+    }
+    ui.add_space(4.0);
+    for (name, label) in LABELS {
+        pad_chip(ui, label, if held(name) { 1.0 } else { 0.0 });
+    }
+    ui.add_space(4.0);
+    stick(ui, "Left stick", axis("LX"), axis("LY"));
+    stick(ui, "Right stick", axis("RX"), axis("RY"));
+    ui.add_space(8.0);
+    if !s.buttons_seen {
+        ui.label(muted("Press a button: it lights up when GameViber receives it.").size(11.5));
+    }
 }
 
 fn gamepad_status(s: &Shared) -> (egui::Color32, String) {
