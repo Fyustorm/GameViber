@@ -57,6 +57,12 @@ fn source_picker(ui: &mut egui::Ui, s: &Shared) -> Option<Command> {
             "Automatic",
             "The game showing the in-game overlay, or else everything the computer plays",
         );
+        pick(
+            ui,
+            AudioSource::Everything,
+            "Everything the computer plays",
+            "Every sound, the game's and any other (music, voice chat...)",
+        );
         let mut apps = audio.status.streams.clone();
         if let AudioSource::App(name) = current {
             if !apps.contains(name) {
@@ -73,13 +79,19 @@ fn source_picker(ui: &mut egui::Ui, s: &Shared) -> Option<Command> {
             (Some(target), _, None) => (OK, format!("Listening to {target}")),
             (None, AudioSource::Off, None) => (IDLE, "Off".to_owned()),
             (None, AudioSource::App(app), None) => (WARN, format!("Waiting for {app} to play sound")),
-            (None, AudioSource::Auto, None) => (WARN, "Starting...".to_owned()),
+            (None, AudioSource::Auto | AudioSource::Everything, None) => (WARN, "Starting...".to_owned()),
         };
         ui.horizontal(|ui| {
             dot(ui, color);
             ui.label(text);
         });
-        if *current == AudioSource::Auto && audio.status.target.as_deref().is_some_and(|t| t.starts_with("everything")) {
+        let silent = audio.levels.is_some_and(|l| l.level == 0.0 && l.intensity < 0.01);
+        if matches!(current, AudioSource::App(_)) && audio.status.target.is_some() && silent {
+            ui.label(muted(
+                "Nothing heard from it yet. If the game is playing sound, pick \"Everything the computer plays\".",
+            ));
+        }
+        if *current != AudioSource::Off && audio.status.target.as_deref().is_some_and(|t| t.starts_with("everything")) {
             ui.label(muted(
                 "Music or voice chat playing next to the game is heard too. Pick the game in the list, or show the \
                  in-game overlay so that GameViber finds it.",

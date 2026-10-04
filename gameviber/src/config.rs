@@ -92,6 +92,8 @@ pub enum AudioSource {
     /// The game showing the in-game overlay, or else everything the computer plays.
     #[default]
     Auto,
+    /// Everything the computer plays (the default output).
+    Everything,
     /// One application, by the name it gives PipeWire.
     App(String),
 }
@@ -455,7 +457,7 @@ mod tests {
 
     #[test]
     fn audio_source_round_trips_in_the_settings_file() {
-        for audio in [AudioSource::Off, AudioSource::Auto, AudioSource::App("METAPHOR.exe".into())] {
+        for audio in [AudioSource::Off, AudioSource::Auto, AudioSource::Everything, AudioSource::App("METAPHOR.exe".into())] {
             let settings = Settings { audio: audio.clone(), ..Settings::default() };
             let text = toml::to_string(&settings).unwrap();
             let back: Settings = toml::from_str(&text).unwrap();

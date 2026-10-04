@@ -36,7 +36,7 @@ again from **Setup** at the bottom of the left bar. Then the GUI provides:
   received right now, the capture method (standard proxy or kernel probe, which
   needs root) with their pros and cons, gamepad hiding, troubleshooting;
 - **Sound**: which sound modes hear (automatic: the game showing the overlay,
-  else everything; one application; off), what is heard right now (loudness,
+  else everything; everything; one application, all its streams; off), what is heard right now (loudness,
   bass / mids / treble, hits), and the **scene model** to download (see below);
 - **Keybindings**: the panic stop and mark-a-moment gamepad combos;
 - **Creator**: mode editing with hot reload (Ctrl+S), graphs of the rumble,

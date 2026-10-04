@@ -231,8 +231,8 @@ is read from `input.axes` on every tick.
 ### 6.3 The game's sound
 
 GameViber listens to the game's sound through PipeWire: by default the game showing the
-in-game overlay, or else everything the computer plays; the player can pick one
-application on the Sound page, or turn it off. The sound is analysed on the player's
+in-game overlay, or else everything the computer plays; on the Sound page the player can
+pick everything, one application (all its streams), or turn it off. The sound is analysed on the player's
 computer and never saved: recorded sessions keep only the levels, hits and scene
 embeddings, so that a replay feeds the mode the same sound events.
 

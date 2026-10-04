@@ -17,7 +17,7 @@ pub use clap::Embedding;
 pub use features::{AudioHit, AudioLevels, Band};
 
 use crate::config::AudioSource;
-use capture::Capture;
+use capture::{Capture, Graph};
 
 pub const SAMPLE_RATE: u32 = 48_000;
 /// A new scene embedding every this many seconds.
@@ -145,9 +145,16 @@ fn run(control: Arc<Mutex<Control>>, tx: mpsc::Sender<Output>) {
         let ended = capture.as_mut().is_some_and(Capture::ended);
         if changed || ended || last_target_check.is_none_or(|t| t.elapsed() >= RETARGET) {
             last_target_check = Some(Instant::now());
-            let streams = if source == AudioSource::Off { Vec::new() } else { capture::list_streams() };
-            let target = capture::choose(&source, &streams, &games);
-            if ended || target.as_ref() != capture.as_ref().map(|c| &c.target) {
+            let graph = if source == AudioSource::Off { Graph::default() } else { Graph::read() };
+            let target = capture::choose(&source, &graph.streams, &games);
+            // The same application keeps its capture; its new streams are linked.
+            let kept = !ended
+                && match (capture.as_mut(), &target) {
+                    (Some(c), Some(t)) => c.update(&graph, t),
+                    (None, None) => true,
+                    _ => false,
+                };
+            if !kept {
                 let was_active = capture.is_some();
                 capture = None;
                 analyzer = features::Analyzer::new();
@@ -172,7 +179,7 @@ fn run(control: Arc<Mutex<Control>>, tx: mpsc::Sender<Output>) {
             }
             let mut c = control.lock().unwrap();
             c.status.target = capture.as_ref().map(|c| c.target.describe());
-            c.status.streams = streams.into_iter().map(|s| s.app).fold(Vec::new(), |mut list, app| {
+            c.status.streams = graph.streams.into_iter().map(|s| s.app).fold(Vec::new(), |mut list, app| {
                 if !list.contains(&app) {
                     list.push(app);
                 }
