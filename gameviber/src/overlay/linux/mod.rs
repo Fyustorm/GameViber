@@ -5,7 +5,7 @@
 
 mod install;
 
-pub use install::{install, install_state, launcher_path, uninstall, update_installed};
+pub use install::{install, install_state, launcher_path, packaged, uninstall, update_installed};
 
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};

@@ -65,12 +65,15 @@ impl App {
         }
         let archs = self.overlay.install.as_ref().map(|(_, a)| a.clone()).unwrap_or_default();
         let install = overall(&archs);
+        // Installed with GameViber's package: nothing to install or remove.
+        let packaged = overlay::packaged();
         card(PANEL).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
                 let (color, text) = match install {
                     InstallState::NotInstalled | InstallState::NotBuilt => (IDLE, "Not installed"),
                     InstallState::Outdated => (WARN, "Installed, update available"),
+                    InstallState::Installed if packaged => (OK, "Installed with GameViber"),
                     InstallState::Installed => (OK, "Installed"),
                 };
                 ui.label(RichText::new("Overlay").strong());
@@ -83,6 +86,7 @@ impl App {
             ));
             for (arch, state) in &archs {
                 let text = match state {
+                    InstallState::NotBuilt if packaged => "not included in this package",
                     InstallState::NotBuilt => "not included in this build of GameViber",
                     InstallState::NotInstalled => "not installed",
                     InstallState::Outdated => "update available",
@@ -110,17 +114,19 @@ impl App {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 let label = match install {
+                    InstallState::Outdated if packaged => "Repair",
                     InstallState::NotInstalled | InstallState::NotBuilt => "Install",
                     InstallState::Outdated => "Update",
                     InstallState::Installed => "Reinstall",
                 };
                 let reinstall = scope_changed && install != InstallState::NotInstalled;
-                let install_now = ui.add(primary(label)).clicked();
+                let shown = !packaged || install == InstallState::Outdated;
+                let install_now = shown && ui.add(primary(label)).clicked();
                 if install_now || reinstall {
                     self.overlay.error = overlay::install(all_games).err().map(|e| e.to_string());
                     self.overlay.install = None;
                 }
-                if install != InstallState::NotInstalled && ui.button("Remove").clicked() {
+                if !packaged && install != InstallState::NotInstalled && ui.button("Remove").clicked() {
                     self.overlay.error = overlay::uninstall().err().map(|e| e.to_string());
                     self.overlay.install = None;
                 }
@@ -128,7 +134,9 @@ impl App {
             if let Some(e) = &self.overlay.error {
                 ui.label(RichText::new(e).color(DANGER_TEXT));
             }
-            ui.label(muted("Games started before installing need a restart.").size(12.0));
+            if !packaged {
+                ui.label(muted("Games started before installing need a restart.").size(12.0));
+            }
             if scope_changed {
                 settings.all_games = all_games;
                 self.send(Command::SetOverlay(settings));

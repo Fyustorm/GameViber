@@ -1,0 +1,7 @@
+#!/bin/sh
+# Starts a game with the GameViber in-game overlay.
+# Steam launch options: /usr/bin/gameviber-overlay %command%
+export GAMEVIBER_OVERLAY=1
+# $PLATFORM is expanded by the dynamic linker: x86_64 or i686.
+export LD_PRELOAD="${LD_PRELOAD:+$LD_PRELOAD:}/usr/lib/gameviber/\$PLATFORM/libgameviber_overlay.so"
+exec "$@"

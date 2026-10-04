@@ -42,6 +42,10 @@ pub fn install(_all_games: bool) -> io::Result<()> {
     Err(io::Error::new(io::ErrorKind::Unsupported, "the in-game overlay is not available on this system yet"))
 }
 
+pub fn packaged() -> bool {
+    false
+}
+
 pub fn update_installed(_all_games: bool) {}
 
 pub fn uninstall() -> io::Result<()> {

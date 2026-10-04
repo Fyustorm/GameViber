@@ -121,17 +121,35 @@ fn register(conn: &Connection) {
     }
 }
 
-/// `~/.local/share/applications/<APP_ID>.desktop`, launching this executable.
+/// The desktop entry a package installs (`packaging/linux/`).
+fn system_entry_path() -> std::path::PathBuf {
+    std::path::Path::new("/usr/share/applications").join(format!("{APP_ID}.desktop"))
+}
+
+/// The start of the entries GameViber writes, up to the executable.
+const ENTRY_HEAD: &str = "[Desktop Entry]\nType=Application\nName=GameViber\nComment=Game rumble, sound and image to toys\nExec=";
+
+fn entry_text(exe: &std::path::Path) -> String {
+    format!("{ENTRY_HEAD}{}\nIcon=input-gaming\nCategories=Game;\n", exe.display())
+}
+
+/// `~/.local/share/applications/<APP_ID>.desktop`, launching this executable,
+/// unless a package installed one (then a user entry we wrote earlier, which
+/// would hide it, is removed).
 fn desktop_entry() -> anyhow::Result<()> {
-    let exe = std::env::current_exe()?;
-    let dir = crate::platform::linux::data_home().join("applications");
-    let path = dir.join(format!("{APP_ID}.desktop"));
-    let entry = format!(
-        "[Desktop Entry]\nType=Application\nName=GameViber\nComment=Game rumble, sound and image to toys\nExec={}\nIcon=input-gaming\nCategories=Game;Utility;\n",
-        exe.display()
-    );
+    let path = crate::platform::linux::data_home().join("applications").join(format!("{APP_ID}.desktop"));
+    if system_entry_path().exists() {
+        if std::fs::read_to_string(&path).is_ok_and(|e| e.starts_with(ENTRY_HEAD)) {
+            std::fs::remove_file(&path)?;
+            log::info!("desktop entry of the package used: {} removed", path.display());
+        }
+        return Ok(());
+    }
+    let entry = entry_text(&std::env::current_exe()?);
     if std::fs::read_to_string(&path).ok().as_deref() != Some(entry.as_str()) {
-        std::fs::create_dir_all(&dir)?;
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
         std::fs::write(&path, entry)?;
         log::info!("desktop entry written: {}", path.display());
     }
@@ -182,4 +200,16 @@ fn run(tx: &Sender<Action>, status: &Arc<Mutex<Status>>, session: &Mutex<Option<
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_package_entry_is_the_one_gameviber_writes() {
+        let package = include_str!("../../../packaging/linux/io.github.gameviber.GameViber.desktop");
+        assert_eq!(package, entry_text(std::path::Path::new("gameviber")));
+        assert!(system_entry_path().ends_with(format!("{APP_ID}.desktop")));
+    }
 }

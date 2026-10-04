@@ -20,8 +20,6 @@ use wayland_client::{Connection, Dispatch, Proxy, QueueHandle};
 use wayland_protocols::xdg::activation::v1::client::xdg_activation_token_v1::{self, XdgActivationTokenV1};
 use wayland_protocols::xdg::activation::v1::client::xdg_activation_v1::XdgActivationV1;
 
-/// The polkit action pkexec asks for.
-const PKEXEC_ACTION: &str = "org.freedesktop.policykit.exec";
 const KDE_AGENT: &str = "org.kde.polkit-kde-authentication-agent-1";
 const KDE_AGENT_PATH: &str = "/org/kde/Polkit1AuthAgent";
 const KDE_AGENT_INTERFACE: &str = "org.kde.Polkit1AuthAgent";
@@ -107,11 +105,11 @@ fn tell_kde_agent(window: Window) -> anyhow::Result<()> {
     let reply = match window {
         Window::Wayland { display, surface } => {
             let token = activation_token(display, surface)?;
-            let body = (PKEXEC_ACTION, token.as_str());
+            let body = (super::polkit_action(), token.as_str());
             bus.call_method(Some(KDE_AGENT), KDE_AGENT_PATH, Some(KDE_AGENT_INTERFACE), "setActivationTokenForAction", &body)
         }
         Window::X11(id) => {
-            let body = (PKEXEC_ACTION, id);
+            let body = (super::polkit_action(), id);
             bus.call_method(Some(KDE_AGENT), KDE_AGENT_PATH, Some(KDE_AGENT_INTERFACE), "setWIdForAction", &body)
         }
     };

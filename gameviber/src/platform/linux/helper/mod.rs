@@ -15,6 +15,24 @@ use gameviber_common::{FfEffect, ProbeEvent, FF_UNION_WORDS, PROBE_EVENT_KIND_ER
 use serde::{Deserialize, Serialize};
 
 pub const SUBCOMMAND: &str = "helper";
+/// The polkit action a package installs for the helper (`packaging/linux/`):
+/// it names the request in the password dialog, and only covers this path.
+const PACKAGE_ACTION: &str = "io.github.gameviber.GameViber.helper";
+const PACKAGE_POLICY: &str = "/usr/share/polkit-1/actions/io.github.gameviber.GameViber.policy";
+const PACKAGE_EXE: &str = "/usr/bin/gameviber";
+/// The action pkexec checks for any other program.
+const PKEXEC_ACTION: &str = "org.freedesktop.policykit.exec";
+
+/// The polkit action pkexec will check when starting the helper.
+pub fn polkit_action() -> &'static str {
+    let packaged = std::path::Path::new(PACKAGE_POLICY).exists()
+        && std::env::current_exe().is_ok_and(|exe| exe == std::path::Path::new(PACKAGE_EXE));
+    if packaged {
+        PACKAGE_ACTION
+    } else {
+        PKEXEC_ACTION
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -83,6 +101,15 @@ impl WireProbe {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_package_policy_covers_the_helper_only() {
+        let policy = include_str!("../../../../../packaging/linux/io.github.gameviber.GameViber.policy");
+        assert!(policy.contains(&format!("<action id=\"{PACKAGE_ACTION}\">")));
+        assert!(policy.contains(&format!("\"org.freedesktop.policykit.exec.path\">{PACKAGE_EXE}<")));
+        assert!(policy.contains(&format!("\"org.freedesktop.policykit.exec.argv1\">{SUBCOMMAND}<")));
+        assert!(PACKAGE_POLICY.ends_with(&format!("/{}.policy", crate::shortcuts::APP_ID)));
+    }
 
     #[test]
     fn messages_round_trip_as_json_lines() {

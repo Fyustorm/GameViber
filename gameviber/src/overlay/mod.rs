@@ -7,13 +7,13 @@
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]
-pub use linux::{install, install_state, launcher_path, uninstall, update_installed};
+pub use linux::{install, install_state, launcher_path, packaged, uninstall, update_installed};
 #[cfg(target_os = "linux")]
 use linux::{FrameMemory, Socket};
 #[cfg(not(target_os = "linux"))]
 mod unsupported;
 #[cfg(not(target_os = "linux"))]
-pub use unsupported::{install, install_state, launcher_path, uninstall, update_installed};
+pub use unsupported::{install, install_state, launcher_path, packaged, uninstall, update_installed};
 #[cfg(not(target_os = "linux"))]
 use unsupported::{FrameMemory, Socket};
 

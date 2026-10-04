@@ -50,6 +50,7 @@ script) → **safety layer** → **Intiface output**.
 | `gameviber-overlay/` | in-game overlay: panel layout with epaint (`hud.rs`); `linux/`: implicit Vulkan layer (`layer.rs`, `render.rs`), OpenGL swap hooks when preloaded (`gl/`), socket client, copies of the game's image (`capture.rs`, `render.rs`, `gl/capture.rs`) |
 | `gameviber/src/overlay/` | the games' overlays and their frame memory; `linux/`: the Unix socket and sealed memfds, `linux/install.rs`: layer and launcher installation |
 | `docs/spec-modes.md` | mode API specification (source of truth for the script API) |
+| `packaging/linux/` | files a package installs under `/usr` (Vulkan layer manifests, OpenGL launcher, udev rule, polkit action, desktop entry), `stage.sh` laying them out with the built binaries, `postinstall.sh`; tests check they match what the code expects |
 | `prototype/` | original Python prototype (reference only) |
 | `tools/` | test helpers: fake gamepad, SDL rumble game, `check-windows.sh` (Platforms) |
 
@@ -90,6 +91,11 @@ Run `cargo test` after any change to the runtime or to a mode.
   zeroing outputs on source loss live in the engine, never in a mode.
 - **Platforms**: see the section below; run `tools/check-windows.sh` after
   touching OS-specific code or adding a dependency.
+- **Packaging**: a file a package installs (`packaging/linux/`) that the code
+  also generates or relies on (layer manifests, launcher, desktop entry, polkit
+  action) must stay identical to it: change both, the tests compare them. Paths
+  are under `/usr`. Without a package, the app keeps installing for the user
+  in `~/.local/share` (`overlay/linux/install.rs`).
 - **Privileges**: the GUI and the main process must never run as root. Root-only work
   (eBPF probe, hiding gamepad nodes) goes through the helper, whose scope must stay
   minimal.

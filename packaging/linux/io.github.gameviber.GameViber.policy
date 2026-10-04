@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<!-- GameViber's privileged helper, started through pkexec: it only loads the
+     eBPF probe and hides / restores the real gamepad's device nodes. This
+     action only covers /usr/bin/gameviber helper. -->
+<policyconfig>
+  <vendor>GameViber</vendor>
+  <icon_name>input-gaming</icon_name>
+  <action id="io.github.gameviber.GameViber.helper">
+    <description>Run the GameViber helper</description>
+    <message>GameViber needs your authorization to watch the rumble games send to the gamepad, or to hide the real gamepad from games.</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/gameviber</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">helper</annotate>
+  </action>
+</policyconfig>

@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=GameViber
+Comment=Game rumble, sound and image to toys
+Exec=gameviber
+Icon=input-gaming
+Categories=Game;

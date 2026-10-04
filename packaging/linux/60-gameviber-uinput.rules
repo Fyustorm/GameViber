@@ -1,0 +1,4 @@
+# GameViber: lets the logged-in user create the virtual gamepad of the proxy
+# source (/dev/uinput) without root. The same rule as Steam's (steam-devices);
+# the gamepads themselves are already readable by the logged-in user.
+KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", OPTIONS+="static_node=uinput"

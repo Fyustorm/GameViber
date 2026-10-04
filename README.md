@@ -160,15 +160,17 @@ draw zones).
 Like MangoHud, GameViber can draw a small panel over the game: the active mode
 and preset, the scene recognized in the game's sound, how strong the toys run (with the global cap), the mode's gauges
 and what it detects ("Parry!"), and warnings (toy lost, Intiface disconnected,
-mode error, panic stop). Install it from **Setup › In-game overlay**, then enable it
-per game with a Steam launch option (once installed, GameViber updates it when
-it starts with a newer version; restart running games to get it):
+mode error, panic stop). GameViber's package installs it for every user;
+otherwise install it from **Setup › In-game overlay** (once installed, GameViber
+updates it when it starts with a newer version; restart running games to get
+it). Then enable it per game with a Steam launch option:
 
 - Proton and Vulkan games: `GAMEVIBER_OVERLAY=1 %command%` (or turn it on for
   every Vulkan game). It is an implicit Vulkan layer
   ([`gameviber-overlay/`](gameviber-overlay/)), so it covers every Proton game
   (DXVK / VKD3D).
-- Native OpenGL games: `~/.local/share/gameviber/gameviber-overlay %command%`.
+- Native OpenGL games: `gameviber-overlay %command%` (installed by hand:
+  `~/.local/share/gameviber/gameviber-overlay %command%`).
   The launcher preloads the same library, which then hooks `glXSwapBuffers` /
   `eglSwapBuffers` (GLX and EGL, OpenGL 3.0+ and OpenGL ES 3.0+), like MangoHud.
 
@@ -236,7 +238,10 @@ probe (and forwards its raw events) and hides / restores a gamepad's nodes
 process, ignores Ctrl+C, and restores everything then exits as soon as stdin
 closes (GameViber exiting or crashing). Fd resolution, gamepad reading and
 everything else run unprivileged. When started directly as root
-(`sudo ... --headless`), GameViber does without the helper.
+(`sudo ... --headless`), GameViber does without the helper. The package
+installs a polkit action for it (`io.github.gameviber.GameViber.helper`), which
+names the request in the password dialog and only covers
+`/usr/bin/gameviber helper`; otherwise pkexec's generic action is used.
 
 ## Build
 
@@ -265,6 +270,26 @@ GameViber is Linux only for now. Everything OS-specific lives in `linux`
 modules, so that other systems (Windows first) can be added later;
 `tools/check-windows.sh` checks that the rest still builds for Windows (see
 AGENTS.md, Platforms).
+
+## Packaging
+
+[`packaging/linux/stage.sh`](packaging/linux/stage.sh) lays out, after the
+builds above, the files a package installs under `/usr`:
+
+| Path | What |
+|---|---|
+| `/usr/bin/gameviber`, `/usr/bin/gameviber-overlay` | the app, and the launcher for OpenGL games |
+| `/usr/lib/gameviber/{x86_64,i686}/libgameviber_overlay.so` | the overlay library (`haswell`, `xeon_phi`: links to `x86_64`, for `$PLATFORM`) |
+| `/usr/share/vulkan/implicit_layer.d/gameviber_overlay.{x86_64,x86}.json` | the Vulkan layer, on in games with `GAMEVIBER_OVERLAY=1` |
+| `/usr/lib/udev/rules.d/60-gameviber-uinput.rules` | lets the logged-in user create the virtual gamepad (`/dev/uinput`), like Steam's rule |
+| `/usr/share/polkit-1/actions/io.github.gameviber.GameViber.policy` | the helper's polkit action |
+| `/usr/share/applications/io.github.gameviber.GameViber.desktop` | the menu entry, also needed by the keyboard shortcuts portal |
+
+Packages run [`postinstall.sh`](packaging/linux/postinstall.sh) after installing
+(applies the udev rule without a reboot). With these files, GameViber writes
+nothing system-like in the user's home: it only adds user manifests overriding
+the layer's when the overlay is turned on for every game, and removes the
+copies it made before the package was installed.
 
 ## Known limitations
 
