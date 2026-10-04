@@ -1,5 +1,5 @@
 //! Listens to the game's sound (docs/spec-modes.md §6.3): cheap measures
-//! every 20 ms (levels, hits) and, when the active mode declares audio scenes
+//! every 20 ms (levels, hits) and, when the active mode describes scenes' sound
 //! and the model is downloaded, a CLAP embedding of the last 10 s every 2 s.
 //! Everything runs on its own threads; the engine drains `Audio::poll()`
 //! once per tick.
@@ -222,7 +222,7 @@ fn run(control: Arc<Mutex<Control>>, tx: mpsc::Sender<Output>) {
         since_clip += samples.len();
         if since_clip >= clip_step && recent.len() == clap::CLIP_SAMPLES {
             since_clip = 0;
-            if wanted && clap::model_ready() {
+            if wanted && crate::models::Model::Sound.ready() {
                 // Skipped when the previous clip is still being processed.
                 let _ = clips_tx.try_send(recent.iter().copied().collect());
             }

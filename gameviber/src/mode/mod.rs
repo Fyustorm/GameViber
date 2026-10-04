@@ -2,12 +2,12 @@
 //! docs/spec-modes.md: declaration, parameters, callbacks, outputs, timers,
 //! debug helpers, sandboxing and hot-reload state.
 
-pub mod audio_events;
 pub mod library;
 pub mod outputs;
 pub mod prompt;
 pub mod report;
 pub mod rumble_events;
+pub mod scenes;
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashSet};
@@ -19,7 +19,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::audio::{AudioHit, AudioLevels, Embedding};
 use crate::gamepad::{ButtonEvent, PadState, AXES, BUTTONS};
-use audio_events::{SceneChange, SceneTracker};
+use crate::screen::ScreenLevels;
+use scenes::{SceneChange, SceneDecl, SceneTracker, Sense};
 use outputs::Outputs;
 use rumble_events::{RumbleEvent, RumbleLevels, RumbleTracker, DEFAULT_RELEASE, DEFAULT_THRESHOLD};
 
@@ -30,7 +31,11 @@ const CALLBACK_BUDGET: Duration = Duration::from_millis(10);
 const LOAD_BUDGET: Duration = Duration::from_millis(200);
 const MEMORY_LIMIT: usize = 16 * 1024 * 1024;
 const PERSIST_MAX_DEPTH: usize = 16;
-const MAX_AUDIO_SCENES: usize = 8;
+const MAX_SCENES: usize = 8;
+/// Sound hits at least this strong are impacts (`on_impact`).
+const IMPACT_MIN_HIT: f64 = 0.3;
+/// Nesting kept from the values external programs send (`input.custom`).
+const CUSTOM_MAX_DEPTH: usize = 4;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -125,11 +130,31 @@ pub struct ModeInfo {
     pub feedback: Vec<Question>,
     pub rumble_threshold: f64,
     pub rumble_release: f64,
-    /// Scenes recognized from the game's sound (§6.3): name and description,
-    /// sorted by name.
-    pub audio_scenes: Vec<(String, String)>,
+    /// Scenes recognized from the game's sound and image (§6.3), sorted by name.
+    pub scenes: Vec<SceneDecl>,
     /// Seconds over which scene probabilities are averaged.
-    pub audio_scene_window: f64,
+    pub scene_window: f64,
+}
+
+impl ModeInfo {
+    /// Some scene has a description for the sound, or for the image.
+    pub fn uses_sound_scenes(&self) -> bool {
+        self.scenes.iter().any(|s| s.sound.is_some())
+    }
+
+    pub fn uses_screen_scenes(&self) -> bool {
+        self.scenes.iter().any(|s| s.screen.is_some())
+    }
+}
+
+/// A zone of the game's screen declared in its profile (§6.5).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ZoneValue {
+    /// An element shown or not.
+    Visible(bool),
+    /// How full a bar is, 0..1.
+    Bar(f64),
 }
 
 /// Plain-data copy of the `persist` table, carried across hot reloads.
@@ -142,13 +167,23 @@ pub enum PersistValue {
 }
 
 /// Events queued by the engine between two ticks.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ModeEvent {
     Button(ButtonEvent),
     Device { connected: bool, name: String },
     AudioHit(AudioHit),
     /// Embedding of the last 10 s of the game's sound.
     AudioClip(Embedding),
+    /// Embedding of the game's image.
+    ScreenClip(Embedding),
+    /// A sudden flash of the game's image, 0..1.
+    ScreenFlash(f64),
+    /// A zone of the screen changed.
+    Zone { name: String, value: ZoneValue },
+    /// A value sent by another program (`input.custom`); `Null` removes it.
+    Custom { name: String, value: serde_json::Value },
+    /// An event sent by another program (`on_event`).
+    External { name: String, data: serde_json::Value },
 }
 
 /// What a tick produced besides channel values.
@@ -220,7 +255,10 @@ struct Callbacks {
     on_param_changed: Option<Function>,
     on_device: Option<Function>,
     on_audio_hit: Option<Function>,
-    on_audio_scene: Option<Function>,
+    on_scene: Option<Function>,
+    on_impact: Option<Function>,
+    on_zone: Option<Function>,
+    on_event: Option<Function>,
 }
 
 struct InputTables {
@@ -229,7 +267,10 @@ struct InputTables {
     buttons: Table,
     axes: Table,
     audio: Table,
+    screen: Table,
     scenes: Table,
+    zones: Table,
+    custom: Table,
 }
 
 pub struct ModeRuntime {
@@ -245,9 +286,13 @@ pub struct ModeRuntime {
     tracker: RumbleTracker,
     /// The game's sound right now; None when it is not captured.
     audio: Option<AudioLevels>,
+    /// The game's image right now; None when it is not copied.
+    screen: Option<ScreenLevels>,
     scenes: SceneTracker,
-    /// Scene change to report on the next tick (the sound stopped).
+    /// Scene change to report on the next tick (the sound or image stopped).
     pending_scene: Option<SceneChange>,
+    /// Zone values as last reported.
+    zones: BTreeMap<String, ZoneValue>,
 }
 
 type LoadResult<T> = Result<T, String>;
@@ -347,8 +392,12 @@ impl ModeRuntime {
             on_param_changed: get("on_param_changed")?,
             on_device: get("on_device")?,
             on_audio_hit: get("on_audio_hit")?,
-            on_audio_scene: get("on_audio_scene")?,
+            on_scene: get("on_scene")?,
+            on_impact: get("on_impact")?,
+            on_zone: get("on_zone")?,
+            on_event: get("on_event")?,
         };
+
 
         let input = InputTables {
             root: lua.create_table().map_err(lua_err)?,
@@ -356,17 +405,27 @@ impl ModeRuntime {
             buttons: lua.create_table().map_err(lua_err)?,
             axes: lua.create_table().map_err(lua_err)?,
             audio: lua.create_table().map_err(lua_err)?,
+            screen: lua.create_table().map_err(lua_err)?,
             scenes: lua.create_table().map_err(lua_err)?,
+            zones: lua.create_table().map_err(lua_err)?,
+            custom: lua.create_table().map_err(lua_err)?,
         };
-        input.root.raw_set("rumble", &input.rumble).map_err(lua_err)?;
-        input.root.raw_set("buttons", &input.buttons).map_err(lua_err)?;
-        input.root.raw_set("axes", &input.axes).map_err(lua_err)?;
-        input.root.raw_set("audio", &input.audio).map_err(lua_err)?;
-        input.audio.raw_set("scenes", &input.scenes).map_err(lua_err)?;
+        for (name, table) in [
+            ("rumble", &input.rumble),
+            ("buttons", &input.buttons),
+            ("axes", &input.axes),
+            ("audio", &input.audio),
+            ("screen", &input.screen),
+            ("scenes", &input.scenes),
+            ("zones", &input.zones),
+            ("custom", &input.custom),
+        ] {
+            input.root.raw_set(name, table).map_err(lua_err)?;
+        }
 
         ctx.borrow_mut().outputs = Some(Outputs::new(info.channels.clone()));
         let tracker = RumbleTracker::new(info.rumble_threshold, info.rumble_release, 0.0);
-        let scenes = SceneTracker::new(info.audio_scenes.iter().map(|(n, _)| n.clone()).collect(), info.audio_scene_window);
+        let scenes = SceneTracker::new(info.scenes.iter().map(|s| s.name.clone()).collect(), info.scene_window);
         Ok(Self {
             lua,
             ctx,
@@ -379,8 +438,10 @@ impl ModeRuntime {
             input,
             tracker,
             audio: None,
+            screen: None,
             scenes,
             pending_scene: None,
+            zones: BTreeMap::new(),
         })
     }
 
@@ -392,18 +453,34 @@ impl ModeRuntime {
         &self.param_values
     }
 
-    /// Descriptions of the declared audio scenes, to compute their embeddings.
-    pub fn scene_descriptions(&self) -> Vec<String> {
-        self.info.audio_scenes.iter().map(|(_, d)| d.clone()).collect()
+    /// Scenes and their description for `sense` (Sound or Screen), to compute their embeddings.
+    pub fn scene_descriptions(&self, sense: Sense) -> Vec<(String, String)> {
+        self.info
+            .scenes
+            .iter()
+            .filter_map(|s| {
+                let description = match sense {
+                    Sense::Sound => s.sound.as_ref(),
+                    Sense::Screen => s.screen.as_ref(),
+                    Sense::Examples => None,
+                };
+                description.map(|d| (s.name.clone(), d.clone()))
+            })
+            .collect()
     }
 
-    /// Embeddings of `scene_descriptions()`, in the same order.
-    pub fn set_scene_texts(&mut self, texts: Vec<Embedding>) {
-        self.scenes.set_texts(texts);
+    /// What `sense` compares with: a vector per scene (descriptions' embeddings,
+    /// or the mean of the profile's example images).
+    pub fn set_scene_references(&mut self, sense: Sense, references: Vec<(String, Embedding)>) {
+        self.scenes.set_references(sense, references);
     }
 
     pub fn scenes_ready(&self) -> bool {
         self.scenes.ready()
+    }
+
+    pub fn scene_sense(&self, sense: Sense) -> bool {
+        self.scenes.has(sense)
     }
 
     /// The current scene and the average probability of each, sorted by name.
@@ -414,9 +491,28 @@ impl ModeRuntime {
     /// The game's sound for the next ticks; None when it stops being captured.
     pub fn set_audio(&mut self, levels: Option<AudioLevels>) {
         if levels.is_none() && self.audio.is_some() {
-            self.pending_scene = self.scenes.reset();
+            self.forget_sense(&[Sense::Sound]);
         }
         self.audio = levels;
+    }
+
+    /// The game's image for the next ticks; None when it stops being copied.
+    pub fn set_screen(&mut self, levels: Option<ScreenLevels>) {
+        if levels.is_none() && self.screen.is_some() {
+            self.forget_sense(&[Sense::Screen, Sense::Examples]);
+            // The zones are read on the image: they are gone with it.
+            self.zones.clear();
+            let _ = self.input.zones.clear();
+        }
+        self.screen = levels;
+    }
+
+    fn forget_sense(&mut self, senses: &[Sense]) {
+        for sense in senses {
+            if let Some(change) = self.scenes.forget(*sense) {
+                self.pending_scene = Some(change);
+            }
+        }
     }
 
     fn call(&self, f: &Function, args: impl mlua::IntoLuaMulti) -> Result<(), String> {
@@ -448,6 +544,9 @@ impl ModeRuntime {
         self.tracker = RumbleTracker::new(self.info.rumble_threshold, self.info.rumble_release, time);
         self.scenes.reset();
         self.pending_scene = None;
+        self.zones.clear();
+        let _ = self.input.zones.clear();
+        let _ = self.input.custom.clear();
         self.call_opt(&self.callbacks.on_start, ())
     }
 
@@ -527,19 +626,72 @@ impl ModeRuntime {
                     self.call_opt(&self.callbacks.on_device, t)?;
                 }
                 ModeEvent::AudioHit(hit) => {
-                    if self.callbacks.on_audio_hit.is_none() || self.audio.is_none() {
+                    if self.audio.is_none() {
+                        continue;
+                    }
+                    if self.callbacks.on_audio_hit.is_some() {
+                        let t = self.lua.create_table().map_err(lua_err)?;
+                        t.raw_set("strength", hit.strength).map_err(lua_err)?;
+                        t.raw_set("band", hit.band.name()).map_err(lua_err)?;
+                        t.raw_set("t", time).map_err(lua_err)?;
+                        self.call_opt(&self.callbacks.on_audio_hit, t)?;
+                    }
+                    if hit.strength >= IMPACT_MIN_HIT {
+                        self.impact(hit.strength, "sound", time)?;
+                    }
+                }
+                ModeEvent::AudioClip(sound) => {
+                    if let Some(change) = self.scenes.update(time, Sense::Sound, sound) {
+                        self.scene_changed(change, time)?;
+                    }
+                }
+                ModeEvent::ScreenClip(image) => {
+                    if self.screen.is_none() {
+                        continue;
+                    }
+                    for sense in [Sense::Screen, Sense::Examples] {
+                        if let Some(change) = self.scenes.update(time, sense, image) {
+                            self.scene_changed(change, time)?;
+                        }
+                    }
+                }
+                ModeEvent::ScreenFlash(strength) => {
+                    if self.screen.is_some() {
+                        self.impact(*strength, "screen", time)?;
+                    }
+                }
+                ModeEvent::Zone { name, value } => {
+                    let previous = self.zones.insert(name.clone(), *value);
+                    if previous == Some(*value) {
+                        continue;
+                    }
+                    let lua_value = |v: ZoneValue| match v {
+                        ZoneValue::Visible(b) => Value::Boolean(b),
+                        ZoneValue::Bar(x) => Value::Number(x),
+                    };
+                    self.input.zones.raw_set(name.as_str(), lua_value(*value)).map_err(lua_err)?;
+                    if self.callbacks.on_zone.is_some() {
+                        let t = self.lua.create_table().map_err(lua_err)?;
+                        t.raw_set("zone", name.as_str()).map_err(lua_err)?;
+                        t.raw_set("value", lua_value(*value)).map_err(lua_err)?;
+                        t.raw_set("previous", previous.map(lua_value)).map_err(lua_err)?;
+                        t.raw_set("t", time).map_err(lua_err)?;
+                        self.call_opt(&self.callbacks.on_zone, t)?;
+                    }
+                }
+                ModeEvent::Custom { name, value } => {
+                    let value = json_to_lua(&self.lua, value, 0).map_err(lua_err)?;
+                    self.input.custom.raw_set(name.as_str(), value).map_err(lua_err)?;
+                }
+                ModeEvent::External { name, data } => {
+                    if self.callbacks.on_event.is_none() {
                         continue;
                     }
                     let t = self.lua.create_table().map_err(lua_err)?;
-                    t.raw_set("strength", hit.strength).map_err(lua_err)?;
-                    t.raw_set("band", hit.band.name()).map_err(lua_err)?;
+                    t.raw_set("name", name.as_str()).map_err(lua_err)?;
+                    t.raw_set("data", json_to_lua(&self.lua, data, 0).map_err(lua_err)?).map_err(lua_err)?;
                     t.raw_set("t", time).map_err(lua_err)?;
-                    self.call_opt(&self.callbacks.on_audio_hit, t)?;
-                }
-                ModeEvent::AudioClip(sound) => {
-                    if let Some(change) = self.scenes.update(time, sound) {
-                        self.scene_changed(change, time)?;
-                    }
+                    self.call_opt(&self.callbacks.on_event, t)?;
                 }
             }
         }
@@ -576,9 +728,20 @@ impl ModeRuntime {
         Ok(TickOutput { channels, plots, hud, hud_events })
     }
 
+    fn impact(&self, strength: f64, source: &str, time: f64) -> Result<(), String> {
+        if self.callbacks.on_impact.is_none() {
+            return Ok(());
+        }
+        let t = self.lua.create_table().map_err(lua_err)?;
+        t.raw_set("strength", strength).map_err(lua_err)?;
+        t.raw_set("source", source).map_err(lua_err)?;
+        t.raw_set("t", time).map_err(lua_err)?;
+        self.call_opt(&self.callbacks.on_impact, t)
+    }
+
     fn scene_changed(&self, change: SceneChange, time: f64) -> Result<(), String> {
-        log::debug!("audio scene: {:?} -> {:?} ({:.2})", change.previous, change.scene, change.confidence);
-        if self.callbacks.on_audio_scene.is_none() {
+        log::debug!("scene: {:?} -> {:?} ({:.2})", change.previous, change.scene, change.confidence);
+        if self.callbacks.on_scene.is_none() {
             return Ok(());
         }
         let t = self.lua.create_table().map_err(lua_err)?;
@@ -586,7 +749,7 @@ impl ModeRuntime {
         t.raw_set("previous", change.previous).map_err(lua_err)?;
         t.raw_set("confidence", change.confidence).map_err(lua_err)?;
         t.raw_set("t", time).map_err(lua_err)?;
-        self.call_opt(&self.callbacks.on_audio_scene, t)
+        self.call_opt(&self.callbacks.on_scene, t)
     }
 
     fn run_timers(&mut self, time: f64) -> Result<(), String> {
@@ -646,13 +809,48 @@ impl ModeRuntime {
         a.raw_set("mid", levels.mid)?;
         a.raw_set("high", levels.high)?;
         a.raw_set("intensity", levels.intensity)?;
-        a.raw_set("scene", self.scenes.current())?;
-        a.raw_set("scene_confidence", self.scenes.confidence())?;
+        let v = &self.input.screen;
+        let screen = self.screen.unwrap_or_default();
+        v.raw_set("active", self.screen.is_some())?;
+        v.raw_set("brightness", screen.brightness)?;
+        v.raw_set("motion", screen.motion)?;
+        v.raw_set("action", screen.action)?;
+        // The senses there are, averaged.
+        let busy: Vec<f64> = [self.audio.map(|l| l.intensity), self.screen.map(|l| l.action as f64)].into_iter().flatten().collect();
+        root.raw_set("intensity", if busy.is_empty() { 0.0 } else { busy.iter().sum::<f64>() / busy.len() as f64 })?;
+        root.raw_set("scene", self.scenes.current())?;
+        root.raw_set("scene_confidence", self.scenes.confidence())?;
         for (name, p) in self.scenes.averages() {
             self.input.scenes.raw_set(name, p)?;
         }
         Ok(())
     }
+}
+
+/// A value sent by another program, as Lua sees it (nil for JSON null).
+fn json_to_lua(lua: &Lua, value: &serde_json::Value, depth: usize) -> mlua::Result<Value> {
+    use serde_json::Value as Json;
+    Ok(match value {
+        Json::Null => Value::Nil,
+        Json::Bool(b) => Value::Boolean(*b),
+        Json::Number(n) => Value::Number(n.as_f64().unwrap_or(0.0)),
+        Json::String(s) => Value::String(lua.create_string(s)?),
+        _ if depth >= CUSTOM_MAX_DEPTH => Value::Nil,
+        Json::Array(items) => {
+            let t = lua.create_table()?;
+            for (i, item) in items.iter().enumerate() {
+                t.raw_set(i + 1, json_to_lua(lua, item, depth + 1)?)?;
+            }
+            Value::Table(t)
+        }
+        Json::Object(map) => {
+            let t = lua.create_table()?;
+            for (k, v) in map {
+                t.raw_set(k.as_str(), json_to_lua(lua, v, depth + 1)?)?;
+            }
+            Value::Table(t)
+        }
+    })
 }
 
 fn seed() -> u64 {
@@ -736,23 +934,31 @@ fn parse_info(declared: &Table) -> LoadResult<ModeInfo> {
     let number = |key: &str, default: f64| -> LoadResult<f64> {
         Ok(declared.get::<Option<f64>>(key).map_err(|e| format!("mode.{key}: {e}"))?.unwrap_or(default))
     };
-    let mut audio_scenes = Vec::new();
-    if let Some(table) = declared.get::<Option<Table>>("audio_scenes").map_err(|e| format!("mode.audio_scenes: {e}"))? {
-        for pair in table.pairs::<String, String>() {
-            let (name, description) = pair.map_err(|e| format!("mode.audio_scenes: {e} (expected name = \"description\")"))?;
-            if description.trim().is_empty() {
-                return Err(format!("mode.audio_scenes: scene '{name}' needs a description"));
+    let mut scenes = Vec::new();
+    if let Some(table) = declared.get::<Option<Table>>("scenes").map_err(|e| format!("mode.scenes: {e}"))? {
+        for pair in table.pairs::<String, Value>() {
+            let (name, def) = pair.map_err(|e| format!("mode.scenes: {e}"))?;
+            let Value::Table(def) = def else {
+                return Err(format!("mode.scenes: scene '{name}' must be a table: {{ sound = \"...\", screen = \"...\" }}"));
+            };
+            let text = |key: &str| -> LoadResult<Option<String>> {
+                let value = def.get::<Option<String>>(key).map_err(|e| format!("mode.scenes.{name}.{key}: {e}"))?;
+                Ok(value.filter(|v| !v.trim().is_empty()))
+            };
+            let (sound, screen) = (text("sound")?, text("screen")?);
+            if sound.is_none() && screen.is_none() {
+                return Err(format!("mode.scenes: scene '{name}' needs a sound or a screen description"));
             }
-            audio_scenes.push((name, description));
+            scenes.push(SceneDecl { name, sound, screen });
         }
-        audio_scenes.sort();
-        if !(2..=MAX_AUDIO_SCENES).contains(&audio_scenes.len()) {
-            return Err(format!("mode.audio_scenes must declare 2 to {MAX_AUDIO_SCENES} scenes"));
+        scenes.sort_by(|a, b| a.name.cmp(&b.name));
+        if !(2..=MAX_SCENES).contains(&scenes.len()) {
+            return Err(format!("mode.scenes must declare 2 to {MAX_SCENES} scenes"));
         }
     }
-    let audio_scene_window = number("audio_scene_window", audio_events::DEFAULT_WINDOW)?;
-    if !(2.0..=60.0).contains(&audio_scene_window) {
-        return Err("mode.audio_scene_window must be between 2 and 60 seconds".into());
+    let scene_window = number("scene_window", scenes::DEFAULT_WINDOW)?;
+    if !(2.0..=60.0).contains(&scene_window) {
+        return Err("mode.scene_window must be between 2 and 60 seconds".into());
     }
 
     Ok(ModeInfo {
@@ -768,8 +974,8 @@ fn parse_info(declared: &Table) -> LoadResult<ModeInfo> {
         feedback: feedback.into_iter().map(|(_, q)| q).collect(),
         rumble_threshold: number("rumble_threshold", DEFAULT_THRESHOLD)?,
         rumble_release: number("rumble_release", DEFAULT_RELEASE)?,
-        audio_scenes,
-        audio_scene_window,
+        scenes,
+        scene_window,
     })
 }
 

@@ -1,5 +1,8 @@
 use super::*;
 use crate::audio::AudioHit;
+use crate::mode::scenes::Sense;
+use crate::mode::ZoneValue;
+use crate::screen::ScreenLevels;
 
 const SIMPLE: &str = include_str!("../../modes/simple.luau");
 const ACCUMULATION: &str = include_str!("../../modes/accumulation.luau");
@@ -494,7 +497,7 @@ fn surge_fills_with_parries_and_spends_on_a_surge() {
 
 #[test]
 fn ai_prompt_names_the_game_and_embeds_the_api() {
-    let text = prompt::new_mode_prompt(&prompt::Templates::builtin(), "  Hades II ", "Français");
+    let text = prompt::new_mode_prompt(&prompt::Templates::builtin(), "  Hades II ", "Français", prompt::Depth::Quick, None);
     assert!(text.contains("**Hades II**"));
     assert!(text.contains("category = \"Hades II\""));
     assert!(text.contains("answer in Français"), "language");
@@ -505,12 +508,37 @@ fn ai_prompt_names_the_game_and_embeds_the_api() {
         assert!(!text.contains(left_out), "{left_out}");
     }
     assert!(!text.contains("{{") && !text.contains("<!--"), "every placeholder and marker replaced");
+    // A quick request: high-level inputs only.
+    assert!(text.contains("### 6.3 ") && text.contains("on_scene"), "scenes are high level");
+    for advanced in ["### 6.4 ", "### 6.5 ", "### 7.1 "] {
+        assert!(!text.contains(advanced), "{advanced}");
+    }
+    assert!(text.contains("Nothing more: use the rumble"), "{text}");
+
+    // An advanced request: the raw inputs and the game's profile.
+    let profile = "Zones of the screen (`input.zones`, `on_zone`):\n- `battle_hud`: true while shown, false otherwise\n";
+    let advanced = prompt::new_mode_prompt(&prompt::Templates::builtin(), "Hades II", "English", prompt::Depth::Advanced, Some(profile));
+    assert!(advanced.contains("### 6.4 ") && advanced.contains("### 6.5 ") && advanced.contains("### 7.1 "));
+    assert!(advanced.contains("- `battle_hud`: true while shown"), "the profile");
+    let blank = prompt::new_mode_prompt(&prompt::Templates::builtin(), "Hades II", "English", prompt::Depth::Advanced, None);
+    assert!(blank.contains("tell the player which zones to draw"), "no profile yet");
 }
 
 #[test]
 fn left_out_spec_sections_exist() {
     let spec = include_str!("../../../docs/spec-modes.md");
-    for heading in ["## 1. Goal", "## 2. Architecture", "### 4.1 Presets", "## 11. Errors", "## 12. Safety", "## 13. Planned", "## 14. Examples"] {
+    for heading in [
+        "## 1. Goal",
+        "## 2. Architecture",
+        "### 4.1 Presets",
+        "### 6.4 Raw sound and image",
+        "### 6.5 The game's profile",
+        "### 7.1 Advanced inputs",
+        "## 11. Errors",
+        "## 12. Safety",
+        "## 13. Planned",
+        "## 14. Examples",
+    ] {
         assert!(spec.lines().any(|l| l.starts_with(heading)), "{heading}");
     }
 }
@@ -542,6 +570,7 @@ fn feel_prompt_holds_the_problem_settings_and_session() {
         session: Some("### Vibrations sent by the game (0)\n"),
         full: true,
         language: "English",
+        profile: None,
     };
     let templates = prompt::Templates::builtin();
     let text = prompt::feel_prompt(&templates, &report);
@@ -554,6 +583,7 @@ fn feel_prompt_holds_the_problem_settings_and_session() {
     assert!(text.contains("### Vibrations sent by the game (0)"), "session");
     assert!(text.contains("Continuous beats intermittent"), "rules");
     assert!(text.contains("## 5. Callbacks") && !text.contains("## 14. Examples"), "spec");
+    assert!(!text.contains("### 6.5 "), "a mode using high-level inputs only gets the quick specification");
     assert!(!text.contains("{{") && !text.contains("<!--"), "every placeholder and marker replaced");
 
     // For the conversation that wrote the mode: no context, rules or API.
@@ -633,44 +663,78 @@ fn audio_levels(level: f64) -> AudioLevels {
 #[test]
 fn input_audio_and_hits_follow_the_game_sound() {
     let src = wrap(
-        "hits = 0
+        "hits, impacts = 0, 0
          function on_audio_hit(ev) hits += 1; plot('strength', ev.strength); log(ev.band) end
+         function on_impact(ev) impacts += 1; plot('source', ev.source == 'sound' and 1 or 2) end
          function tick(dt, input)
            plot('active', input.audio.active and 1 or 0)
            plot('level', input.audio.level)
            plot('low', input.audio.low)
-           plot('intensity', input.audio.intensity)
+           plot('audio_intensity', input.audio.intensity)
+           plot('intensity', input.intensity)
            plot('hits', hits)
-           plot('scene', input.audio.scene == nil and 0 or 1)
+           plot('impacts', impacts)
+           plot('scene', input.scene == nil and 0 or 1)
          end",
     );
     let mut rt = load(&src);
     let out = step(&mut rt, rumble(0.0, 0.0));
-    assert_eq!((plot_value(&out, "active"), plot_value(&out, "level")), (0.0, 0.0));
+    assert_eq!((plot_value(&out, "active"), plot_value(&out, "level"), plot_value(&out, "intensity")), (0.0, 0.0, 0.0));
 
     rt.set_audio(Some(audio_levels(0.8)));
-    let hit = ModeEvent::AudioHit(AudioHit { strength: 0.6, band: crate::audio::Band::Low });
-    let out = rt.step(DT, rumble(0.0, 0.0), &PadState::default(), 1e9, &[hit.clone()]).unwrap();
+    let hit = |strength| ModeEvent::AudioHit(AudioHit { strength, band: crate::audio::Band::Low });
+    let out = rt.step(DT, rumble(0.0, 0.0), &PadState::default(), 1e9, &[hit(0.6), hit(0.1)]).unwrap();
     assert_eq!(plot_value(&out, "active"), 1.0);
     assert_eq!(plot_value(&out, "level"), 0.8);
     assert_eq!(plot_value(&out, "low"), 0.4);
-    assert_eq!(plot_value(&out, "intensity"), 0.25);
-    assert_eq!(plot_value(&out, "hits"), 1.0);
-    assert_eq!(plot_value(&out, "strength"), 0.6);
+    assert_eq!(plot_value(&out, "audio_intensity"), 0.25);
+    assert_eq!(plot_value(&out, "intensity"), 0.25, "the sound alone");
+    assert_eq!(plot_value(&out, "hits"), 2.0);
+    assert_eq!(plot_value(&out, "impacts"), 1.0, "weak hits are no impacts");
+    assert_eq!(plot_value(&out, "source"), 1.0);
     assert_eq!(plot_value(&out, "scene"), 0.0, "no scenes declared");
+
+    // The image adds to the intensity, and its flashes are impacts.
+    rt.set_screen(Some(ScreenLevels { brightness: 0.5, motion: 0.2, action: 0.75 }));
+    let out = rt.step(DT, rumble(0.0, 0.0), &PadState::default(), 1e9, &[ModeEvent::ScreenFlash(0.7)]).unwrap();
+    assert_eq!(plot_value(&out, "intensity"), 0.5, "the mean of both senses");
+    assert_eq!((plot_value(&out, "impacts"), plot_value(&out, "source")), (2.0, 2.0));
 
     // Hits are dropped while the sound is not captured.
     rt.set_audio(None);
-    let out = rt.step(DT, rumble(0.0, 0.0), &PadState::default(), 1e9, &[hit]).unwrap();
-    assert_eq!((plot_value(&out, "active"), plot_value(&out, "hits")), (0.0, 1.0));
+    let out = rt.step(DT, rumble(0.0, 0.0), &PadState::default(), 1e9, &[hit(0.9)]).unwrap();
+    assert_eq!((plot_value(&out, "active"), plot_value(&out, "hits")), (0.0, 2.0));
 }
 
 #[test]
-fn audio_scenes_are_declared_and_reported() {
-    let src = "mode { api = 1, name = 'T', audio_scene_window = 4,
-                 audio_scenes = { calm = 'calm ambient music', battle = 'intense battle music' } }
+fn input_screen_follows_the_game_image() {
+    let src = wrap(
+        "function tick(dt, input)
+           plot('active', input.screen.active and 1 or 0)
+           plot('brightness', input.screen.brightness)
+           plot('motion', input.screen.motion)
+           plot('action', input.screen.action)
+         end",
+    );
+    let mut rt = load(&src);
+    assert_eq!(plot_value(&step(&mut rt, rumble(0.0, 0.0)), "active"), 0.0);
+    rt.set_screen(Some(ScreenLevels { brightness: 0.25, motion: 0.5, action: 0.125 }));
+    let out = step(&mut rt, rumble(0.0, 0.0));
+    assert_eq!(
+        ["active", "brightness", "motion", "action"].map(|k| plot_value(&out, k)),
+        [1.0, 0.25, 0.5, 0.125]
+    );
+}
+
+#[test]
+fn scenes_are_declared_and_reported() {
+    let src = "mode { api = 1, name = 'T', scene_window = 4,
+                 scenes = {
+                   calm = { sound = 'calm ambient music', screen = 'a quiet village' },
+                   battle = { sound = 'intense battle music' },
+                 } }
                last, previous, changes = 'none', 'none', 0
-               function on_audio_scene(ev)
+               function on_scene(ev)
                  changes += 1
                  last = ev.scene or 'none'
                  previous = ev.previous or 'none'
@@ -678,13 +742,20 @@ fn audio_scenes_are_declared_and_reported() {
                end
                function tick(dt, input)
                  plot('changes', changes)
-                 plot('battle', input.audio.scenes.battle)
-                 plot('is_battle', input.audio.scene == 'battle' and 1 or 0)
+                 plot('battle', input.scenes.battle)
+                 plot('is_battle', input.scene == 'battle' and 1 or 0)
                end";
     let mut rt = load(src);
-    assert_eq!(rt.info().audio_scenes[0], ("battle".to_owned(), "intense battle music".to_owned()), "sorted by name");
-    assert_eq!(rt.info().audio_scene_window, 4.0);
-    assert_eq!(rt.scene_descriptions(), ["intense battle music", "calm ambient music"]);
+    let info = rt.info();
+    assert_eq!(info.scenes[0].name, "battle", "sorted by name");
+    assert_eq!(info.scenes[0].screen, None);
+    assert_eq!(info.scene_window, 4.0);
+    assert!(info.uses_sound_scenes() && info.uses_screen_scenes());
+    assert_eq!(
+        rt.scene_descriptions(Sense::Sound),
+        [("battle".to_owned(), "intense battle music".to_owned()), ("calm".to_owned(), "calm ambient music".to_owned())]
+    );
+    assert_eq!(rt.scene_descriptions(Sense::Screen), [("calm".to_owned(), "a quiet village".to_owned())]);
     // Text embeddings of battle and calm: two axes.
     let axis = |i: usize| -> crate::audio::Embedding { (0..2).map(|k| if k == i { 1.0 } else { 0.0 }).collect() };
     rt.set_audio(Some(audio_levels(0.5)));
@@ -693,7 +764,7 @@ fn audio_scenes_are_declared_and_reported() {
     assert_eq!(plot_value(&out, "changes"), 0.0, "nothing before the descriptions are encoded");
     assert!(!rt.scenes_ready());
 
-    rt.set_scene_texts(vec![axis(0), axis(1)]);
+    rt.set_scene_references(Sense::Sound, vec![("battle".into(), axis(0)), ("calm".into(), axis(1))]);
     let out = rt.step(DT, rumble(0.0, 0.0), &PadState::default(), 1e9, &[clip]).unwrap();
     assert_eq!(plot_value(&out, "changes"), 1.0);
     assert_eq!(plot_value(&out, "is_battle"), 1.0);
@@ -701,7 +772,7 @@ fn audio_scenes_are_declared_and_reported() {
     assert!(plot_value(&out, "battle") > 0.99);
     assert_eq!(rt.scene_state().0.as_deref(), Some("battle"));
 
-    // The sound stops: the scene is forgotten, with an event.
+    // The sound stops: no sense is left, the scene is forgotten, with an event.
     rt.set_audio(None);
     let out = step(&mut rt, rumble(0.0, 0.0));
     assert_eq!(plot_value(&out, "changes"), 2.0);
@@ -709,11 +780,61 @@ fn audio_scenes_are_declared_and_reported() {
 }
 
 #[test]
-fn audio_scene_declarations_are_checked() {
-    let one = load_err("mode { api = 1, name = 'T', audio_scenes = { a = 'x' } } function tick() end");
+fn scene_declarations_are_checked() {
+    let one = load_err("mode { api = 1, name = 'T', scenes = { a = { sound = 'x' } } } function tick() end");
     assert!(one.contains("2 to 8 scenes"), "{one}");
-    let empty = load_err("mode { api = 1, name = 'T', audio_scenes = { a = 'x', b = ' ' } } function tick() end");
-    assert!(empty.contains("needs a description"), "{empty}");
-    let window = load_err("mode { api = 1, name = 'T', audio_scene_window = 0.5 } function tick() end");
+    let empty = load_err("mode { api = 1, name = 'T', scenes = { a = { sound = 'x' }, b = { screen = ' ' } } } function tick() end");
+    assert!(empty.contains("needs a sound or a screen description"), "{empty}");
+    let flat = load_err("mode { api = 1, name = 'T', scenes = { a = 'x', b = 'y' } } function tick() end");
+    assert!(flat.contains("must be a table"), "{flat}");
+    let window = load_err("mode { api = 1, name = 'T', scene_window = 0.5 } function tick() end");
     assert!(window.contains("between 2 and 60"), "{window}");
+}
+
+#[test]
+fn zones_and_external_inputs_reach_the_mode() {
+    let src = wrap(
+        "zone_events, events = 0, 0
+         function on_zone(ev)
+           zone_events += 1
+           if ev.zone == 'hp' then plot('previous_hp', ev.previous or -1) end
+         end
+         function on_event(ev)
+           events += 1
+           plot('damage', ev.data.amount)
+           log(ev.name)
+         end
+         function tick(dt, input)
+           plot('hud', input.zones.battle_hud and 1 or 0)
+           plot('hp', input.zones.hp or -1)
+           plot('zone_events', zone_events)
+           plot('events', events)
+           plot('ammo', input.custom.ammo or -1)
+           plot('stance', input.custom.stance == 'low' and 1 or 0)
+         end",
+    );
+    let mut rt = load(&src);
+    rt.set_screen(Some(ScreenLevels::default()));
+    let zone = |name: &str, value| ModeEvent::Zone { name: name.into(), value };
+    let custom = |name: &str, value| ModeEvent::Custom { name: name.into(), value };
+    let events = [
+        zone("battle_hud", ZoneValue::Visible(true)),
+        zone("hp", ZoneValue::Bar(0.5)),
+        custom("ammo", serde_json::json!(12)),
+        custom("stance", serde_json::json!("low")),
+        ModeEvent::External { name: "hit".into(), data: serde_json::json!({ "amount": 30 }) },
+    ];
+    let out = rt.step(DT, rumble(0.0, 0.0), &PadState::default(), 1e9, &events).unwrap();
+    assert_eq!(
+        ["hud", "hp", "previous_hp", "zone_events", "events", "damage", "ammo", "stance"].map(|k| plot_value(&out, k)),
+        [1.0, 0.5, -1.0, 2.0, 1.0, 30.0, 12.0, 1.0]
+    );
+    // An unchanged zone is not reported again; a JSON null removes a value.
+    let events = [zone("hp", ZoneValue::Bar(0.5)), zone("hp", ZoneValue::Bar(0.25)), custom("ammo", serde_json::Value::Null)];
+    let out = rt.step(DT, rumble(0.0, 0.0), &PadState::default(), 1e9, &events).unwrap();
+    assert_eq!(["hp", "previous_hp", "zone_events", "ammo"].map(|k| plot_value(&out, k)), [0.25, 0.5, 3.0, -1.0]);
+    // The image goes: so do the zones read on it.
+    rt.set_screen(None);
+    let out = step(&mut rt, rumble(0.0, 0.0));
+    assert_eq!((plot_value(&out, "hud"), plot_value(&out, "hp")), (0.0, -1.0));
 }

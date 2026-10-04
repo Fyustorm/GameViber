@@ -20,6 +20,7 @@ const ASSISTANTS: [(&str, &str); 4] = [
 pub struct State {
     pub open: bool,
     game: String,
+    depth: prompt::Depth,
     /// Game name the request was copied for.
     copied: Option<String>,
     answer: String,
@@ -53,11 +54,32 @@ impl App {
             ui.add(egui::TextEdit::singleline(&mut g.game).hint_text("e.g. Hades II").desired_width(f32::INFINITY));
             ui.add_space(10.0);
 
-            step(ui, 2, "Send the request to an AI assistant");
+            step(ui, 2, "Quick or advanced?");
+            ui.radio_value(&mut g.depth, prompt::Depth::Quick, "Quick (a couple of minutes)").on_hover_text(
+                "The rumble, the buttons, and the scenes, impacts and intensity GameViber gets from the sound and image",
+            );
+            ui.radio_value(&mut g.depth, prompt::Depth::Advanced, "Advanced").on_hover_text(
+                "Also the raw sound and image, and the zones, example images and values from other programs set up \
+                 on the Game page for the game being played",
+            );
+            let profile = s.profile.as_ref().map(|p| (p.game.clone(), p.describe()));
+            if g.depth == prompt::Depth::Advanced {
+                let note = match &profile {
+                    Some((game, text)) if !text.is_empty() => format!("The request includes what the Game page knows about {game}."),
+                    Some((game, _)) => format!("Nothing is set up for {game} yet: the assistant may ask you to draw zones on the Game page."),
+                    None => "No game shows the in-game overlay: the assistant may ask you to draw zones on the Game page once it does.".to_owned(),
+                };
+                ui.label(muted(note).size(12.0));
+            }
+            ui.add_space(10.0);
+
+            step(ui, 3, "Send the request to an AI assistant");
             ui.horizontal(|ui| {
                 let game = g.game.trim().to_owned();
                 if ui.add_enabled(!game.is_empty(), primary("📋 Copy the request")).clicked() {
-                    ui.ctx().copy_text(prompt::new_mode_prompt(&prompt::Templates::load(), &game, &s.settings.language));
+                    let profile = profile.as_ref().map(|(_, text)| text.as_str());
+                    let request = prompt::new_mode_prompt(&prompt::Templates::load(), &game, &s.settings.language, g.depth, profile);
+                    ui.ctx().copy_text(request);
                     g.copied = Some(game.clone());
                 }
                 if g.copied.as_deref() == Some(game.as_str()) {
@@ -76,7 +98,7 @@ impl App {
             );
             ui.add_space(10.0);
 
-            step(ui, 3, "Paste the answer");
+            step(ui, 4, "Paste the answer");
             ui.label(muted("The whole answer or just the code. You can also drop a .luau file on this window."));
             egui::ScrollArea::vertical().max_height(200.0).show(ui, |ui| {
                 let edit = egui::TextEdit::multiline(&mut g.answer)

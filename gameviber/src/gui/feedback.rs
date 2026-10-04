@@ -407,6 +407,7 @@ impl App {
         }
         let mut history = entry.load_feedback();
         let earlier = history.lines();
+        let profile = s.profile.as_ref().map(|p| p.describe());
         let request = prompt::feel_prompt(&prompt::Templates::load(), &prompt::FeelReport {
             name: &info.name,
             game: &f.game,
@@ -418,6 +419,7 @@ impl App {
             session: session.as_deref(),
             full: !f.short,
             language: &s.settings.language,
+            profile: profile.as_deref(),
         });
         history.push(FeedbackRound::Request {
             date: session::local_time(),

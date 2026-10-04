@@ -13,19 +13,23 @@ use gameviber_common::overlay::{CaptureRequest, Event, Gauge, Hello, OverlayStat
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::mpsc;
 
-use crate::audio::clap::{self, ModelState};
 use crate::audio::{self, Audio, AudioHit, AudioLevels, Embedding};
 pub use crate::config::SourceChoice;
 use crate::config::{self, AudioSource, ModeEntry, OverlaySettings, Presets, Settings, ToySettings};
 use crate::helper::client::Helper;
 use crate::gamepad::{self, PadState, BUTTONS};
+use crate::inputs::{self, Inputs, InputsView};
 use crate::intiface::{Intiface, IntifaceStatus, Toy, ToyOutputs};
 use crate::mode::rumble_events::RumbleLevels;
+use crate::mode::scenes::Sense;
 use crate::mode::{HudGauge, ModeEvent, ModeInfo, ModeRuntime, ParamValue};
+use crate::models::{self, Model, ModelState};
 use crate::overlay;
-use crate::screen::{self, ScreenView};
+use crate::profile::Profile;
+use crate::screen::zones::ZoneReader;
+use crate::screen::{self, ImageScenes, ScreenLevels, ScreenView};
 use crate::rumble::RumbleState;
-use crate::session::{self, AudioTick, Player, Recorder, RecordingInfo};
+use crate::session::{self, Player, Recorder, RecordingInfo, Senses};
 use crate::source::ebpf::EbpfSource;
 use crate::source::proxy::{Hide, ProxySource};
 pub use crate::source::SourceHealth;
@@ -45,6 +49,8 @@ const SOURCE_RETRY: Duration = Duration::from_secs(2);
 pub const RECENT_SECS: f64 = 120.0;
 /// A marked moment is saved this long after the (last) mark, to include what followed.
 pub const MARK_SAVE_DELAY: f64 = 15.0;
+/// The game's image is compared with the scenes this often.
+const IMAGE_SCENE_STEP: f64 = 1.0;
 
 #[derive(Debug, Clone)]
 pub struct EngineOptions {
@@ -112,10 +118,20 @@ pub enum Command {
     DeleteRecording(PathBuf),
     /// Where the game's sound is captured from.
     SetAudio(AudioSource),
-    /// Downloads the audio scene model.
-    DownloadAudioModel,
+    /// Downloads a scene model.
+    DownloadModel(Model),
     /// Whether the GUI shows the game's image (the overlay copies it meanwhile).
     WatchScreen(bool),
+    /// Whether modes see the game's image.
+    SetScreen(bool),
+    /// Replaces the profile of the game being played (zones, inputs...).
+    SaveProfile(Profile),
+    /// Adds the game's current image to the profile as an example of a scene.
+    AddExample(String),
+    /// Forgets the profile's examples of a scene.
+    ClearExamples(String),
+    /// Port other programs send values and events to; 0 turns the WebSocket off.
+    SetInputsPort(u16),
     Shutdown,
 }
 
@@ -146,12 +162,21 @@ pub struct AudioView {
     /// Engine time of the last hit, and the hit.
     pub last_hit: Option<(f64, AudioHit)>,
     pub model: ModelState,
-    /// The active mode's audio scenes: the current one...
+}
+
+/// The active mode's scenes (§6.3), for the GUI.
+#[derive(Debug, Clone, Default)]
+pub struct SceneView {
+    /// The current scene...
     pub scene: Option<String>,
-    /// ...and the average probability of each.
+    /// ...and the average probability of each, sorted by name.
     pub scenes: Vec<(String, f64)>,
-    /// The scenes' descriptions are encoded: scenes are being recognized.
-    pub scenes_ready: bool,
+    /// Some sense compares the game with the scenes.
+    pub ready: bool,
+    /// Which senses the mode's scenes use, and which do compare.
+    pub sound: (bool, bool),
+    pub screen: (bool, bool),
+    pub examples: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -199,6 +224,10 @@ pub struct Shared {
     pub recordings: Vec<RecordingInfo>,
     pub audio: AudioView,
     pub screen: ScreenView,
+    pub scenes: SceneView,
+    /// Profile of the game being played (the one showing the overlay).
+    pub profile: Option<Profile>,
+    pub inputs: InputsView,
     pub time: f64,
     pub stopped: bool,
 }
@@ -310,20 +339,30 @@ struct Engine {
     audio: Option<Audio>,
     audio_levels: Option<AudioLevels>,
     last_hit: Option<(f64, AudioHit)>,
-    /// Text embeddings of audio scene descriptions, computed off the engine thread.
+    /// Text embeddings of scene descriptions, computed off the engine thread.
     scene_texts: (std_mpsc::Sender<SceneTexts>, std_mpsc::Receiver<SceneTexts>),
-    /// Descriptions being encoded.
-    scene_request: Option<Vec<String>>,
+    /// Descriptions being encoded, per sense.
+    scene_request: HashMap<Sense, Vec<(String, String)>>,
     /// Descriptions that could not be encoded (not tried again).
-    scene_failed: Option<Vec<String>>,
-    /// Someone wants the game's image: the overlay copies it.
+    scene_failed: HashMap<Sense, Vec<(String, String)>>,
+    /// The GUI shows the game's image: the overlay copies it even when modes do not see it.
     screen_watch: bool,
     screen: screen::Analyzer,
+    screen_levels: Option<ScreenLevels>,
     screen_view: ScreenView,
+    image_scenes: ImageScenes,
+    /// The last embedding of the game's image, and when the last image was submitted.
+    last_image: Option<Embedding>,
+    last_image_submit: f64,
+    /// Profile of the game being played, and the mean of its examples per scene.
+    profile: Option<Profile>,
+    example_centroids: Vec<(String, Embedding)>,
+    zones: ZoneReader,
+    inputs: Inputs,
     ticks: u64,
 }
 
-type SceneTexts = (Vec<String>, Result<Vec<Embedding>, String>);
+type SceneTexts = (Sense, Vec<(String, String)>, Result<Vec<Embedding>, String>);
 
 /// Runs the engine until `Command::Shutdown` or SIGINT/SIGTERM.
 pub fn run(opts: EngineOptions, shared: SharedHandle, commands: mpsc::UnboundedReceiver<Command>) -> anyhow::Result<()> {
@@ -352,6 +391,7 @@ async fn run_async(
     let (source_tx, mut rx) = mpsc::unbounded_channel::<SourceEvent>();
     let intiface = opts.intiface.then(|| Intiface::spawn(settings.url.clone()));
     let audio = Audio::start(settings.audio.clone());
+    let inputs = Inputs::start(settings.inputs_port);
     let now = Instant::now();
     let mut engine = Engine {
         opts,
@@ -389,11 +429,19 @@ async fn run_async(
         audio_levels: None,
         last_hit: None,
         scene_texts: std_mpsc::channel(),
-        scene_request: None,
-        scene_failed: None,
+        scene_request: HashMap::new(),
+        scene_failed: HashMap::new(),
         screen_watch: false,
         screen: screen::Analyzer::default(),
+        screen_levels: None,
         screen_view: ScreenView::default(),
+        image_scenes: ImageScenes::start(),
+        last_image: None,
+        last_image_submit: f64::NEG_INFINITY,
+        profile: None,
+        example_centroids: Vec::new(),
+        zones: ZoneReader::default(),
+        inputs,
         ticks: 0,
     };
     engine.apply_combos();
@@ -680,12 +728,41 @@ impl Engine {
                 self.settings.audio = source;
                 self.settings.save();
             }
-            Command::DownloadAudioModel => clap::start_download(),
-            Command::WatchScreen(watch) => {
-                self.screen_watch = watch;
-                if !watch {
-                    self.screen.reset();
-                    self.screen_view = ScreenView::default();
+            Command::DownloadModel(model) => model.start_download(),
+            Command::WatchScreen(watch) => self.screen_watch = watch,
+            Command::SetScreen(on) => {
+                log::info!("modes see the game's image: {on}");
+                self.settings.screen = on;
+                self.settings.save();
+            }
+            Command::SaveProfile(profile) => {
+                if self.profile.as_ref().is_some_and(|p| p.game == profile.game) {
+                    profile.save();
+                    self.set_profile(Some(profile));
+                }
+            }
+            Command::AddExample(scene) => match (&mut self.profile, &self.last_image) {
+                (Some(profile), Some(image)) => {
+                    profile.add_example(&scene, image);
+                    profile.save();
+                    log::info!("example of '{scene}' added to the profile of {}", profile.game);
+                    let profile = profile.clone();
+                    self.set_profile(Some(profile));
+                }
+                _ => log::warn!("no image of the game to add as an example"),
+            },
+            Command::SetInputsPort(port) => {
+                self.settings.inputs_port = port;
+                self.settings.save();
+                self.inputs.stop();
+                self.inputs = Inputs::start(port);
+            }
+            Command::ClearExamples(scene) => {
+                if let Some(profile) = &mut self.profile {
+                    profile.examples.remove(&scene);
+                    profile.save();
+                    let profile = profile.clone();
+                    self.set_profile(Some(profile));
                 }
             }
             Command::Shutdown => {}
@@ -982,7 +1059,18 @@ impl Engine {
             let buttons = player.advance(time, &mut self.pad);
             self.events.extend(buttons.into_iter().map(ModeEvent::Button));
         }
-        let (audio_levels, hits, clips) = self.poll_audio(time);
+        let audio_levels = self.poll_audio(time);
+        self.poll_screen(time);
+        for message in self.inputs.poll(time) {
+            // While replaying, the recording is what other programs sent.
+            if self.player.is_some() {
+                continue;
+            }
+            self.events.push(match message {
+                inputs::Message::Set(name, value) => ModeEvent::Custom { name, value },
+                inputs::Message::Event(name, data) => ModeEvent::External { name, data },
+            });
+        }
         // While replaying, the recording is the source.
         let lost = self.player.is_none() && self.source.lost();
         if lost != self.source_lost {
@@ -1012,16 +1100,16 @@ impl Engine {
         let levels = RumbleLevels { strong: game.strong.max(self.sim.strong), weak: game.weak.max(self.sim.weak) };
         let buttons: Vec<_> =
             self.events.iter().filter_map(|e| if let ModeEvent::Button(b) = e { Some(b.clone()) } else { None }).collect();
-        let audio_tick = AudioTick { levels: audio_levels, hits: &hits, clips: &clips };
+        let senses = Senses { audio: audio_levels, screen: self.screen_levels };
         if let Some(recorder) = self.recorder.as_mut() {
-            recorder.tick(time, levels, &buttons, &self.pad, audio_tick);
+            recorder.tick(time, levels, &buttons, &self.pad, senses, &self.events);
             if recorder.elapsed(time) >= session::MAX_SECS {
                 log::warn!("recording stopped after {:.0} min", session::MAX_SECS / 60.0);
                 self.stop_recording();
             }
         }
         if self.player.is_none() {
-            self.recent.tick(time, levels, &buttons, &self.pad, audio_tick);
+            self.recent.tick(time, levels, &buttons, &self.pad, senses, &self.events);
         }
         if self.pad.panic_combo(time) {
             self.trigger_panic(&gamepad::combo_text(&self.settings.panic_combo));
@@ -1057,6 +1145,7 @@ impl Engine {
         if let Some(active) = self.mode.as_mut() {
             if let Some(rt) = active.runtime.as_mut() {
                 rt.set_audio(audio_levels);
+                rt.set_screen(self.screen_levels);
                 if !active.suspended && !self.panic {
                     match rt.step(dt, levels, &self.pad, input_idle, &events) {
                         Ok(out) => {
@@ -1116,7 +1205,6 @@ impl Engine {
             let state = self.overlay_state(time, output, hud, &toys);
             self.overlay.update(&state);
         }
-        self.poll_screen(time);
 
         let mut shared = self.shared.lock().unwrap();
         shared.time = time;
@@ -1141,6 +1229,9 @@ impl Engine {
         shared.overlay_clients = self.overlay.clients();
         shared.audio = self.audio_view(audio_levels);
         shared.screen = self.screen_view.clone();
+        shared.scenes = self.scene_view();
+        shared.profile = self.profile.clone();
+        shared.inputs = self.inputs.view();
         shared.overlay_unavailable = self.overlay.unavailable();
         shared.history.push_back(Sample { t: time, strong: levels.strong, weak: levels.weak, channels });
         while shared.history.front().is_some_and(|s| time - s.t > HISTORY_SECS) {
@@ -1203,31 +1294,93 @@ impl Engine {
             gauges: hud.into_iter().map(|g| Gauge { label: g.label, value: g.value as f32, max: g.max as f32 }).collect(),
             events: self.overlay_events.iter().map(|(text, t)| Event { text: text.clone(), age: (time - t) as f32 }).collect(),
             alerts,
-            capture: self.screen_watch.then(CaptureRequest::default),
+            capture: (self.settings.screen || self.screen_watch).then(CaptureRequest::default),
             ..OverlayState::default()
         }
     }
 
-    /// Reads the newest copy of the game's image, while someone wants it.
+    /// Reads the newest copy of the game's image: measures, flashes, zones,
+    /// and an embedding now and then when scenes or examples need one.
     fn poll_screen(&mut self, time: f64) {
-        if !self.screen_watch {
-            return;
-        }
         const STALE_SECS: f64 = 2.0;
-        if let Some((hello, frame)) = self.overlay.frame() {
-            self.screen_view.levels = Some(self.screen.push(time, &frame));
+        let game = self.screen_view.game.clone().or_else(|| self.game());
+        if self.profile.as_ref().map(|p| &p.game) != game.as_ref() {
+            self.set_profile(game.map(|g| Profile::load(&g)));
+        }
+        let wanted = self.settings.screen || self.screen_watch;
+        let replaying = self.player.is_some();
+        if let Some((hello, frame)) = self.overlay.frame().filter(|_| wanted) {
+            let frame = Arc::new(frame);
+            let (levels, flash) = self.screen.push(time, &frame);
+            if self.settings.screen && !replaying {
+                self.screen_levels = Some(levels);
+                if let Some(strength) = flash {
+                    self.events.push(ModeEvent::ScreenFlash(strength));
+                }
+                if let Some(profile) = &self.profile {
+                    for (name, value) in self.zones.update(&profile.zones, &frame) {
+                        self.events.push(ModeEvent::Zone { name, value });
+                    }
+                }
+            } else if let Some(profile) = &self.profile {
+                // Zones are still measured for the editor.
+                self.zones.update(&profile.zones, &frame);
+            }
+            let rt = self.mode.as_ref().and_then(|m| m.runtime.as_ref());
+            let scenes_use_image = self.settings.screen && rt.is_some_and(|rt| rt.scene_sense(Sense::Screen) || rt.scene_sense(Sense::Examples));
+            if (scenes_use_image || self.screen_watch) && Model::Image.ready() && time - self.last_image_submit >= IMAGE_SCENE_STEP {
+                self.last_image_submit = time;
+                self.image_scenes.submit(frame.clone());
+            }
+            self.screen_view.levels = Some(levels);
             self.screen_view.game = Some(hello.exe);
-            self.screen_view.frame = Some(Arc::new(frame));
+            self.screen_view.frame = Some(frame);
             self.screen_view.rate = self.screen.rate();
-        } else if self.screen.last().is_some_and(|t| time - t > STALE_SECS) {
-            // The game stopped sending (closed, or paused rendering).
-            self.screen.reset();
-            self.screen_view = ScreenView::default();
+        } else if !wanted || self.screen.last().is_some_and(|t| time - t > STALE_SECS) {
+            // Nobody wants it, or the game stopped sending (closed, or paused rendering).
+            if self.screen.last().is_some() || self.screen_levels.is_some() {
+                self.screen.reset();
+                self.screen_levels = None;
+                self.last_image = None;
+                self.zones.clear();
+                self.screen_view = ScreenView::default();
+            }
+        }
+        if let Some((player, _)) = &self.player {
+            // The recording is the image (its events come with the sound's).
+            self.screen_levels = player.screen;
+        }
+        for image in self.image_scenes.poll() {
+            if self.screen_levels.is_some() && !replaying {
+                self.events.push(ModeEvent::ScreenClip(image.clone()));
+            }
+            self.last_image = Some(image);
+        }
+        self.screen_view.model = Model::Image.state();
+        self.screen_view.can_tag = self.last_image.is_some() && self.profile.is_some();
+        self.screen_view.zones = self.profile.iter().flat_map(|p| &p.zones).map(|z| {
+            (z.name.clone(), self.zones.measures.get(&z.name).copied().unwrap_or(0.0), self.zones.values().get(&z.name).copied())
+        }).collect();
+    }
+
+    /// The game being played changed, or its profile was edited.
+    fn set_profile(&mut self, profile: Option<Profile>) {
+        if self.profile.as_ref().map(|p| &p.game) != profile.as_ref().map(|p| &p.game) {
+            if let Some(p) = &profile {
+                log::info!("game profile: {} ({} zones)", p.game, p.zones.len());
+            }
+            self.zones.clear();
+        }
+        self.example_centroids = profile.as_ref().map(Profile::example_centroids).unwrap_or_default();
+        self.profile = profile;
+        // The active mode compares with the new examples.
+        if let Some(rt) = self.mode.as_mut().and_then(|m| m.runtime.as_mut()) {
+            rt.set_scene_references(Sense::Examples, self.example_centroids.clone());
         }
     }
 
     /// Drains the audio service. While replaying, the recording is the sound.
-    fn poll_audio(&mut self, time: f64) -> (Option<AudioLevels>, Vec<AudioHit>, Vec<Embedding>) {
+    fn poll_audio(&mut self, time: f64) -> Option<AudioLevels> {
         let games = self.overlay.clients().into_iter().map(|c| (c.pid, c.exe)).collect();
         let outputs = match &self.audio {
             Some(audio) => {
@@ -1237,82 +1390,101 @@ impl Engine {
             None => Vec::new(),
         };
         if let Some((player, _)) = self.player.as_mut() {
-            for event in player.take_audio_events() {
+            // The recording's sound, image and values from other programs.
+            for event in player.take_events() {
                 if let ModeEvent::AudioHit(hit) = &event {
                     self.last_hit = Some((time, *hit));
                 }
                 self.events.push(event);
             }
-            return (player.audio, Vec::new(), Vec::new());
+            return player.audio;
         }
-        let (mut hits, mut clips) = (Vec::new(), Vec::new());
         for output in outputs {
             match output {
                 audio::Output::Levels(levels) => self.audio_levels = Some(levels),
                 audio::Output::Hit(hit) => {
                     self.last_hit = Some((time, hit));
                     self.events.push(ModeEvent::AudioHit(hit));
-                    hits.push(hit);
                 }
-                audio::Output::Clip(clip) => {
-                    self.events.push(ModeEvent::AudioClip(clip.clone()));
-                    clips.push(clip);
-                }
+                audio::Output::Clip(clip) => self.events.push(ModeEvent::AudioClip(clip)),
                 audio::Output::Inactive => self.audio_levels = None,
             }
         }
-        (self.audio_levels, hits, clips)
+        self.audio_levels
     }
 
-    /// Gets the active mode's audio scene descriptions encoded (off the engine
-    /// thread: the text model takes a moment to load), and asks the audio
-    /// service for embeddings only while a mode can use them.
+    /// Gets the active mode's scene descriptions encoded for each sense whose
+    /// model is downloaded (off the engine thread: a text model takes a moment
+    /// to load), hands it the profile's examples, and asks the audio service
+    /// for embeddings only while the mode can use them.
     fn update_scenes(&mut self) {
-        while let Ok((descriptions, result)) = self.scene_texts.1.try_recv() {
-            self.scene_request = None;
+        while let Ok((sense, descriptions, result)) = self.scene_texts.1.try_recv() {
+            self.scene_request.remove(&sense);
             match result {
                 Ok(texts) => {
                     let rt = self.mode.as_mut().and_then(|m| m.runtime.as_mut());
-                    if let Some(rt) = rt.filter(|rt| rt.scene_descriptions() == descriptions) {
-                        log::info!("audio scenes of '{}' ready", rt.info().name);
-                        rt.set_scene_texts(texts);
+                    if let Some(rt) = rt.filter(|rt| rt.scene_descriptions(sense) == descriptions) {
+                        log::info!("{sense:?} scenes of '{}' ready", rt.info().name);
+                        rt.set_scene_references(sense, descriptions.into_iter().map(|(name, _)| name).zip(texts).collect());
                     }
                 }
                 Err(e) => {
-                    log::error!("cannot prepare the audio scenes: {e}");
-                    self.scene_failed = Some(descriptions);
+                    log::error!("cannot prepare the {sense:?} scenes: {e}");
+                    self.scene_failed.insert(sense, descriptions);
                 }
             }
         }
-        let rt = self.mode.as_ref().and_then(|m| m.runtime.as_ref());
-        let wanted = rt.is_some_and(|rt| !rt.info().audio_scenes.is_empty()) && clap::model_ready();
-        if let Some(audio) = &self.audio {
-            audio.set_scenes(wanted);
-        }
-        let Some(rt) = rt.filter(|rt| wanted && !rt.scenes_ready()) else { return };
-        let descriptions = rt.scene_descriptions();
-        if self.scene_request.is_some() || self.scene_failed.as_ref() == Some(&descriptions) {
+        let Some(rt) = self.mode.as_mut().and_then(|m| m.runtime.as_mut()) else {
+            if let Some(audio) = &self.audio {
+                audio.set_scenes(false);
+            }
             return;
+        };
+        if !rt.scene_sense(Sense::Examples) && !self.example_centroids.is_empty() && rt.info().uses_screen_scenes() {
+            rt.set_scene_references(Sense::Examples, self.example_centroids.clone());
         }
-        self.scene_request = Some(descriptions.clone());
-        let tx = self.scene_texts.0.clone();
-        std::thread::spawn(move || {
-            let result = clap::text_embeddings(&descriptions).map_err(|e| format!("{e:#}"));
-            let _ = tx.send((descriptions, result));
-        });
+        if let Some(audio) = &self.audio {
+            audio.set_scenes(rt.info().uses_sound_scenes() && Model::Sound.ready());
+        }
+        for (sense, model) in [(Sense::Sound, Model::Sound), (Sense::Screen, Model::Image)] {
+            let descriptions = rt.scene_descriptions(sense);
+            if descriptions.is_empty() || !model.ready() || rt.scene_sense(sense) {
+                continue;
+            }
+            if self.scene_request.contains_key(&sense) || self.scene_failed.get(&sense) == Some(&descriptions) {
+                continue;
+            }
+            self.scene_request.insert(sense, descriptions.clone());
+            let tx = self.scene_texts.0.clone();
+            std::thread::spawn(move || {
+                let texts: Vec<String> = descriptions.iter().map(|(_, d)| d.clone()).collect();
+                let result = models::text_embeddings(model, &texts).map_err(|e| format!("{e:#}"));
+                let _ = tx.send((sense, descriptions, result));
+            });
+        }
     }
 
     fn audio_view(&self, levels: Option<AudioLevels>) -> AudioView {
-        let rt = self.mode.as_ref().and_then(|m| m.runtime.as_ref()).filter(|rt| !rt.info().audio_scenes.is_empty());
-        let (scene, scenes) = rt.map(|rt| rt.scene_state()).unwrap_or_default();
         AudioView {
             status: self.audio.as_ref().map(Audio::status).unwrap_or_default(),
             levels,
             last_hit: self.last_hit,
-            model: clap::model_state(),
+            model: Model::Sound.state(),
+        }
+    }
+
+    fn scene_view(&self) -> SceneView {
+        let Some(rt) = self.mode.as_ref().and_then(|m| m.runtime.as_ref()).filter(|rt| !rt.info().scenes.is_empty()) else {
+            return SceneView::default();
+        };
+        let (scene, scenes) = rt.scene_state();
+        SceneView {
             scene,
             scenes,
-            scenes_ready: rt.is_some_and(|rt| rt.scenes_ready()),
+            ready: rt.scenes_ready(),
+            sound: (rt.info().uses_sound_scenes(), rt.scene_sense(Sense::Sound)),
+            screen: (rt.info().uses_screen_scenes(), rt.scene_sense(Sense::Screen)),
+            examples: rt.scene_sense(Sense::Examples),
         }
     }
 
@@ -1343,6 +1515,7 @@ impl Engine {
                 let _ = rt.stop();
             }
         }
+        self.inputs.stop();
         if let Some(i) = self.intiface.take() {
             i.shutdown().await;
         }

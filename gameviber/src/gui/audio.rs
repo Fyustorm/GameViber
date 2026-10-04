@@ -1,14 +1,14 @@
 //! Sound page: which sound GameViber listens to, what it hears right now,
 //! and the scene model that lets modes recognize battles, calm moments...
-//! from the game's music.
+//! from the game's music. The scene cards are shared with the Game page.
 
 use eframe::egui::{self, Margin, RichText};
 
 use super::theme::*;
 use super::App;
-use crate::audio::clap::{ModelState, DOWNLOAD_SIZE};
 use crate::config::AudioSource;
-use crate::engine::{AudioView, Command, Shared};
+use crate::engine::{Command, SceneView, Shared};
+use crate::models::{Model, ModelState};
 
 /// A hit stays lit this long.
 const HIT_SECS: f64 = 0.3;
@@ -30,9 +30,11 @@ impl App {
                 ui.add_space(8.0);
                 heard_now(ui, s);
                 ui.add_space(8.0);
-                if let Some(command) = scene_model(ui, &s.audio, s.mode.info.as_ref().map(|i| i.name.as_str())) {
+                if let Some(command) = model_card(ui, Model::Sound, &s.audio.model) {
                     self.send(command);
                 }
+                ui.add_space(8.0);
+                scenes_card(ui, &s.scenes, s.mode.info.as_ref().map(|i| i.name.as_str()));
             });
         });
     }
@@ -135,23 +137,28 @@ fn heard_now(ui: &mut egui::Ui, s: &Shared) {
     });
 }
 
-fn scene_model(ui: &mut egui::Ui, audio: &AudioView, mode: Option<&str>) -> Option<Command> {
+/// Download of a scene model, or its state.
+pub(super) fn model_card(ui: &mut egui::Ui, model: Model, state: &ModelState) -> Option<Command> {
     let mut command = None;
+    let (title, what) = match model {
+        Model::Sound => ("Scene recognition from the sound", "a sound model (CLAP, by LAION)"),
+        Model::Image => ("Scene recognition from the image", "an image model (CLIP, by OpenAI)"),
+    };
     card(PANEL).inner_margin(Margin::symmetric(16, 12)).show(ui, |ui| {
         ui.set_width(ui.available_width());
-        eyebrow(ui, "Scene recognition");
-        match &audio.model {
+        eyebrow(ui, title);
+        match state {
             ModelState::Missing | ModelState::Failed(_) => {
-                ui.label(
-                    "Recognizing scenes needs a sound model (CLAP, by LAION). It is downloaded once and runs on your \
-                     computer, using a little processor time while a mode uses scenes.",
-                );
-                if let ModelState::Failed(error) = &audio.model {
+                ui.label(format!(
+                    "Recognizing scenes needs {what}. It is downloaded once and runs on your computer, using a \
+                     little processor time while a mode uses scenes."
+                ));
+                if let ModelState::Failed(error) = state {
                     ui.label(RichText::new(format!("Download failed: {error}")).color(DANGER_TEXT).size(12.0));
                 }
-                let label = format!("Download the scene model ({} MB)", DOWNLOAD_SIZE / 1_000_000);
+                let label = format!("Download the scene model ({} MB)", model.size() / 1_000_000);
                 if ui.add(primary(&label)).clicked() {
-                    command = Some(Command::DownloadAudioModel);
+                    command = Some(Command::DownloadModel(model));
                 }
             }
             ModelState::Downloading { done, total } => {
@@ -170,8 +177,16 @@ fn scene_model(ui: &mut egui::Ui, audio: &AudioView, mode: Option<&str>) -> Opti
                 });
             }
         }
-        ui.add_space(6.0);
-        if audio.scenes.is_empty() {
+    });
+    command
+}
+
+/// The active mode's scenes, and what each sense says.
+pub(super) fn scenes_card(ui: &mut egui::Ui, scenes: &SceneView, mode: Option<&str>) {
+    card(PANEL).inner_margin(Margin::symmetric(16, 12)).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        eyebrow(ui, "Scenes");
+        if scenes.scenes.is_empty() {
             ui.label(muted(format!(
                 "{} does not use scenes. Modes written for a game by an AI assistant can.",
                 mode.unwrap_or("The active mode")
@@ -179,12 +194,19 @@ fn scene_model(ui: &mut egui::Ui, audio: &AudioView, mode: Option<&str>) -> Opti
             return;
         }
         ui.label(RichText::new(format!("Scenes of {}", mode.unwrap_or("the mode"))).strong());
-        if audio.model == ModelState::Ready && !audio.scenes_ready {
-            ui.label(muted("Preparing..."));
+        let mut senses = Vec::new();
+        for (name, (declared, ready)) in [("sound", scenes.sound), ("image", scenes.screen)] {
+            if declared {
+                senses.push(if ready { format!("{name}: compared") } else { format!("{name}: waiting for its model") });
+            }
         }
-        egui::Grid::new("audio-scenes").num_columns(3).spacing([12.0, 6.0]).show(ui, |ui| {
-            for (name, p) in &audio.scenes {
-                let current = audio.scene.as_deref() == Some(name.as_str());
+        if scenes.examples {
+            senses.push("example images: compared".to_owned());
+        }
+        ui.label(muted(senses.join(" · ")));
+        egui::Grid::new("scenes").num_columns(3).spacing([12.0, 6.0]).show(ui, |ui| {
+            for (name, p) in &scenes.scenes {
+                let current = scenes.scene.as_deref() == Some(name.as_str());
                 let label = RichText::new(name.as_str());
                 ui.label(if current { label.strong().color(ACCENT_TEXT) } else { label.color(MUTED) });
                 meter(ui, 200.0, *p, if current { ACCENT } else { GAME });
@@ -192,9 +214,8 @@ fn scene_model(ui: &mut egui::Ui, audio: &AudioView, mode: Option<&str>) -> Opti
                 ui.end_row();
             }
         });
-        if audio.scenes_ready && audio.scene.is_none() {
-            ui.label(muted("No scene recognized yet: it takes about 10 s of sound."));
+        if scenes.ready && scenes.scene.is_none() {
+            ui.label(muted("No scene recognized yet: it takes a few seconds of the game."));
         }
     });
-    command
 }

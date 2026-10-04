@@ -6,7 +6,7 @@
 - **Intense phases get a background that runs whatever the player does**: a slow sine
   wave (2 to 10 s per cycle) in battles and intense action, a heartbeat pattern in games
   built on tension (horror, stealth). Detect the phase with recent rumble, combat
-  activity or an audio scene, with tunable delays, and fade it in and out over a few
+  activity, a scene or a zone, with tunable delays, and fade it in and out over a few
   seconds.
 - **A wave never goes down to 0.** Its low point is a parameter above 0 (e.g. 0.05 to
   0.15, minimum above 0 too). Any value of 0.01 or more plays at least at the toy's
@@ -28,9 +28,13 @@
 - **Every heuristic is a parameter** with its unit in the label (`"Parry window (s)"`,
   `"Hit = vibration above"`). The rumble does not say who took a hit: "hit taken" or
   "successful parry" are guesses and must stay tunable.
-- Audio scenes (§6.3): 2 or 3 contrasted scenes described as sound, used for the mood
-  only (they come 2 to 15 s late), never to time an effect. The mode must work when
-  `input.audio.scene` is nil. Filter `on_audio_hit` with a strength parameter.
+- Scenes (§6.3): 2 or 3 contrasted scenes, each described as what is only heard
+  (`sound`) and what is only seen (`screen`) there, used for the mood only (they come
+  seconds late), never to time an effect. The mode must work when `input.scene` is nil.
+  Filter `on_impact` with a strength parameter. Prefer these high-level inputs; the raw
+  ones (§6.4) only when they say something the high-level ones do not.
+- Zones and values from other programs (§6.5, in advanced requests) exist only once the player set them up:
+  read them defensively (`input.zones.hp or 1`). They say exactly what scenes guess.
 - `plot()` the internal state worth tuning; `hud()` for 1 or 2 gauges and `hud_event()`
   for short messages ("Parry!") in the in-game overlay.
 - 2 to 5 `feedback` questions (§4.2) about the mechanics, each linked with `param` to the

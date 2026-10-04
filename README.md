@@ -39,9 +39,10 @@ again from **Setup** at the bottom of the left bar. Then the GUI provides:
 - **Sound**: which sound modes hear (automatic: the game showing the overlay,
   else everything; everything; one application, all its streams; off), what is heard right now (loudness,
   bass / mids / treble, hits), and the **scene model** to download (see below);
-- **Screen**: the game's image as the in-game overlay copies it (a small live
-  preview, brightness, motion). Groundwork for modes reading the screen; the
-  overlay copies frames only while this page is open;
+- **Game**: what GameViber knows about the game being played (see below): its
+  image as the in-game overlay copies it, the **zones** of its screen modes read
+  (drawn on a frozen image), **example images** of its scenes, the image scene
+  model to download, and the values other programs send;
 - **Keybindings**: the panic stop and mark-a-moment gamepad combos;
 - **Settings** (bottom of the left bar): the language AI assistants answer and
   write modes in, the templates of the requests sent to them (editable, with
@@ -90,18 +91,45 @@ place (the previous version is kept as `.luau.bak`) or creates a tuned copy of
 a built-in one.
 Template: [`gameviber/prompts/fix-feel.md`](gameviber/prompts/fix-feel.md).
 
-### The game's sound
+### The game's sound and image
 
 The rumble and the buttons do not say whether you are fighting, exploring or
-watching a cutscene; the music usually does. GameViber listens to the game's
-sound through PipeWire (`pw-record`, no root) and gives modes its loudness per
-band, the hits it hears, and **scenes** each mode describes in words ("intense
-battle music", "calm exploration music"). Scenes are recognized by a sound
-model (LAION's CLAP, quantized, about 200 MB) downloaded from the **Sound**
-page into `~/.local/share/gameviber/models/`; it runs on the CPU (about 0.1 s
-every 2 s, on 2 threads) and only while the active mode declares scenes.
-Nothing leaves the computer and the sound itself is never saved. Scenes come a
-few seconds late: modes use them for the mood of a phase, not to time effects.
+watching a cutscene; the music and the screen usually do. GameViber listens to
+the game's sound through PipeWire (`pw-record`, no root) and looks at its image
+through the in-game overlay, and gives modes:
+
+- **scenes** each mode describes in words, as they sound and as they look
+  ("aggressive battle music", "a turn-based battle menu"), recognized by a sound
+  model (LAION's CLAP, about 200 MB, from the **Sound** page) and an image model
+  (OpenAI's CLIP, about 150 MB, from the **Game** page). Both run on the CPU,
+  only while the active mode uses them, and are downloaded into
+  `~/.local/share/gameviber/models/`;
+- **impacts** (strong hits heard, flashes seen) and an overall **intensity**;
+- the raw measures behind them, for advanced modes.
+
+Scenes come a few seconds late: modes use them for the mood of a phase, not to
+time effects. Nothing leaves the computer; the sound and the images are never
+saved.
+
+### Game profiles
+
+For a game you play a lot, the **Game** page lets you teach GameViber more,
+for every mode (saved in `~/.config/gameviber/games/`):
+
+- **zones**: draw a rectangle around something shown only at times (the battle
+  interface) or around a bar (health); modes read whether it is shown, or how
+  full the bar is, ten times per second;
+- **example images**: press "This is battle now" while the game shows a battle;
+  a few examples per scene make the image recognition much more reliable;
+- **values from other programs**: a game's existing mod, or a script reading a
+  game's API, can send JSON to `ws://127.0.0.1:12350` or to the pipe
+  `$XDG_RUNTIME_DIR/gameviber/inputs` (`{"set": {"hp": 0.4}}`,
+  `{"event": "kill"}`); declare what it sends so AI assistants know it.
+
+When asking an AI assistant for a mode, pick **Quick** (the rumble, the buttons
+and the scenes, impacts and intensity: a couple of minutes) or **Advanced**
+(also the raw measures and the game's profile; the assistant may ask you to
+draw zones).
 
 ### In-game overlay
 
@@ -121,9 +149,9 @@ it starts with a newer version; restart running games to get it):
   `eglSwapBuffers` (GLX and EGL, OpenGL 3.0+ and OpenGL ES 3.0+), like MangoHud.
 
 It works fullscreen or not, on any desktop, in 64-bit and 32-bit games (see
-Build). When GameViber asks for it (the **Screen** page), the overlay also
-copies small images of the game (480 pixels wide, 10 per second), shrunk on the
-GPU and passed through shared memory; they are never saved. Not supported yet: Flatpak Steam.
+Build). It also copies small images of the game for GameViber (480 pixels
+wide, 10 per second), shrunk on the GPU and passed through shared memory; they
+are never saved (turn this off on the **Game** page). Not supported yet: Flatpak Steam.
 `DISABLE_GAMEVIBER_OVERLAY=1` turns it off for one game;
 `GAMEVIBER_OVERLAY_DEBUG=1` prints its errors on the game's stderr.
 

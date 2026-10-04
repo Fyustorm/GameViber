@@ -4,22 +4,19 @@
 //! their scenes in words ("intense battle music"); this module measures how
 //! much the game's sound looks like each.
 //!
-//! The model is downloaded on demand (about 200 MB) and runs on the CPU.
+//! The model is downloaded on demand (about 200 MB, `models::Model::Sound`)
+//! and runs on the CPU.
 
-use std::collections::HashMap;
-use std::fs;
-use std::io::{Read, Write};
-use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use anyhow::{anyhow, Context};
 use ort::session::Session;
 use ort::value::Tensor;
 use rustfft::num_complex::Complex;
 use rustfft::FftPlanner;
 
 use super::SAMPLE_RATE;
-use crate::config;
+pub use crate::models::Embedding;
+use crate::models::{self, Model};
 
 /// Length of the sound the model looks at: 10 s.
 pub const CLIP_SAMPLES: usize = 480_000;
@@ -31,130 +28,6 @@ const N_MELS: usize = 64;
 const FRAMES: usize = CLIP_SAMPLES / HOP + 1;
 const MEL_MIN_HZ: f64 = 50.0;
 const MEL_MAX_HZ: f64 = 14_000.0;
-/// Threads each model may use: the game needs the CPU more.
-const THREADS: usize = 2;
-
-const REPO: &str = "https://huggingface.co/Xenova/larger_clap_music_and_speech/resolve";
-/// Pinned revision of the repository, so that the files never change under us.
-const REVISION: &str = "e9fd5ac1dbf3280936a7fc3ec8a020453ff184db";
-const AUDIO_MODEL: &str = "audio_model_quantized.onnx";
-const TEXT_MODEL: &str = "text_model_quantized.onnx";
-const TOKENIZER: &str = "tokenizer.json";
-/// Files to download: repository path, local name, size in bytes.
-const FILES: [(&str, &str, u64); 3] = [
-    ("onnx/audio_model_quantized.onnx", AUDIO_MODEL, 78_155_433),
-    ("onnx/text_model_quantized.onnx", TEXT_MODEL, 126_603_262),
-    ("tokenizer.json", TOKENIZER, 2_108_774),
-];
-pub const DOWNLOAD_SIZE: u64 = FILES[0].2 + FILES[1].2 + FILES[2].2;
-
-/// A unit vector describing a sound or a text.
-pub type Embedding = Arc<[f32]>;
-
-#[derive(Debug, Clone, Default, PartialEq)]
-pub enum ModelState {
-    #[default]
-    Missing,
-    Downloading { done: u64, total: u64 },
-    Ready,
-    Failed(String),
-}
-
-static STATE: Mutex<Option<ModelState>> = Mutex::new(None);
-
-pub fn model_dir() -> PathBuf {
-    config::data_dir().join("models").join("clap-music-speech")
-}
-
-fn files_present() -> bool {
-    let dir = model_dir();
-    FILES.iter().all(|(_, name, size)| fs::metadata(dir.join(name)).is_ok_and(|m| m.len() == *size))
-}
-
-pub fn model_state() -> ModelState {
-    let mut state = STATE.lock().unwrap();
-    state.get_or_insert_with(|| if files_present() { ModelState::Ready } else { ModelState::Missing }).clone()
-}
-
-pub fn model_ready() -> bool {
-    model_state() == ModelState::Ready
-}
-
-fn set_state(state: ModelState) {
-    *STATE.lock().unwrap() = Some(state);
-}
-
-/// Downloads the model in the background; `model_state()` follows the progress.
-pub fn start_download() {
-    if matches!(model_state(), ModelState::Ready | ModelState::Downloading { .. }) {
-        return;
-    }
-    set_state(ModelState::Downloading { done: 0, total: DOWNLOAD_SIZE });
-    std::thread::Builder::new()
-        .name("model-download".into())
-        .spawn(|| match download() {
-            Ok(()) => {
-                log::info!("audio scene model downloaded to {}", model_dir().display());
-                set_state(ModelState::Ready);
-            }
-            Err(e) => {
-                log::error!("audio scene model download failed: {e:#}");
-                set_state(ModelState::Failed(format!("{e:#}")));
-            }
-        })
-        .expect("spawn the download thread");
-}
-
-fn download() -> anyhow::Result<()> {
-    let dir = model_dir();
-    config::create_dir(&dir)?;
-    let mut done = 0;
-    for (path, name, size) in FILES {
-        let target = dir.join(name);
-        if fs::metadata(&target).is_ok_and(|m| m.len() == size) {
-            done += size;
-            continue;
-        }
-        let url = format!("{REPO}/{REVISION}/{path}");
-        let response = ureq::get(&url).call().with_context(|| format!("downloading {url}"))?;
-        let mut body = response.into_body().into_reader();
-        let partial = dir.join(format!("{name}.part"));
-        let mut file = fs::File::create(&partial)?;
-        let mut buffer = vec![0; 1 << 16];
-        let mut received = 0;
-        loop {
-            let n = body.read(&mut buffer)?;
-            if n == 0 {
-                break;
-            }
-            file.write_all(&buffer[..n])?;
-            received += n as u64;
-            set_state(ModelState::Downloading { done: done + received, total: DOWNLOAD_SIZE });
-        }
-        file.flush()?;
-        anyhow::ensure!(received == size, "{name}: got {received} bytes instead of {size}");
-        fs::rename(&partial, &target)?;
-        done += size;
-    }
-    Ok(())
-}
-
-fn session(name: &str) -> anyhow::Result<Session> {
-    let path = model_dir().join(name);
-    let builder = Session::builder()?;
-    let builder = builder.with_intra_threads(THREADS).map_err(|e| anyhow!("{e}"))?;
-    builder
-        .with_inter_threads(1)
-        .map_err(|e| anyhow!("{e}"))?
-        .commit_from_file(&path)
-        .map_err(|e| anyhow!("loading {}: {e}", path.display()))
-}
-
-fn normalize(v: &[f32]) -> Embedding {
-    let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-12);
-    v.iter().map(|x| x / norm).collect()
-}
-
 /// Turns 10 s clips of sound into embeddings.
 pub struct AudioEncoder {
     session: Session,
@@ -163,7 +36,7 @@ pub struct AudioEncoder {
 
 impl AudioEncoder {
     pub fn load() -> anyhow::Result<Self> {
-        Ok(Self { session: session(AUDIO_MODEL)?, mel: MelSpectrogram::new() })
+        Ok(Self { session: Model::Sound.session("audio_model_quantized.onnx")?, mel: MelSpectrogram::new() })
     }
 
     /// `clip`: `CLIP_SAMPLES` mono samples at `SAMPLE_RATE`.
@@ -172,42 +45,8 @@ impl AudioEncoder {
         let input = Tensor::from_array(([1usize, 1, FRAMES, N_MELS], features))?;
         let outputs = self.session.run(ort::inputs!["input_features" => input])?;
         let (_, embedding) = outputs["audio_embeds"].try_extract_tensor::<f32>()?;
-        Ok(normalize(embedding))
+        Ok(models::normalize(embedding))
     }
-}
-
-/// Text embeddings, computed once per description. The text model is only
-/// loaded while new descriptions are encoded.
-static TEXTS: Mutex<Option<HashMap<String, Embedding>>> = Mutex::new(None);
-
-pub fn text_embeddings(descriptions: &[String]) -> anyhow::Result<Vec<Embedding>> {
-    let mut cache = TEXTS.lock().unwrap();
-    let cache = cache.get_or_insert_with(HashMap::new);
-    let missing: Vec<&String> = descriptions.iter().filter(|d| !cache.contains_key(*d)).collect();
-    if !missing.is_empty() {
-        anyhow::ensure!(model_ready(), "the audio scene model is not downloaded");
-        let tokenizer = tokenizers::Tokenizer::from_file(model_dir().join(TOKENIZER)).map_err(|e| anyhow!("tokenizer: {e}"))?;
-        let mut session = session(TEXT_MODEL)?;
-        for description in missing {
-            let encoding = tokenizer.encode(description.as_str(), true).map_err(|e| anyhow!("tokenizer: {e}"))?;
-            let ids: Vec<i64> = encoding.get_ids().iter().map(|&id| id as i64).collect();
-            let input = Tensor::from_array(([1usize, ids.len()], ids))?;
-            let outputs = session.run(ort::inputs!["input_ids" => input])?;
-            let (_, embedding) = outputs["text_embeds"].try_extract_tensor::<f32>()?;
-            cache.insert(description.clone(), normalize(embedding));
-        }
-    }
-    Ok(descriptions.iter().map(|d| cache[d].clone()).collect())
-}
-
-/// How well each text describes the sound, summing to 1.
-pub fn probabilities(sound: &[f32], texts: &[Embedding]) -> Vec<f64> {
-    let logits: Vec<f64> =
-        texts.iter().map(|t| LOGIT_SCALE * t.iter().zip(sound).map(|(a, b)| (a * b) as f64).sum::<f64>()).collect();
-    let max = logits.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    let exp: Vec<f64> = logits.iter().map(|l| (l - max).exp()).collect();
-    let sum: f64 = exp.iter().sum();
-    exp.into_iter().map(|e| e / sum).collect()
 }
 
 /// The model's input: log-mel spectrogram of a 10 s clip, as computed by
@@ -331,7 +170,7 @@ mod tests {
     fn probabilities_favour_the_closest_text() {
         let unit = |i: usize| -> Embedding { (0..4).map(|k| if k == i { 1.0 } else { 0.0 }).collect() };
         let sound: Vec<f32> = vec![0.8, 0.6, 0.0, 0.0];
-        let p = probabilities(&sound, &[unit(0), unit(1), unit(2)]);
+        let p = models::probabilities(&sound, &[unit(0), unit(1), unit(2)], LOGIT_SCALE);
         assert!((p.iter().sum::<f64>() - 1.0).abs() < 1e-9);
         assert!(p[0] > p[1] && p[1] > p[2], "{p:?}");
     }
@@ -350,8 +189,8 @@ mod tests {
             .collect();
         let sound = encoder.embed(&chord).unwrap();
         assert_eq!(sound.len(), 512);
-        let texts = text_embeddings(&["a sustained piano chord".to_owned(), "people talking".to_owned()]).unwrap();
-        let p = probabilities(&sound, &texts);
+        let texts = models::text_embeddings(Model::Sound, &["a sustained piano chord".to_owned(), "people talking".to_owned()]).unwrap();
+        let p = models::probabilities(&sound, &texts, LOGIT_SCALE);
         assert!(p[0] > p[1], "{p:?}");
     }
 }

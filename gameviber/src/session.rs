@@ -1,6 +1,8 @@
-//! Recorded play sessions: the game's rumble, the player's buttons and axes
-//! and what was heard of the game's sound, as the mode saw them, so that a mode can be tuned on a real session
-//! without playing it again.
+//! Recorded play sessions: the game's rumble, the player's buttons and axes,
+//! what was heard of the game's sound and seen of its image (levels, hits,
+//! flashes, zones, scene embeddings — never the sound or the images), and the
+//! values other programs sent, as the mode saw them, so that a mode can be
+//! tuned on a real session without playing it again.
 //!
 //! A recording is a JSON Lines file in `~/.config/gameviber/recordings/`: a
 //! header line, then one line per change (`[time, change]`).
@@ -17,10 +19,11 @@ use crate::audio::{AudioHit, AudioLevels, Band, Embedding};
 use crate::config;
 use crate::gamepad::{ButtonEvent, PadState, AXES, BUTTONS};
 use crate::mode::rumble_events::RumbleLevels;
-use crate::mode::ModeEvent;
+use crate::mode::{ModeEvent, ZoneValue};
+use crate::screen::ScreenLevels;
 
-/// 2: audio changes.
-const FORMAT_VERSION: u32 = 2;
+/// 2: audio changes. 3: image, zones, values from other programs.
+const FORMAT_VERSION: u32 = 3;
 const EXTENSION: &str = "jsonl";
 /// Recording stops by itself after this long.
 pub const MAX_SECS: f64 = 60.0 * 60.0;
@@ -57,16 +60,28 @@ pub enum Change {
     /// The sound stopped being captured.
     NoAudio,
     AudioHit { strength: f64, band: Band },
-    /// Embedding of the last 10 s of sound, for the mode's audio scenes.
+    /// Embedding of the last 10 s of sound, for the mode's scenes.
     AudioClip { embedding: Vec<f32> },
+    /// Measures of the game's image.
+    Screen { brightness: f64, motion: f64, action: f64 },
+    /// The image stopped being copied.
+    NoScreen,
+    Flash { strength: f64 },
+    /// Embedding of the game's image, for the mode's scenes.
+    ScreenClip { embedding: Vec<f32> },
+    Zone { name: String, value: ZoneValue },
+    /// A value another program sent (`input.custom`).
+    Custom { name: String, value: serde_json::Value },
+    /// An event another program sent (`on_event`).
+    External { name: String, data: serde_json::Value },
 }
 
-/// What was heard of the game's sound during one tick.
+/// The game's sound and image during one tick; their events (hits, clips,
+/// flashes, zones) and the values other programs sent come with the tick's events.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct AudioTick<'a> {
-    pub levels: Option<AudioLevels>,
-    pub hits: &'a [AudioHit],
-    pub clips: &'a [Embedding],
+pub struct Senses {
+    pub audio: Option<AudioLevels>,
+    pub screen: Option<ScreenLevels>,
 }
 
 /// A recording file as listed in the GUI.
@@ -159,6 +174,7 @@ pub struct Recorder {
     rumble: RumbleLevels,
     axes: BTreeMap<&'static str, f64>,
     audio: Option<AudioLevels>,
+    screen: Option<ScreenLevels>,
     changes: VecDeque<(f64, Change)>,
     /// State at the start of the window: changes dropped from it, latest per key.
     base: BTreeMap<String, Change>,
@@ -175,6 +191,7 @@ impl Recorder {
             rumble: RumbleLevels::default(),
             axes: BTreeMap::new(),
             audio: None,
+            screen: None,
             changes: VecDeque::new(),
             base: BTreeMap::new(),
         }
@@ -194,8 +211,9 @@ impl Recorder {
         self.changes.push_back((round(self.elapsed(time), 1000.0), Change::Mark));
     }
 
-    /// Records what changed since the previous tick.
-    pub fn tick(&mut self, time: f64, rumble: RumbleLevels, buttons: &[ButtonEvent], pad: &PadState, audio: AudioTick) {
+    /// Records what changed since the previous tick; `events` are the mode's
+    /// events of the tick (buttons are recorded from `buttons`).
+    pub fn tick(&mut self, time: f64, rumble: RumbleLevels, buttons: &[ButtonEvent], pad: &PadState, senses: Senses, events: &[ModeEvent]) {
         let t = round(self.elapsed(time), 1000.0);
         if (rumble.strong - self.rumble.strong).abs() >= RUMBLE_STEP || (rumble.weak - self.rumble.weak).abs() >= RUMBLE_STEP {
             self.rumble = rumble;
@@ -212,7 +230,7 @@ impl Recorder {
                 self.changes.push_back((t, Change::Axis { name: name.to_owned(), value: round(value, 100.0) }));
             }
         }
-        self.record_audio(t, audio);
+        self.record_senses(t, senses, events);
         if let Some(window) = self.window {
             while self.changes.front().is_some_and(|(at, _)| *at < t - window) {
                 let (_, change) = self.changes.pop_front().unwrap();
@@ -221,15 +239,23 @@ impl Recorder {
                     Change::Button { name, .. } => format!("button {name}"),
                     Change::Axis { name, .. } => format!("axis {name}"),
                     Change::Audio { .. } | Change::NoAudio => "audio".to_owned(),
-                    Change::Mark | Change::AudioHit { .. } | Change::AudioClip { .. } => continue,
+                    Change::Screen { .. } | Change::NoScreen => "screen".to_owned(),
+                    Change::Zone { name, .. } => format!("zone {name}"),
+                    Change::Custom { name, .. } => format!("custom {name}"),
+                    Change::Mark
+                    | Change::AudioHit { .. }
+                    | Change::AudioClip { .. }
+                    | Change::Flash { .. }
+                    | Change::ScreenClip { .. }
+                    | Change::External { .. } => continue,
                 };
                 self.base.insert(key, change);
             }
         }
     }
 
-    fn record_audio(&mut self, t: f64, audio: AudioTick) {
-        let moved = match (self.audio, audio.levels) {
+    fn record_senses(&mut self, t: f64, senses: Senses, events: &[ModeEvent]) {
+        let moved = match (self.audio, senses.audio) {
             (None, None) => false,
             (Some(a), Some(b)) => [a.level - b.level, a.low - b.low, a.mid - b.mid, a.high - b.high, a.intensity - b.intensity]
                 .iter()
@@ -237,10 +263,10 @@ impl Recorder {
             _ => true,
         };
         if moved {
-            self.audio = audio.levels;
+            self.audio = senses.audio;
             self.changes.push_back((
                 t,
-                match audio.levels {
+                match senses.audio {
                     Some(l) => Change::Audio {
                         level: round(l.level, 100.0),
                         low: round(l.low, 100.0),
@@ -252,12 +278,40 @@ impl Recorder {
                 },
             ));
         }
-        for hit in audio.hits {
-            self.changes.push_back((t, Change::AudioHit { strength: round(hit.strength, 100.0), band: hit.band }));
+        let moved = match (self.screen, senses.screen) {
+            (None, None) => false,
+            (Some(a), Some(b)) => {
+                [a.brightness - b.brightness, a.motion - b.motion, a.action - b.action].iter().any(|d| d.abs() as f64 >= AUDIO_STEP)
+            }
+            _ => true,
+        };
+        if moved {
+            self.screen = senses.screen;
+            self.changes.push_back((
+                t,
+                match senses.screen {
+                    Some(l) => Change::Screen {
+                        brightness: round(l.brightness as f64, 100.0),
+                        motion: round(l.motion as f64, 100.0),
+                        action: round(l.action as f64, 100.0),
+                    },
+                    None => Change::NoScreen,
+                },
+            ));
         }
-        for clip in audio.clips {
-            let embedding = clip.iter().map(|x| (x * 1e4).round() / 1e4).collect();
-            self.changes.push_back((t, Change::AudioClip { embedding }));
+        let embedding = |e: &Embedding| e.iter().map(|x| (x * 1e4).round() / 1e4).collect();
+        for event in events {
+            let change = match event {
+                ModeEvent::AudioHit(hit) => Change::AudioHit { strength: round(hit.strength, 100.0), band: hit.band },
+                ModeEvent::AudioClip(clip) => Change::AudioClip { embedding: embedding(clip) },
+                ModeEvent::ScreenClip(image) => Change::ScreenClip { embedding: embedding(image) },
+                ModeEvent::ScreenFlash(strength) => Change::Flash { strength: round(*strength, 100.0) },
+                ModeEvent::Zone { name, value } => Change::Zone { name: name.clone(), value: *value },
+                ModeEvent::Custom { name, value } => Change::Custom { name: name.clone(), value: value.clone() },
+                ModeEvent::External { name, data } => Change::External { name: name.clone(), data: data.clone() },
+                ModeEvent::Button(_) | ModeEvent::Device { .. } => continue,
+            };
+            self.changes.push_back((t, change));
         }
     }
 
@@ -271,8 +325,16 @@ impl Recorder {
             Change::Button { pressed, .. } => *pressed,
             Change::Axis { value, .. } => *value != 0.0,
             Change::Rumble { strong, weak } => *strong != 0.0 || *weak != 0.0,
-            Change::Audio { .. } => true,
-            Change::Mark | Change::NoAudio | Change::AudioHit { .. } | Change::AudioClip { .. } => false,
+            Change::Audio { .. } | Change::Screen { .. } | Change::Zone { .. } => true,
+            Change::Custom { value, .. } => !value.is_null(),
+            Change::Mark
+            | Change::NoAudio
+            | Change::NoScreen
+            | Change::AudioHit { .. }
+            | Change::AudioClip { .. }
+            | Change::Flash { .. }
+            | Change::ScreenClip { .. }
+            | Change::External { .. } => false,
         });
         let changes: Vec<(f64, Change)> = base
             .cloned()
@@ -303,8 +365,9 @@ pub struct Player {
     start: f64,
     pub rumble: RumbleLevels,
     pub audio: Option<AudioLevels>,
-    /// Audio hits and clips due, until `take_audio_events`.
-    audio_events: Vec<ModeEvent>,
+    pub screen: Option<ScreenLevels>,
+    /// Events of the sound, the image and other programs due, until `take_events`.
+    events: Vec<ModeEvent>,
 }
 
 impl Player {
@@ -321,13 +384,14 @@ impl Player {
             start: time,
             rumble: RumbleLevels::default(),
             audio: None,
-            audio_events: Vec::new(),
+            screen: None,
+            events: Vec::new(),
         }
     }
 
-    /// Audio hits and clips replayed since the last call.
-    pub fn take_audio_events(&mut self) -> Vec<ModeEvent> {
-        std::mem::take(&mut self.audio_events)
+    /// Events of the sound, the image and other programs replayed since the last call.
+    pub fn take_events(&mut self) -> Vec<ModeEvent> {
+        std::mem::take(&mut self.events)
     }
 
     pub fn position(&self, time: f64) -> f64 {
@@ -365,9 +429,19 @@ impl Player {
                 }
                 Change::NoAudio => self.audio = None,
                 Change::AudioHit { strength, band } => {
-                    self.audio_events.push(ModeEvent::AudioHit(AudioHit { strength: *strength, band: *band }))
+                    self.events.push(ModeEvent::AudioHit(AudioHit { strength: *strength, band: *band }))
                 }
-                Change::AudioClip { embedding } => self.audio_events.push(ModeEvent::AudioClip(Arc::from(embedding.as_slice()))),
+                Change::AudioClip { embedding } => self.events.push(ModeEvent::AudioClip(Arc::from(embedding.as_slice()))),
+                Change::Screen { brightness, motion, action } => {
+                    self.screen =
+                        Some(ScreenLevels { brightness: *brightness as f32, motion: *motion as f32, action: *action as f32 })
+                }
+                Change::NoScreen => self.screen = None,
+                Change::Flash { strength } => self.events.push(ModeEvent::ScreenFlash(*strength)),
+                Change::ScreenClip { embedding } => self.events.push(ModeEvent::ScreenClip(Arc::from(embedding.as_slice()))),
+                Change::Zone { name, value } => self.events.push(ModeEvent::Zone { name: name.clone(), value: *value }),
+                Change::Custom { name, value } => self.events.push(ModeEvent::Custom { name: name.clone(), value: value.clone() }),
+                Change::External { name, data } => self.events.push(ModeEvent::External { name: name.clone(), data: data.clone() }),
             }
             self.next += 1;
         }
@@ -409,13 +483,13 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("gameviber-session-{}", std::process::id()));
         let mut pad = PadState::default();
         let mut rec = Recorder::new(10.0, "Simple".into(), Some("Game".into()));
-        rec.tick(10.0, RumbleLevels::default(), &[], &pad, AudioTick::default());
+        rec.tick(10.0, RumbleLevels::default(), &[], &pad, Senses::default(), &[]);
         let press = pad.button("A", true, 10.5).unwrap();
         pad.set_axis("LX", 0.5, 10.5);
-        rec.tick(10.5, RumbleLevels { strong: 0.8, weak: 0.2 }, &[press], &pad, AudioTick::default());
-        rec.tick(10.52, RumbleLevels { strong: 0.8, weak: 0.2 }, &[], &pad, AudioTick::default());
+        rec.tick(10.5, RumbleLevels { strong: 0.8, weak: 0.2 }, &[press], &pad, Senses::default(), &[]);
+        rec.tick(10.52, RumbleLevels { strong: 0.8, weak: 0.2 }, &[], &pad, Senses::default(), &[]);
         let release = pad.button("A", false, 11.0).unwrap();
-        rec.tick(11.0, RumbleLevels::default(), &[release], &pad, AudioTick::default());
+        rec.tick(11.0, RumbleLevels::default(), &[release], &pad, Senses::default(), &[]);
         assert_eq!(rec.changes.len(), 5);
         let path = rec.session(12.0, None, None).save_in(&dir).unwrap();
 
@@ -447,10 +521,11 @@ mod tests {
         let hit = AudioHit { strength: 0.7, band: Band::Low };
         let clip: Embedding = Arc::from(vec![0.6f32, 0.8].as_slice());
         let none = RumbleLevels::default();
-        rec.tick(0.5, none, &[], &pad, AudioTick { levels: Some(loud), hits: &[hit], clips: &[clip] });
+        let heard = |audio| Senses { audio, screen: None };
+        rec.tick(0.5, none, &[], &pad, heard(Some(loud)), &[ModeEvent::AudioHit(hit), ModeEvent::AudioClip(clip)]);
         // Too small a change to be recorded.
-        rec.tick(0.6, none, &[], &pad, AudioTick { levels: Some(AudioLevels { level: 0.81, ..loud }), hits: &[], clips: &[] });
-        rec.tick(1.0, none, &[], &pad, AudioTick::default());
+        rec.tick(0.6, none, &[], &pad, heard(Some(AudioLevels { level: 0.81, ..loud })), &[]);
+        rec.tick(1.0, none, &[], &pad, Senses::default(), &[]);
         assert_eq!(rec.changes.len(), 4, "{:?}", rec.changes);
 
         let session = rec.session(1.5, None, None);
@@ -462,11 +537,43 @@ mod tests {
         let mut pad = PadState::default();
         player.advance(10.5, &mut pad);
         assert_eq!(player.audio, Some(loud));
-        let events = player.take_audio_events();
+        let events = player.take_events();
         assert!(matches!(events[..], [ModeEvent::AudioHit(h), ModeEvent::AudioClip(ref c)] if h == hit && c[..] == [0.6, 0.8]));
-        assert!(player.take_audio_events().is_empty());
+        assert!(player.take_events().is_empty());
         player.advance(11.0, &mut pad);
         assert_eq!(player.audio, None);
+    }
+
+    #[test]
+    fn image_zones_and_other_programs_are_recorded_and_replayed() {
+        let pad = PadState::default();
+        let none = RumbleLevels::default();
+        let mut rec = Recorder::new(0.0, "T".into(), Some("game.exe".into()));
+        let seen = ScreenLevels { brightness: 0.5, motion: 0.25, action: 0.75 };
+        let events = [
+            ModeEvent::ScreenFlash(0.8),
+            ModeEvent::ScreenClip(Arc::from(vec![1.0f32, 0.0].as_slice())),
+            ModeEvent::Zone { name: "hp".into(), value: ZoneValue::Bar(0.5) },
+            ModeEvent::Zone { name: "battle_hud".into(), value: ZoneValue::Visible(true) },
+            ModeEvent::Custom { name: "ammo".into(), value: serde_json::json!(3) },
+            ModeEvent::External { name: "kill".into(), data: serde_json::json!({"weapon": "bow"}) },
+            ModeEvent::Button(ButtonEvent { name: "A", pressed: true }),
+        ];
+        rec.tick(0.5, none, &[], &pad, Senses { audio: None, screen: Some(seen) }, &events);
+        rec.tick(1.0, none, &[], &pad, Senses::default(), &[]);
+        let session = rec.session(1.5, None, None);
+        assert_eq!(session.changes.len(), 8, "the button is recorded from the buttons, not the events: {:?}", session.changes);
+        let text = serde_json::to_string(&session.changes).unwrap();
+        assert!(text.contains(r#"{"zone":{"name":"hp","value":{"bar":0.5}}}"#), "{text}");
+        assert!(text.contains(r#"{"external":{"name":"kill","data":{"weapon":"bow"}}}"#), "{text}");
+
+        let mut player = Player::new(session, Path::new(""), 0.0);
+        let mut pad = PadState::default();
+        player.advance(0.5, &mut pad);
+        assert_eq!(player.screen, Some(seen));
+        assert_eq!(player.take_events(), events[..6]);
+        player.advance(1.0, &mut pad);
+        assert_eq!(player.screen, None);
     }
 
     #[test]
@@ -474,14 +581,14 @@ mod tests {
         let mut pad = PadState::default();
         let mut rec = Recorder::rolling(0.0, 1.0);
         let press = pad.button("LT", true, 0.5).unwrap();
-        rec.tick(0.5, RumbleLevels { strong: 0.4, weak: 0.0 }, &[press], &pad, AudioTick::default());
+        rec.tick(0.5, RumbleLevels { strong: 0.4, weak: 0.0 }, &[press], &pad, Senses::default(), &[]);
         let press = pad.button("A", true, 0.6).unwrap();
-        rec.tick(0.6, RumbleLevels { strong: 0.4, weak: 0.0 }, &[press], &pad, AudioTick::default());
+        rec.tick(0.6, RumbleLevels { strong: 0.4, weak: 0.0 }, &[press], &pad, Senses::default(), &[]);
         let release = pad.button("A", false, 0.7).unwrap();
-        rec.tick(0.7, RumbleLevels { strong: 0.4, weak: 0.0 }, &[release], &pad, AudioTick::default());
+        rec.tick(0.7, RumbleLevels { strong: 0.4, weak: 0.0 }, &[release], &pad, Senses::default(), &[]);
         rec.mark(0.8);
         rec.mark(2.0);
-        rec.tick(2.0, RumbleLevels { strong: 0.9, weak: 0.0 }, &[], &pad, AudioTick::default());
+        rec.tick(2.0, RumbleLevels { strong: 0.9, weak: 0.0 }, &[], &pad, Senses::default(), &[]);
 
         let session = rec.session(2.5, Some("Surge"), Some("Game"));
         assert_eq!(session.header.duration, 1.0);

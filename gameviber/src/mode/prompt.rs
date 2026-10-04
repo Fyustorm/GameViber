@@ -27,6 +27,38 @@ const SPEC_LEFT_OUT: [&str; 7] = [
     "## 13. ",
     "## 14. ",
 ];
+/// Left out of quick requests too: the raw sound and image, the game's
+/// profile and the advanced inputs (`Depth::Quick`).
+const SPEC_ADVANCED: [&str; 3] = ["### 6.4 ", "### 6.5 ", "### 7.1 "];
+
+/// How much of GameViber a request shows the assistant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Depth {
+    /// The rumble, the buttons and what GameViber makes of the sound and the
+    /// image (scenes, impacts, intensity): a mode in a couple of minutes.
+    #[default]
+    Quick,
+    /// Also the raw sound and image measures, the zones of the screen, the
+    /// example images and values other programs send (the game's profile).
+    Advanced,
+}
+
+/// What the game's profile brings to a request: its description (`Profile::describe`), if it has one.
+fn profile_text(depth: Depth, profile: Option<&str>) -> String {
+    match (depth, profile.map(str::trim).filter(|p| !p.is_empty())) {
+        (Depth::Quick, _) => "Nothing more: use the rumble, the buttons and the high-level inputs (scenes, impacts, \
+             intensity)."
+            .to_owned(),
+        (Depth::Advanced, Some(profile)) => format!(
+            "The player set up a profile for this game on GameViber's Game page (§6.5). Use what helps:\n\n{profile}"
+        ),
+        (Depth::Advanced, None) => "The player has not set up anything for this game yet. If a zone of the screen \
+             would help (an interface shown only in battles, a health bar), tell the player which zones to draw on \
+             the Game page: a name, its kind (shown or not, or a bar) and where to draw it. Read them defensively: \
+             `input.zones.<name>` is nil until the zone exists."
+            .to_owned(),
+    }
+}
 
 /// A request template, as shipped or as overridden by the player.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,10 +101,10 @@ impl Template {
     /// Placeholders the template should keep, so the request holds what it needs.
     pub fn placeholders(self) -> &'static [&'static str] {
         match self {
-            Template::NewMode => &["{{GAME}}", "{{LANGUAGE}}", "{{RULES}}", "{{SPEC}}"],
+            Template::NewMode => &["{{GAME}}", "{{LANGUAGE}}", "{{PROFILE}}", "{{RULES}}", "{{SPEC}}"],
             Template::FixFeel => &[
                 "{{GAME}}", "{{LANGUAGE}}", "{{PROBLEMS}}", "{{HISTORY}}", "{{NAME}}", "{{PARAMS}}",
-                "{{SOURCE}}", "{{SESSION}}", "{{RULES}}", "{{SPEC}}",
+                "{{SOURCE}}", "{{SESSION}}", "{{PROFILE}}", "{{RULES}}", "{{SPEC}}",
             ],
             Template::Rules => &[],
         }
@@ -132,11 +164,12 @@ impl Templates {
 }
 
 /// The request to paste into an AI assistant to get a mode made for `game`,
-/// answered in `language`.
-pub fn new_mode_prompt(t: &Templates, game: &str, language: &str) -> String {
+/// answered in `language`; `profile` describes the game's profile (advanced requests).
+pub fn new_mode_prompt(t: &Templates, game: &str, language: &str, depth: Depth, profile: Option<&str>) -> String {
     sections(&t.new_mode, true)
         .replace("{{RULES}}", t.rules.trim_end())
-        .replace("{{SPEC}}", &spec())
+        .replace("{{PROFILE}}", &profile_text(depth, profile))
+        .replace("{{SPEC}}", &spec(depth))
         .replace("{{LANGUAGE}}", language)
         .replace("{{GAME}}", game.trim())
 }
@@ -164,8 +197,9 @@ fn sections(text: &str, full: bool) -> String {
     out
 }
 
-/// The specification without the sections of `SPEC_LEFT_OUT`.
-fn spec() -> String {
+/// The specification without the sections of `SPEC_LEFT_OUT` (and `SPEC_ADVANCED` for a quick request).
+fn spec(depth: Depth) -> String {
+    let advanced: &[&str] = if depth == Depth::Quick { &SPEC_ADVANCED } else { &[] };
     let mut out = String::new();
     // Heading level of the section being skipped.
     let mut skipping: Option<usize> = None;
@@ -179,7 +213,7 @@ fn spec() -> String {
             if skipping.is_some_and(|skipped| level <= skipped) {
                 skipping = None;
             }
-            if skipping.is_none() && SPEC_LEFT_OUT.iter().any(|s| line.starts_with(s)) {
+            if skipping.is_none() && SPEC_LEFT_OUT.iter().chain(advanced).any(|s| line.starts_with(s)) {
                 skipping = Some(level);
             }
         }
@@ -208,6 +242,22 @@ pub struct FeelReport<'a> {
     /// for the conversation that wrote the mode.
     pub full: bool,
     pub language: &'a str,
+    /// The game's profile, described (`Profile::describe`).
+    pub profile: Option<&'a str>,
+}
+
+impl FeelReport<'_> {
+    /// A mode reading the raw sound or image, zones or other programs gets the
+    /// advanced specification; so does any mode while the game has a profile.
+    fn depth(&self) -> Depth {
+        const ADVANCED: [&str; 7] = ["input.audio", "input.screen", "input.zones", "input.custom", "on_audio_hit", "on_zone", "on_event"];
+        let profile = self.profile.is_some_and(|p| !p.trim().is_empty());
+        if profile || ADVANCED.iter().any(|a| self.source.contains(a)) {
+            Depth::Advanced
+        } else {
+            Depth::Quick
+        }
+    }
 }
 
 /// The request to paste into an AI assistant to fix a mode that does not feel right.
@@ -248,9 +298,15 @@ pub fn feel_prompt(t: &Templates, r: &FeelReport) -> String {
         ),
         None => "No session was recorded.".to_owned(),
     };
+    let depth = r.depth();
+    let profile = match depth {
+        Depth::Advanced => profile_text(depth, r.profile),
+        Depth::Quick => "None set up for this game.".to_owned(),
+    };
     sections(&t.fix_feel, r.full)
         .replace("{{RULES}}", t.rules.trim_end())
-        .replace("{{SPEC}}", &spec())
+        .replace("{{PROFILE}}", &profile)
+        .replace("{{SPEC}}", &spec(depth))
         .replace("{{LANGUAGE}}", r.language)
         .replace("{{GAME}}", &game)
         .replace("{{PROBLEMS}}", &problems)

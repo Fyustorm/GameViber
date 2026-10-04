@@ -26,6 +26,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokenizers = { version = "0.22", default-features = false, features = ["fancy-regex"] }
 tokio = { version = "1", features = ["full"] }
+# Values and events other programs send (docs/spec-modes.md §6.5).
+tokio-tungstenite = "0.30"
 toml = "1"
 ureq = "3"
 wayland-client = { version = "0.31", features = ["system"] }

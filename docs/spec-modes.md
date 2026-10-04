@@ -1,11 +1,12 @@
 # GameViber — Mode specification (API v1)
 
-Status: implemented (v1, with the game's sound) · API version: `1`
+Status: implemented (v1, with the game's sound and image) · API version: `1`
 
 ## 1. Goal and scope
 
 A **mode** is a Lua script that turns what happens in the game (rumble sent to the
-gamepad, player inputs, the game's sound, time) into commands for the toys connected to Intiface.
+gamepad, player inputs, the game's sound and image, values other programs send, time)
+into commands for the toys connected to Intiface.
 Modes are created and edited on the fly from the built-in editor, without recompiling.
 
 **Included in v1**
@@ -14,7 +15,9 @@ Modes are created and edited on the fly from the built-in editor, without recomp
 - A single intercepted gamepad.
 - Scalar Buttplug outputs: `Vibrate`, `Rotate`, `Oscillate`.
 - Hot reload, parameters adjustable from the GUI, debug graphs, simulator.
-- The game's sound: levels, hits, and scenes recognized from the music (§6.3).
+- What GameViber makes of the game's sound and image: scenes, impacts, intensity (§6.3);
+  their raw measures (§6.4); zones of the screen, example images and values other
+  programs send, set up per game (§6.5).
 
 **Not in v1** (see §13): mode chaining, automatic per-game mode, linear outputs
 (strokers), multiple gamepads, block editor.
@@ -30,6 +33,9 @@ Gamepad proxy ──► event queue ──► Lua runtime (active mode) ──�
 - The **proxy** produces raw events: FF effects (upload, play, stop), buttons, axes.
 - The **audio analysis** listens to the game's sound through PipeWire and produces levels,
   hits and scene embeddings (§6.3), on its own threads.
+- The **in-game overlay** copies small images of the game (§6.4); GameViber measures
+  them, reads the profile's zones and embeds them for scenes.
+- **Other programs** send values and events over a local WebSocket or a pipe (§6.5).
 - The **runtime** normalizes these events, dispatches them to the mode's callbacks, then
   calls `tick`. It runs in its own thread.
 - The **safety layer** applies the global cap and the panic button, and handles connection
@@ -58,7 +64,7 @@ mode {
   channels    = { "main" },                 -- output channels, default { "main" }
   params      = { ... },                    -- see §4
   feedback    = { ... },                    -- questions for the player, see §4.2
-  audio_scenes = { ... },                   -- scenes recognized from the sound, see §6.3
+  scenes      = { ... },                    -- scenes recognized from the sound and image, see §6.3
 }
 ```
 
@@ -168,8 +174,11 @@ All callbacks are optional, except `tick`.
 | `on_button(ev)` | a button is pressed or released |
 | `on_param_changed(name, value)` | a parameter was changed in the GUI |
 | `on_device(ev)` | a toy is connected or disconnected (`ev.connected`, `ev.name`) |
-| `on_audio_hit(ev)` | a hit is heard in the game's sound (§6.3) |
-| `on_audio_scene(ev)` | the scene recognized in the game's sound changes (§6.3) |
+| `on_scene(ev)` | the scene recognized in the game's sound and image changes (§6.3) |
+| `on_impact(ev)` | an impact is heard or seen (§6.3) |
+| `on_audio_hit(ev)` | any hit is heard in the game's sound (§6.4) |
+| `on_zone(ev)` | a zone of the screen changes (§6.5) |
+| `on_event(ev)` | another program sends an event (§6.5) |
 
 **Execution order on every tick:**
 
@@ -228,65 +237,62 @@ down.
 Axis movements do not generate callbacks, to avoid a flood of events. Their current state
 is read from `input.axes` on every tick.
 
-### 6.3 The game's sound
+### 6.3 Scenes, impacts and intensity
 
-GameViber listens to the game's sound through PipeWire: by default the game showing the
-in-game overlay, or else everything the computer plays; on the Sound page the player can
-pick everything, one application (all its streams), or turn it off. The sound is analysed on the player's
-computer and never saved: recorded sessions keep only the levels, hits and scene
-embeddings, so that a replay feeds the mode the same sound events.
+GameViber listens to the game's sound through PipeWire (by default the game showing the
+in-game overlay, or else everything the computer plays; the player can pick another
+source on the Sound page) and, through the in-game overlay, looks at its image. Both are
+analysed on the player's computer and never saved: recorded sessions keep only what is
+measured, so that a replay feeds the mode the same events. What GameViber makes of them
+comes in three high-level inputs; prefer them to the raw measures of §6.4.
 
-**Levels** (`input.audio`, §7) are measured every 20 ms. They are relative to the game's
-recent loudest moments (a 40 dB range under a slowly decaying peak), so they do not
-depend on the volume setting; silence reads 0.
-
-- `level`: overall loudness; `low` (below 250 Hz: explosions, engines, bass), `mid`
-  (250 Hz to 4 kHz: voices, most effects), `high` (4 to 16 kHz: clashes, shots, cymbals).
-- `intensity`: loudness and density of hits over the last ~6 s; a slow "how busy is it".
-
-**Hits**: `on_audio_hit(ev)` is called on sudden attacks in the sound (impacts, shots,
-explosions, but also a door or a music beat), about 20 ms after them.
-
-- `ev.strength`: 0..1, compared with the strongest recent hits of the same band.
-- `ev.band`: `"low"`, `"mid"` or `"high"`, where the attack is strongest.
-- Hits are frequent and do not say what happened: filter them with a parameter
-  (`if ev.strength > P.min_hit then ... end`) and combine them with the rumble.
-
-**Scenes**: a mode describes, in words, the scenes it wants to tell apart:
+**Scenes**: a mode describes, in words, the scenes it wants to tell apart, as they sound
+and as they look:
 
 ```lua
-audio_scenes = {
-  battle  = "intense fast battle music with drums and electric guitar",
-  explore = "calm ambient exploration music",
-  talk    = "people talking, voice acting dialogue",
+scenes = {
+  battle  = { sound  = "aggressive battle theme with heavy drums and brass stabs",
+              screen = "a turn-based battle menu with command icons and enemy monsters" },
+  explore = { sound  = "light adventurous orchestral background music",
+              screen = "a character running through a forest or a dungeon" },
+  story   = { sound  = "people talking, voice acting dialogue over soft music",
+              screen = "a dialogue box with a character portrait and subtitles" },
 },
-audio_scene_window = 10,   -- seconds the probabilities are averaged over (2 to 60), default 10
+scene_window = 10,   -- seconds the probabilities are averaged over (2 to 60), default 10
 ```
 
-- 2 to 8 scenes, sorted by name. A sound model (CLAP) compares the last 10 s of sound
-  with each description every 2 s; the probabilities (summing to 1) are averaged over
-  `audio_scene_window`.
+- 2 to 8 scenes, sorted by name. Each has a `sound` description, a `screen` description,
+  or both. A sound model (CLAP) compares the last 10 s of sound with the `sound`
+  descriptions every 2 s; an image model (CLIP) compares the image with the `screen`
+  descriptions every second, and with the **example images** of the game's profile (§6.5)
+  when the player added some for scenes of the same name. Each sense only speaks about
+  the scenes it has a description or examples for; their probabilities are multiplied
+  and averaged over `scene_window`.
 - A scene is entered when its average reaches 0.5 and, when another scene is current,
-  beats it by 0.1. `on_audio_scene(ev)` is then called with `ev.scene`, `ev.previous`
-  (nil at first) and `ev.confidence` (its average). When the sound stops being captured
-  the scene is forgotten: `ev.scene` is nil.
-- **Describe the sound, not the game**: music style, tempo, instruments, voices. Two or
-  three contrasted scenes work much better than many close ones ("boss" versus "battle"
-  is rarely heard). Make them contrast: describe what is **only** heard in that scene
-  ("aggressive battle theme with heavy drums, brass stabs and screams") and the others
-  as lighter background ("light adventurous orchestral background music").
-- **The sound only knows what the music says.** Phases that share their music cannot be
-  told apart: in Metaphor: ReFantazio, dungeons play epic, rhythmic music both while
-  exploring and in fights. Declare one scene for them (`dungeon`), and let the mode tell
-  a fight from exploration with the rumble and buttons. Measured on that game, dialogue
-  and story were told from dungeons and fights reliably.
-- **Expect mistakes.** A scene appears **2 to 15 s late** and can stay wrong for a
-  while (a cutscene keeping the battle music). Use scenes for the mood (overall level,
-  which mechanics are active), not to time effects; combine them with the rumble and the
-  buttons, which say when the action really happens.
+  beats it by 0.1. `on_scene(ev)` is then called with `ev.scene`, `ev.previous` (nil at
+  first) and `ev.confidence` (its average). When neither the sound nor the image is left,
+  the scene is forgotten: `ev.scene` is nil. `input.scene`, `input.scene_confidence` and
+  `input.scenes.<name>` (the average probability of each) follow it.
+- **Describe what is only heard or only seen in a scene**: music style, tempo,
+  instruments, voices for `sound`; the interface, framing and colors for `screen`. Two or
+  three contrasted scenes work much better than many close ones. Make them contrast:
+  describe the strong scene by what only it has ("aggressive battle theme with heavy
+  drums, brass stabs and screams") and the others as lighter background.
+- **Each sense only knows what it shows.** Phases sharing their music cannot be told
+  apart by the sound: in Metaphor: ReFantazio, dungeons play epic, rhythmic music both
+  while exploring and in fights. The image tells them apart when its descriptions name
+  what differs (the battle menu), and much better with example images: give such phases
+  a `screen` description, or merge them into one scene and let the rumble and buttons
+  tell them apart. Measured on that game: story versus action is reliable from the sound;
+  battle versus exploration needs the image (about 85 % right with ten examples per
+  scene, less from descriptions alone).
+- **Expect mistakes.** A scene appears seconds late (2 to 15 s from the sound) and can
+  stay wrong for a while (a cutscene keeping the battle music). Use scenes for the mood
+  (overall level, which mechanics are active), not to time effects; combine them with
+  the rumble and the buttons, which say when the action really happens.
 - **Typical use: the scene sets the tension, not the algorithm.** The mode keeps the
   same mechanics everywhere; in tense phases it adds a background that runs whatever
-  the player does, and lets its peaks come from the rumble, the buttons and hits, as
+  the player does, and lets its peaks come from the rumble, the buttons and impacts, as
   usual. The background is usually:
   - a **slow wave** (a sine, 2 to 10 s per cycle) in battles and intense action;
   - a **heartbeat** (a `pattern`, §8) in games built on tension (horror, stealth).
@@ -298,9 +304,10 @@ audio_scene_window = 10,   -- seconds the probabilities are averaged over (2 to 
   background in and out over a few seconds, so a late or wrong scene is barely felt:
 
 ```lua
-audio_scenes = {
-  dungeon = "epic rhythmic orchestral music with heavy drums",
-  story   = "people talking, voice acting dialogue over soft music",
+scenes = {
+  dungeon = { sound = "epic rhythmic orchestral music with heavy drums" },
+  story   = { sound = "people talking, voice acting dialogue over soft music",
+              screen = "a dialogue box with a character portrait and subtitles" },
 },
 params = {
   wave_low    = number(0.08, 0.02, 0.4, "Dungeon wave low point"),
@@ -310,7 +317,7 @@ params = {
 
 local tension = 0
 function tick(dt, input)
-  local target = input.audio.scene == "dungeon" and 1 or 0
+  local target = input.scene == "dungeon" and 1 or 0
   tension += (target - tension) * math.min(1, dt / 3)  -- ~3 s fade
   local phase = 0.5 - 0.5 * math.cos(2 * math.pi * input.time / P.wave_period)
   local wave = (P.wave_low + (P.wave_high - P.wave_low) * phase) * tension
@@ -318,12 +325,86 @@ function tick(dt, input)
 end
 ```
 
-  The same background suits phases told apart without sound, e.g. "the game rumbled in
-  the last 10 s" for a fight (with the delay as a parameter).
+  The same background suits phases told apart otherwise, e.g. "the game rumbled in the
+  last 10 s" for a fight (with the delay as a parameter).
 
-- Scenes need the sound model, downloaded once from the Sound page (about 200 MB), and
-  cost a little processor time while the mode is active. Without it, or without sound,
-  `input.audio.scene` stays nil: **a mode must work without scenes**.
+- Scenes need the models, downloaded once (the sound model from the Sound page, about
+  200 MB; the image model from the Game page, about 150 MB), and cost a little processor
+  time while the mode is active. Without them, or without sound and image,
+  `input.scene` stays nil: **a mode must work without scenes**.
+
+**Impacts**: `on_impact(ev)` is called on a strong hit in the sound (an impact, a shot,
+an explosion, but also a door or a beat; about 20 ms late) or a sudden flash of the
+image (an explosion, a critical hit; about 0.1 s late).
+
+- `ev.strength`: 0..1. `ev.source`: `"sound"` or `"screen"`.
+- Impacts do not say what happened nor to whom: filter them with a parameter
+  (`if ev.strength > P.min_impact then ... end`) and combine them with the rumble.
+
+**Intensity**: `input.intensity` (0..1) is how busy the game is over the last seconds:
+loudness and hits of the sound, motion of the image, averaged over the senses there are.
+It rises in action and falls in menus and dialogue; it is slow, not a trigger.
+
+### 6.4 Raw sound and image
+
+The measures behind §6.3, for what the high-level inputs do not say.
+
+**Sound levels** (`input.audio`, §7.1) are measured every 20 ms. They are relative to
+the game's recent loudest moments (a 40 dB range under a slowly decaying peak), so they
+do not depend on the volume setting; silence reads 0.
+
+- `level`: overall loudness; `low` (below 250 Hz: explosions, engines, bass), `mid`
+  (250 Hz to 4 kHz: voices, most effects), `high` (4 to 16 kHz: clashes, shots, cymbals).
+- `intensity`: loudness and density of hits over the last ~6 s.
+
+**Hits**: `on_audio_hit(ev)` is called on every sudden attack in the sound, weak ones
+included (`on_impact` only gets the strong ones), with `ev.strength` (0..1, compared with
+the strongest recent hits of the same band) and `ev.band` (`"low"`, `"mid"` or `"high"`).
+
+**The image** (`input.screen`, §7.1): the in-game overlay copies a small image of the
+game ten times per second (only in games started with it, see the Overlay page; the
+player can turn this off on the Game page).
+
+- `brightness`: average brightness, 0..1.
+- `motion`: how much the image changed since the previous copy, 0..1 (camera moves,
+  effects); `action`: motion over the last ~6 s.
+
+### 6.5 The game's profile
+
+On the Game page the player can teach GameViber about the game being played; every mode
+gets it while that game runs. Everything here exists only once the player set it up:
+**read it defensively** (`input.zones.hp or 1`).
+
+**Zones**: rectangles of the screen the player drew on a frozen image of the game.
+
+- A zone that is **shown or not** (the battle interface, a warning) reads `true` while
+  the screen there looks like when it was drawn, `false` otherwise.
+- A **bar** (health, stamina) reads how full it is, 0..1, measured with its color.
+- `input.zones.<name>` holds the value; `on_zone(ev)` is called when it changes, with
+  `ev.zone`, `ev.value` and `ev.previous` (nil at first). Zones are read ten times per
+  second; a bar change below 0.02 is not reported.
+- Zones say exactly what scenes guess (the battle interface is on screen or not) and
+  come within 0.1 s: prefer them when the profile has them.
+
+**Example images**: the player tagged images of the game as scenes ("this is battle
+now"). They make the image recognize scenes of the same name much more reliably (§6.3);
+the mode only has to declare the scene with that name.
+
+**Values from other programs**: a game's existing mod, a script reading a game's API or
+anything else can send JSON to `ws://127.0.0.1:12350` (the port is set on the Game page;
+web pages are refused) or, one message per line, to the pipe
+`$XDG_RUNTIME_DIR/gameviber/inputs`:
+
+```json
+{"set": {"hp": 0.4, "stance": "low"}}
+{"event": "kill", "data": {"weapon": "bow"}}
+```
+
+- `set` keeps values in `input.custom.<name>` (numbers, booleans, strings, or tables);
+  `null` removes one. Names are letters, digits and `_`, starting with a letter.
+- `event` calls `on_event(ev)` with `ev.name` and `ev.data` (nil without `data`).
+- The player declares in the profile what the program sends ("hp: health, 0 to 100"), so
+  that an AI assistant writing a mode for the game knows it.
 
 ## 7. The `input` table (current state, read-only)
 
@@ -340,16 +421,30 @@ input.axes.LT, RT        -- 0..1
 input.rumble_idle        -- s since the end of the last vibration (0 while active)
 input.input_idle         -- s since the last player input (button, or axis outside the dead zone)
 input.idle               -- min(rumble_idle, input_idle)
-input.audio.active       -- true while the game's sound is captured (§6.3)
-input.audio.level        -- 0..1, and input.audio.low, .mid, .high per band
-input.audio.intensity    -- 0..1, loudness and hits over the last ~6 s
-input.audio.scene        -- name of the current audio scene, or nil
-input.audio.scene_confidence -- 0..1, average probability of the current scene
-input.audio.scenes.battle    -- 0..1, average probability of each declared scene
+input.scene              -- name of the current scene (§6.3), or nil
+input.scene_confidence   -- 0..1, average probability of the current scene
+input.scenes.battle      -- 0..1, average probability of each declared scene
+input.intensity          -- 0..1, how busy the game's sound and image are lately (§6.3)
 ```
 
-When the sound is not captured, every `input.audio` number is 0. The idle times do not
-take the sound into account.
+The idle times do not take the sound or the image into account.
+
+### 7.1 Advanced inputs
+
+```lua
+input.audio.active       -- true while the game's sound is captured (§6.4)
+input.audio.level        -- 0..1, and input.audio.low, .mid, .high per band
+input.audio.intensity    -- 0..1, loudness and hits over the last ~6 s
+input.screen.active      -- true while the game's image is copied (§6.4)
+input.screen.brightness  -- 0..1
+input.screen.motion      -- 0..1, change since the previous copy
+input.screen.action      -- 0..1, motion over the last ~6 s
+input.zones.battle_hud   -- true/false, or 0..1 for a bar; nil if the profile has no such zone (§6.5)
+input.custom.hp          -- what another program set; nil until it does (§6.5)
+```
+
+When the sound is not captured, every `input.audio` number is 0; likewise for
+`input.screen` without the image, and the zones are gone with it.
 
 ## 8. Outputs
 
@@ -472,8 +567,8 @@ resolution is therefore 20 ms.
 - **Linear outputs** (`LinearCmd`, for strokers): `stroke(speed, range)`.
 - **Multiple gamepads**: `ev.pad` and `input.pads[i]`.
 - **Block editor** generating Luau.
-- **The game's image**: regions of the screen read by the in-game overlay (a health bar,
-  the battle interface), as more inputs next to the sound.
+- **The game's image without the overlay**: through the desktop's screen capture, for
+  games the overlay does not reach.
 
 ## 14. Examples
 

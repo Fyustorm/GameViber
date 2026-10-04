@@ -3,7 +3,7 @@
 //! (with the panic stop) sits above the pages: Play (mode tiles, then the
 //! chosen mode's page with its settings), Toys (with Intiface Central),
 //! Gamepad (capture and troubleshooting), Sound (the game's sound and the
-//! scene model), Screen (the game's image copied by the overlay),
+//! scene model), Game (its image, zones, scene examples, values from other programs),
 //! Keybindings (gamepad combos),
 //! Overlay (in-game overlay) and Creator (mode editor, graphs, simulator,
 //! sessions, logs). Dialogs help players get a mode made for their game by an
@@ -275,7 +275,7 @@ impl App {
                     (Page::Toys, "📳", "Toys"),
                     (Page::Gamepad, "🎮", "Gamepad"),
                     (Page::Audio, "🔊", "Sound"),
-                    (Page::Screen, "🖼", "Screen"),
+                    (Page::Screen, "🎯", "Game"),
                     (Page::Keybindings, "⌨", "Keybindings"),
                     (Page::Overlay, "🖵", "Overlay"),
                     (Page::Creator, "🔧", "Creator"),

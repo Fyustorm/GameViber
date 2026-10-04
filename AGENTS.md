@@ -12,11 +12,14 @@ another language.
 ## What the project is
 
 GameViber is the Linux equivalent of the Intiface Game Haptics Router. It intercepts
-the rumble games send to a gamepad, listens to the game's sound, transforms both through
-a Lua (Luau) **mode**, and drives toys connected to Intiface Central (Buttplug protocol).
+the rumble games send to a gamepad, listens to the game's sound, looks at its image
+through the in-game overlay, takes values other programs send, transforms all of it
+through a Lua (Luau) **mode**, and drives toys connected to Intiface Central (Buttplug
+protocol).
 Linux only.
 
-Pipeline: **source** (interception) and **audio** (the game's sound) → **mode** (Luau
+Pipeline: **source** (interception), **audio** (the game's sound), **screen** (its
+image, the profile's zones) and **inputs** (other programs) → **mode** (Luau
 script) → **safety layer** → **Intiface output**.
 
 ## Layout
@@ -24,14 +27,17 @@ script) → **safety layer** → **Intiface output**.
 | Path | Contents |
 |---|---|
 | `gameviber/src/source/` | interception sources: `proxy` (uinput virtual gamepad) and `ebpf` |
-| `gameviber/src/audio/` | the game's sound: `capture` (PipeWire `pw-record` / `pw-dump`), `features` (levels, hits), `clap` (scene model: mel spectrogram, ONNX encoders, download) |
+| `gameviber/src/audio/` | the game's sound: `capture` (PipeWire `pw-record` / `pw-dump`), `features` (levels, hits), `clap` (sound scene model: mel spectrogram, encoder) |
+| `gameviber/src/models.rs` | scene models downloaded on demand (CLAP, CLIP): download, ONNX sessions, text embeddings |
 | `gameviber/src/rumble.rs` | evdev force-feedback semantics (ff-memless) → strong/weak levels |
 | `gameviber/src/gamepad.rs` | button/axis normalization (Xbox layout), panic combo |
-| `gameviber/src/mode/` | Luau runtime: `library.rs` (script API), `outputs.rs` (channels, pulses, patterns), `rumble_events.rs`, `audio_events.rs` (audio scenes), `prompt.rs` (AI requests: a per-game mode, a fix for a mode that feels wrong), `report.rs` (a session replayed offline into a mode, for the fix request), `tests.rs` |
-| `gameviber/src/screen.rs` | the game's image: frames copied by the overlay, measures on them (brightness, motion) |
+| `gameviber/src/mode/` | Luau runtime: `library.rs` (script API), `outputs.rs` (channels, pulses, patterns), `rumble_events.rs`, `scenes.rs` (scenes fused from the sound, the image and the profile's examples), `prompt.rs` (AI requests: a per-game mode, a fix for a mode that feels wrong), `report.rs` (a session replayed offline into a mode, for the fix request), `tests.rs` |
+| `gameviber/src/screen/` | the game's image: frames copied by the overlay, measures (brightness, motion, flashes), `clip` (image scene model: PIL-exact preprocessing, encoder thread), `zones` (shown-or-not and bar zones) |
+| `gameviber/src/profile.rs` | game profiles (`~/.config/gameviber/games/<exe>.json`): zones, example images, declared inputs |
+| `gameviber/src/inputs.rs` | values and events other programs send: local WebSocket (browsers refused) and named pipe |
 | `gameviber/src/engine.rs` | engine thread: sources, audio, image, mode, safety layer, routing, output |
-| `gameviber/src/session.rs` | recorded play sessions (rumble, buttons, axes, sound levels, hits and scene embeddings) and their replay |
-| `gameviber/src/gui/` | egui GUI: setup guide (`onboarding`), pages (`play`, `toys`, `gamepad`, `audio`, `screen`, `keybindings`, `overlay`, `creator`, `settings`), AI requests (`generator` dialog: a mode for a game; `feedback` page: a fix for the active mode), Luau highlighting (`luau`), `theme` |
+| `gameviber/src/session.rs` | recorded play sessions (rumble, buttons, axes, sound and image measures, hits, flashes, zones, scene embeddings, values from other programs) and their replay |
+| `gameviber/src/gui/` | egui GUI: setup guide (`onboarding`), pages (`play`, `toys`, `gamepad`, `audio`, `screen` (the Game page: image, zone editor, scene examples, inputs), `keybindings`, `overlay`, `creator`, `settings`), AI requests (`generator` dialog: a mode for a game; `feedback` page: a fix for the active mode), Luau highlighting (`luau`), `theme` |
 | `gameviber/src/helper/` | privileged helper (`gameviber helper`, started through pkexec) |
 | `gameviber/src/config.rs` | config files, built-in mode registry (`BUILTIN_MODES`) |
 | `gameviber/modes/` | built-in modes, embedded in the binary |
@@ -93,14 +99,19 @@ Run `cargo test` after any change to the runtime or to a mode.
 - Output to each toy is limited to 20 updates/s: waveforms faster than ~5 Hz blur.
 - `input.idle` is `min(rumble_idle, input_idle)`, and `rumble_idle` counts from mode
   activation when no vibration has happened yet.
-- Audio scenes come 2 to 15 s late, can be wrong, and need the downloaded model: modes
-  use them for the mood of a phase, never to time effects, and must work without them.
-  Phases sharing their music cannot be told apart (Metaphor: dungeon exploration and
-  fights); story versus action is reliable. The prompts tell the AI to declare only
-  scenes the music separates and to never rely on them alone: a scene sets the tension
-  (a faded background in tense phases: a slow wave in battles, a heartbeat in tense
-  games, whose low point never goes to 0), the rumble and buttons make the peaks.
-  Two or three contrasted scenes described as sound beat many close ones.
+- Scenes come seconds late, can be wrong, and need the downloaded models: modes use
+  them for the mood of a phase, never to time effects, and must work without them.
+  Each sense only speaks about the scenes it describes; their likelihoods multiply.
+  Phases sharing their music cannot be told apart by the sound (Metaphor: dungeon
+  exploration and fights); the image can, poorly from descriptions alone (zero-shot
+  CLIP, ~70 %), well from the profile's example images (~85 % with ten per scene) or a
+  zone. A scene sets the tension (a faded background in tense phases: a slow wave in
+  battles, a heartbeat in tense games, whose low point never goes to 0), the rumble and
+  buttons make the peaks. Two or three contrasted scenes beat many close ones.
+- The API has two levels: scenes, impacts and intensity (§6.3) for every request;
+  raw sound and image, zones and other programs' values (§6.4, §6.5, §7.1) only in
+  advanced requests (`SPEC_ADVANCED` in `mode/prompt.rs`). Keep new inputs in the
+  advanced level unless every mode should use them.
 - Image copies (overlay): made before the panel is drawn, so the panel never
   shows in them; one frame's copy is read when that swapchain image (Vulkan) or
   the pixel buffer's fence (OpenGL) comes back, never by waiting on the GPU.
@@ -108,4 +119,7 @@ Run `cargo test` after any change to the runtime or to a mode.
   shrinking it would otherwise crash GameViber. Not handled yet: multisampled
   OpenGL back buffers, and HDR swapchains (values are clamped to 8 bits).
 - The CLAP mel spectrogram (`audio/clap.rs`) must match `transformers`'
-  `ClapFeatureExtractor`; its test holds reference values computed with it.
+  `ClapFeatureExtractor`, and the CLIP preprocessing (`screen/clip.rs`) PIL's bicubic
+  resize and center crop; their tests hold reference values computed with them. The
+  quantized encoders give slightly different vectors across ONNX Runtime versions
+  (cosine ~0.996 for CLIP).

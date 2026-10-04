@@ -83,10 +83,17 @@ pub struct Settings {
     pub overlay: OverlaySettings,
     /// Where the game's sound is captured from (docs/spec-modes.md §6.3).
     pub audio: AudioSource,
+    /// Modes see the game's image, copied by the in-game overlay (§6.3, §6.4).
+    pub screen: bool,
+    /// Local port other programs send values and events to (§6.5); 0 turns it off.
+    pub inputs_port: u16,
     /// Language AI assistants answer in, and write the texts players see in a mode
     /// (the GUI itself is in English for now).
     pub language: String,
 }
+
+/// Port of the local server other programs send values and events to.
+pub const DEFAULT_INPUTS_PORT: u16 = 12350;
 
 /// Which sound the audio analysis listens to.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -173,6 +180,8 @@ impl Default for Settings {
             onboarded: false,
             overlay: OverlaySettings::default(),
             audio: AudioSource::Auto,
+            screen: true,
+            inputs_port: DEFAULT_INPUTS_PORT,
             language: DEFAULT_LANGUAGE.into(),
         }
     }
@@ -200,7 +209,7 @@ pub fn config_dir() -> PathBuf {
     }
 }
 
-/// Downloaded data (the audio scene model), under `~/.local/share/gameviber`.
+/// Downloaded data (the scene models), under `~/.local/share/gameviber`.
 pub fn data_dir() -> PathBuf {
     match std::env::var_os("XDG_DATA_HOME") {
         Some(dir) if std::env::var_os("SUDO_USER").is_none() => PathBuf::from(dir).join("gameviber"),
