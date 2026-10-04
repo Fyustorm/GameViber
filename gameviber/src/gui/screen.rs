@@ -67,8 +67,6 @@ struct Draft {
     picking: Option<Pick>,
     full: Option<[u8; 3]>,
     empty: Option<[u8; 3]>,
-    /// The bar moves: it is looked for in the zone.
-    floating: bool,
 }
 
 impl Default for Draft {
@@ -87,7 +85,6 @@ impl Default for Draft {
             picking: None,
             full: None,
             empty: None,
-            floating: false,
         }
     }
 }
@@ -110,7 +107,6 @@ impl Draft {
             picking: None,
             full: (zone.kind == ZoneKind::Bar).then_some(zone.color),
             empty: zone.empty_color,
-            floating: zone.floating,
         }
     }
 
@@ -143,6 +139,18 @@ fn swatch(ui: &mut egui::Ui, color: Option<[u8; 3]>) {
         Some([r, g, b]) => ui.painter().rect_filled(rect, 3.0, Color32::from_rgb(r, g, b)),
         None => ui.painter().rect_stroke(rect, 3.0, Stroke::new(1.0, MUTED), StrokeKind::Inside),
     };
+}
+
+/// What a zone drawn in `places` reads on an image, as text and color.
+fn reading_places(places: &[&Zone], frame: &Frame) -> (String, Color32) {
+    let Some(first) = places.first() else { return (String::new(), MUTED) };
+    match first.kind {
+        ZoneKind::Visible => {
+            let (shown, best) = zones::shown_anywhere(places, frame, false);
+            if shown { (format!("shown {best:.2}"), ACCENT_TEXT) } else { (format!("hidden {best:.2}"), MUTED) }
+        }
+        ZoneKind::Bar => reading(first, zones::fill_anywhere(places, frame)),
+    }
 }
 
 /// What a zone reads on an image, as text and color.
@@ -427,15 +435,37 @@ impl App {
             let mut changed: Option<Profile> = None;
             for (i, zone) in profile.zones.iter().enumerate() {
                 let editing = self.screen.draft.editing == Some(i);
+                let place = profile.zones[..i].iter().filter(|z| z.name == zone.name).count();
+                let places = profile.zones.iter().filter(|z| z.name == zone.name).count();
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new(&zone.name).strong());
-                    ui.label(muted(if zone.floating { "Bar that moves" } else { zone.kind.label() }));
-                    if let Some((_, measure, _)) = s.screen.zones.iter().find(|(n, _, _)| *n == zone.name) {
-                        let (text, color) = reading(zone, *measure);
-                        ui.label(RichText::new(format!("now: {text}")).color(color));
+                    if place == 0 {
+                        ui.label(RichText::new(&zone.name).strong());
+                        ui.label(muted(zone.kind.label()));
+                        if let Some((_, measure, _)) = s.screen.zones.iter().find(|(n, _, _)| *n == zone.name) {
+                            let (text, color) = reading(zone, *measure);
+                            ui.label(RichText::new(format!("now: {text}")).color(color));
+                        }
+                    } else {
+                        ui.add_space(16.0);
+                        ui.label(muted(format!("place {}", place + 1)));
+                    }
+                    if places > 1 && place == 0 {
+                        ui.label(muted("place 1"));
                     }
                     if ui.add_enabled(!editing, egui::Button::new("Edit")).clicked() {
                         self.screen.draft = Draft::edit(self.screen.draft.zoom, i, zone);
+                    }
+                    if place == 0
+                        && ui
+                            .button("Add a place")
+                            .on_hover_text("Draw it again where the game also shows it (the health bar out of battles): its value comes from where it is found")
+                            .clicked()
+                    {
+                        let mut draft = Draft::edit(self.screen.draft.zoom, i, zone);
+                        draft.editing = None;
+                        draft.start = None;
+                        draft.end = None;
+                        self.screen.draft = draft;
                     }
                     if ui.small_button("Delete").clicked() {
                         let mut p = profile.clone();
@@ -479,7 +509,6 @@ impl App {
             tolerance: d.tolerance,
             direction: d.direction,
             empty_color: d.empty,
-            floating: d.floating,
             scene: if drawn.is_some() { scene.filter(|s| !s.is_empty()) } else { base.scene.clone() },
             ..base.clone()
         };
@@ -509,8 +538,10 @@ impl App {
     fn zone_editor(&mut self, ui: &mut egui::Ui, profile: &Profile, file: &str, frame: &Frame, texture: &egui::TextureHandle) -> Option<Profile> {
         let tested = self.draft_zone(profile);
         let draft = &mut self.screen.draft;
+        let adding_place = draft.editing.is_none() && profile.zones.iter().any(|z| z.name == draft.name && z.kind == draft.kind);
         let title = match draft.editing.and_then(|i| profile.zones.get(i)) {
             Some(zone) => format!("Editing {}", zone.name),
+            None if adding_place => format!("Another place for {}", draft.name),
             None => "New zone".to_owned(),
         };
         ui.label(RichText::new(title).strong());
@@ -555,7 +586,8 @@ impl App {
                     }
                 } else {
                     if response.drag_started() {
-                        draft.start = response.interact_pointer_pos().map(to_fraction);
+                        // Where the button went down: egui only calls it a drag once the pointer moved a little.
+                        draft.start = ui.input(|i| i.pointer.press_origin()).or(response.interact_pointer_pos()).map(to_fraction);
                         draft.end = draft.start;
                         draft.drawn_on = Some(file.to_owned());
                     }
@@ -578,7 +610,21 @@ impl App {
                     ui.painter().rect_stroke(r, 1.0, Stroke::new(2.0, ACCENT), StrokeKind::Outside);
                     if let Some(zone) = &tested {
                         let (text, color) = reading(zone, zones::measure(zone, frame));
-                        ui.painter().text(r.left_bottom() + egui::vec2(0.0, 2.0), egui::Align2::LEFT_TOP, text, egui::FontId::proportional(12.0), color);
+                        ui.painter().text(r.left_bottom() + egui::vec2(0.0, 6.0), egui::Align2::LEFT_TOP, text, egui::FontId::proportional(12.0), color);
+                        // The bar as found: its full part green, its empty part red, along the zone.
+                        if zone.kind == ZoneKind::Bar && zone.empty_color.is_some() {
+                            let ((a, b), (c, d)) = zones::bar_extent(zone, frame);
+                            let horizontal = matches!(zone.direction, Direction::Right | Direction::Left);
+                            let segment = |from: f32, to: f32| {
+                                if horizontal {
+                                    Rect::from_min_max(Pos2::new(r.left() + from * r.width(), r.bottom() + 1.0), Pos2::new(r.left() + to * r.width(), r.bottom() + 5.0))
+                                } else {
+                                    Rect::from_min_max(Pos2::new(r.right() + 1.0, r.top() + from * r.height()), Pos2::new(r.right() + 5.0, r.top() + to * r.height()))
+                                }
+                            };
+                            ui.painter().rect_filled(segment(a, b), 0.0, OK);
+                            ui.painter().rect_filled(segment(c, d), 0.0, DANGER);
+                        }
                     }
                 }
             });
@@ -615,13 +661,14 @@ impl App {
                 }
                 ui.add(egui::Slider::new(&mut draft.tolerance, 10.0..=150.0).text("color tolerance"));
             });
-            ui.horizontal(|ui| {
-                ui.checkbox(&mut draft.floating, "The bar moves").on_hover_text(
-                    "Draw the zone over every place the bar can be: the bar is then found in it as the longest run \
-                     of its two colors",
-                );
-                ui.label(muted("The empty color also tells \"not on screen\" (nil) from an empty bar.").size(12.0));
-            });
+            ui.label(
+                muted(
+                    "With both colors the bar is found inside the zone (drawn green and red on the image): the zone \
+                     may be larger than the bar, or cover every place it moves to, and a bar gone from the screen \
+                     reads nil. With the full color only, the zone must cover exactly the bar.",
+                )
+                .size(12.0),
+            );
         }
         if draft.editing.is_some() && draft.drawn_on.is_none() {
             ui.label(muted("Redraw the rectangle to take the zone's look again from the capture shown.").size(12.0));
@@ -631,12 +678,10 @@ impl App {
             Some(if draft.kind == ZoneKind::Bar { "Drag a rectangle along the bar, from its empty end to its full end." } else { "Drag a rectangle around fixed parts of the element (not text that changes)." })
         } else if draft.kind == ZoneKind::Visible && draft.editing.is_none() && draft.drawn_on.is_none() {
             Some("Draw the rectangle on a capture that shows the element.")
-        } else if draft.kind == ZoneKind::Bar && draft.floating && draft.empty.is_none() {
-            Some("A bar that moves needs its empty color.")
         } else if !valid_name(&draft.name) {
             Some("Name: letters, digits and _, starting with a letter.")
-        } else if profile.zones.iter().enumerate().any(|(i, z)| z.name == draft.name && Some(i) != draft.editing) {
-            Some("A zone has this name already.")
+        } else if profile.zones.iter().enumerate().any(|(i, z)| z.name == draft.name && z.kind != draft.kind && Some(i) != draft.editing) {
+            Some("A zone of another kind has this name.")
         } else {
             None
         };
@@ -644,8 +689,13 @@ impl App {
         // The zone on every capture: click one to look at it above.
         let mut select = None;
         if let Some(zone) = &tested {
+            // The zone's other places count too: one value for all of them.
+            let mut places: Vec<&Zone> =
+                profile.zones.iter().enumerate().filter(|(i, z)| z.name == zone.name && Some(*i) != draft.editing).map(|(_, z)| z).collect();
+            places.push(zone);
             ui.add_space(6.0);
-            ui.label(RichText::new("On every capture").strong());
+            let title = if places.len() > 1 { format!("On every capture ({} places together)", places.len()) } else { "On every capture".to_owned() };
+            ui.label(RichText::new(title).strong());
             let mut groups: Vec<String> = profile.scenes();
             if profile.captures.iter().any(|c| c.scene.is_empty()) {
                 groups.push(String::new());
@@ -662,7 +712,7 @@ impl App {
                             let m = measure.unwrap_or(-1.0);
                             if zone.scene.as_deref() == Some(group.as_str()) { shown_in.push(m) } else { others.push(m) }
                         }
-                        let (text, color) = reading(zone, measure);
+                        let (text, color) = reading_places(&places, capture_frame);
                         ui.vertical(|ui| {
                             let current = capture.file == file;
                             let image = egui::Image::new(texture).fit_to_exact_size(image_size(96.0, capture_frame)).corner_radius(3.0);

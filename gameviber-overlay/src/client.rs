@@ -140,9 +140,23 @@ fn connect() -> Option<UnixDatagram> {
     Some(socket)
 }
 
+/// The game's executable name. Under Wine (Proton) the process is Wine's
+/// loader, but Wine puts the Windows path of the game in `argv[0]`
+/// (`Z:\...\METAPHOR.exe`).
 fn exe_name() -> String {
-    std::env::current_exe()
+    let exe = std::env::current_exe()
         .ok()
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-        .unwrap_or_default()
+        .unwrap_or_default();
+    if !exe.contains("wine") && !exe.contains("preloader") {
+        return exe;
+    }
+    let argv0 = std::fs::read("/proc/self/cmdline")
+        .ok()
+        .and_then(|c| c.split(|b| *b == 0).next().map(|a| String::from_utf8_lossy(a).into_owned()))
+        .unwrap_or_default();
+    match argv0.rsplit(['\\', '/']).next() {
+        Some(name) if !name.is_empty() => name.to_owned(),
+        _ => exe,
+    }
 }

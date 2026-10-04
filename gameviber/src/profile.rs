@@ -89,7 +89,9 @@ impl Direction {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Zone {
-    /// Name modes read it by (`input.zones.<name>`).
+    /// Name modes read it by (`input.zones.<name>`). Zones sharing a name are
+    /// places of one zone (a bar shown elsewhere out of battles): its value
+    /// comes from the place where it is found.
     pub name: String,
     pub kind: ZoneKind,
     /// Left, top, width, height, as fractions of the screen.
@@ -100,12 +102,10 @@ pub struct Zone {
     pub threshold: f32,
     /// Bar: the color of its filled part...
     pub color: [u8; 3],
-    /// ...and of its empty part, when the player picked it.
+    /// ...and of its empty part, when the player picked it. With it, the bar is
+    /// found in the zone as the longest run of its two colors, so the zone may
+    /// be larger than the bar, or cover every place a moving bar can be.
     pub empty_color: Option<[u8; 3]>,
-    /// Bar: it moves along its axis (a character's stance shifts it): the zone
-    /// covers every place it can be, and the bar is the longest run of its two
-    /// colors in it. Needs `empty_color`.
-    pub floating: bool,
     /// Bar: share of the zone's length it covered when drawn. Much less of its
     /// colors found means it is not on screen (menus): its value is unknown.
     pub length: f32,
@@ -126,7 +126,6 @@ impl Default for Zone {
             threshold: 0.45,
             color: [0, 0, 0],
             empty_color: None,
-            floating: false,
             length: 0.0,
             scene: None,
             direction: Direction::Right,
@@ -189,6 +188,24 @@ fn captures_dir(game: &str) -> PathBuf {
     dir().join(stem(game))
 }
 
+/// Overlays before 0.1 named every Proton game after Wine's loader: the
+/// first Windows game seen afterwards takes that profile over.
+fn migrate_wine_profile(game: &str) {
+    const WINE: &str = "wine64-preloader";
+    if !game.to_lowercase().ends_with(".exe") || path(game).exists() || !path(WINE).exists() {
+        return;
+    }
+    let Ok(text) = fs::read_to_string(path(WINE)) else { return };
+    let text = text.replacen(&format!("\"game\":\"{WINE}\""), &format!("\"game\":{}", serde_json::json!(game)), 1);
+    if config::write_file(&path(game), &text).is_ok() {
+        let _ = fs::remove_file(path(WINE));
+        if captures_dir(WINE).exists() {
+            let _ = fs::rename(captures_dir(WINE), captures_dir(game));
+        }
+        log::info!("the profile of {WINE} is now the profile of {game}");
+    }
+}
+
 /// Saves `frame` as a PNG capture of `game`; returns its file name.
 pub fn save_capture(game: &str, scene: &str, frame: &Frame) -> std::io::Result<String> {
     let dir = captures_dir(game);
@@ -235,6 +252,7 @@ fn delete_capture(game: &str, file: &str) {
 impl Profile {
     /// The profile of `game`, or an empty one.
     pub fn load(game: &str) -> Self {
+        migrate_wine_profile(game);
         let profile = fs::read_to_string(path(game)).ok().and_then(|text| match serde_json::from_str::<Profile>(&text) {
             Ok(p) => Some(p),
             Err(e) => {
@@ -300,7 +318,13 @@ impl Profile {
         let mut out = String::new();
         if !self.zones.is_empty() {
             out.push_str("Zones of the screen (`input.zones`, `on_zone`):\n");
+            let mut seen = Vec::new();
             for z in &self.zones {
+                // A zone drawn in several places is one input.
+                if seen.contains(&&z.name) {
+                    continue;
+                }
+                seen.push(&z.name);
                 let what = match z.kind {
                     ZoneKind::Visible => "true while shown, false otherwise".to_owned(),
                     ZoneKind::Bar => "how full the bar is, 0 to 1, or nil while it is not on screen (menus, cutscenes)".to_owned(),

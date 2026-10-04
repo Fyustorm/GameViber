@@ -1,8 +1,8 @@
 //! Zones of the game's screen declared in its profile (`profile::Zone`):
 //! whether an element is shown (its look compared with a reference taken when
 //! the zone was drawn) and how full a bar is (the share of it in the bar's
-//! full color rather than its empty one; for a bar that moves, the longest
-//! run of its two colors in the zone is the bar).
+//! full color rather than its empty one; with both colors known, the bar is
+//! the longest run of them in the zone, wherever it is).
 
 use std::collections::BTreeMap;
 
@@ -17,8 +17,10 @@ pub const REF_HEIGHT: usize = 24;
 const HYSTERESIS: f32 = 0.05;
 /// Bar values are reported when they move this much.
 const BAR_STEP: f64 = 0.02;
-/// A bar is not on screen when less than this share of its drawn length is found...
+/// A bar is not on screen when less than this share of its drawn length is
+/// found, or more than `FOUND_MAX` (a background of its color, not the bar)...
 const FOUND_SHARE: f32 = 0.6;
+const FOUND_MAX: f32 = 1.5;
 /// ...for this many copies in a row (0.3 s), so that a flash does not hide it.
 const UNKNOWN_FRAMES: u32 = 3;
 
@@ -105,20 +107,11 @@ pub fn bar_color(frame: &Frame, rect: [f32; 4]) -> [u8; 3] {
     sum.map(|s| (s / top.len() as u32) as u8)
 }
 
-/// The color around a point of `frame` (fractions of the image): the mean of 3 x 3 pixels.
+/// The color of the pixel at a point of `frame` (fractions of the image).
 pub fn pick_color(frame: &Frame, x: f32, y: f32) -> [u8; 3] {
-    let (w, h) = (frame.width as i64, frame.height as i64);
-    let (cx, cy) = ((x * w as f32) as i64, (y * h as f32) as i64);
-    let mut sum = [0u32; 3];
-    let mut n = 0;
-    for py in (cy - 1).max(0)..=(cy + 1).min(h - 1) {
-        for px in (cx - 1).max(0)..=(cx + 1).min(w - 1) {
-            let p = pixel(frame, px as usize, py as usize);
-            (0..3).for_each(|c| sum[c] += p[c] as u32);
-            n += 1;
-        }
-    }
-    sum.map(|s| (s / n.max(1)) as u8)
+    let x = ((x * frame.width as f32) as usize).min(frame.width as usize - 1);
+    let y = ((y * frame.height as f32) as usize).min(frame.height as usize - 1);
+    pixel(frame, x, y)
 }
 
 /// A threshold telling the zone's scene apart from the others, from its
@@ -143,18 +136,70 @@ pub fn measure(zone: &Zone, frame: &Frame) -> Option<f32> {
             let reference: Vec<f32> = zone.reference.iter().map(|&v| v as f32).collect();
             Some(correlation(&gray(frame, zone.rect), &reference))
         }
-        ZoneKind::Bar => {
-            let (fill, length) = bar(zone, frame);
-            let expected = if zone.length > 0.0 { zone.length } else if zone.floating { 0.1 } else { 1.0 };
-            let found = zone.empty_color.is_none() || length >= FOUND_SHARE * expected;
-            found.then_some(fill)
-        }
+        ZoneKind::Bar => bar_reading(zone, frame).map(|(fill, _)| fill),
     }
+}
+
+/// How full a bar is, and how much of its drawn length was found (1 without
+/// the empty color); None when too little was found.
+fn bar_reading(zone: &Zone, frame: &Frame) -> Option<(f32, f32)> {
+    let bar = bar(zone, frame);
+    let expected = if zone.length > 0.0 { zone.length } else { 0.1 };
+    let found = if zone.empty_color.is_some() { bar.length() / expected } else { 1.0 };
+    let too_long = zone.length > 0.0 && found > FOUND_MAX;
+    (found >= FOUND_SHARE && !too_long).then_some((bar.fill, found.min(1.0)))
+}
+
+/// A zone drawn in several places (zones sharing its name: the health bar in
+/// battle and out of it) is shown when one of them shows it; `was_shown`
+/// lowers the thresholds a little (hysteresis). Also returns the best similarity.
+pub fn shown_anywhere(places: &[&Zone], frame: &Frame, was_shown: bool) -> (bool, f32) {
+    let margin = if was_shown { HYSTERESIS } else { 0.0 };
+    places.iter().fold((false, -1.0), |(shown, best), zone| {
+        let m = measure(zone, frame).unwrap_or(0.0);
+        (shown || m >= zone.threshold - margin, best.max(m))
+    })
+}
+
+/// A bar drawn in several places reads where it is found (the most complete
+/// when several find it); None when no place finds it.
+pub fn fill_anywhere(places: &[&Zone], frame: &Frame) -> Option<f32> {
+    places
+        .iter()
+        .filter_map(|zone| bar_reading(zone, frame))
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(fill, _)| fill)
 }
 
 /// Share of the zone's length a bar covers on `frame` (to save with a zone being drawn).
 pub fn bar_length(zone: &Zone, frame: &Frame) -> f32 {
-    bar(zone, frame).1
+    bar(zone, frame).length()
+}
+
+/// Where the bar was found in the zone, as fractions of the zone's length
+/// along its axis (left to right, top to bottom): its full part, then its
+/// empty part. For the editor.
+pub fn bar_extent(zone: &Zone, frame: &Frame) -> ((f32, f32), (f32, f32)) {
+    let bar = bar(zone, frame);
+    let full = (bar.end - bar.start) * bar.fill;
+    match zone.direction {
+        Direction::Left | Direction::Up => ((bar.end - full, bar.end), (bar.start, bar.end - full)),
+        Direction::Right | Direction::Down => ((bar.start, bar.start + full), (bar.start + full, bar.end)),
+    }
+}
+
+/// A bar found in its zone.
+struct Bar {
+    fill: f32,
+    /// Fractions of the zone's length along its axis.
+    start: f32,
+    end: f32,
+}
+
+impl Bar {
+    fn length(&self) -> f32 {
+        self.end - self.start
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -165,15 +210,17 @@ enum Part {
     Other,
 }
 
-/// Share of the bar's length whose middle line is in the bar's full color
-/// (and nearer to it than to its empty color, when known), and the share of
-/// the zone's length the bar covers. A floating bar is first found: the
-/// longest run of full and empty columns.
-fn bar(zone: &Zone, frame: &Frame) -> (f32, f32) {
+/// The share of the bar whose middle line is in its full color, nearer to it
+/// than to its empty color. With both colors, the bar is the longest run of
+/// full and empty columns in the zone; with the full color only, the whole zone.
+fn bar(zone: &Zone, frame: &Frame) -> Bar {
     let parts = columns(zone, frame);
-    if let (true, Some(_)) = (zone.floating, zone.empty_color) {
+    let len = parts.len().max(1) as f32;
+    // Which end the bar fills from: its full part is read from there.
+    let reversed = matches!(zone.direction, Direction::Left | Direction::Up);
+    if zone.empty_color.is_some() {
         // The longest run of bar columns, one stray column allowed inside.
-        let (mut best, mut best_full) = (0, 0);
+        let (mut best, mut best_full, mut best_start) = (0, 0, 0);
         let (mut start, mut gap) = (0, 0);
         for i in 0..=parts.len() {
             let inside = parts.get(i).is_some_and(|p| *p != Part::Other);
@@ -187,65 +234,60 @@ fn bar(zone: &Zone, frame: &Frame) -> (f32, f32) {
                 if end > start && end - start > best {
                     best = end - start;
                     best_full = parts[start..end].iter().filter(|p| **p == Part::Full).count();
+                    best_start = start;
                 }
                 start = i + 1;
                 gap = 0;
             }
         }
-        return (best_full as f32 / best.max(1) as f32, best as f32 / parts.len().max(1) as f32);
+        let (start, end) = (best_start as f32 / len, (best_start + best) as f32 / len);
+        let (start, end) = if reversed { (1.0 - end, 1.0 - start) } else { (start, end) };
+        return Bar { fill: best_full as f32 / best.max(1) as f32, start, end };
     }
     let filled = parts.iter().filter(|p| **p == Part::Full).count();
-    let covered = parts.iter().filter(|p| **p != Part::Other).count();
-    (filled as f32 / parts.len().max(1) as f32, covered as f32 / parts.len().max(1) as f32)
+    Bar { fill: filled as f32 / len, start: 0.0, end: 1.0 }
 }
 
-/// Each column along the bar, by the majority of the middle third across it.
+/// Each column along the bar. The bar's lines are found first: those with
+/// the most pixels near its colors, so that text or icons in a zone drawn
+/// larger than the bar stay out. A column is then full (or empty) when one of
+/// its pixels on those lines is near the full color (bars are often shaded, a
+/// lighter line over a darker one, and the color was picked on one), empty
+/// when most of them are near the empty color.
 fn columns(zone: &Zone, frame: &Frame) -> Vec<Part> {
     let (x0, y0, x1, y1) = bounds(frame, zone.rect);
     let horizontal = matches!(zone.direction, Direction::Right | Direction::Left);
     let (length, across) = if horizontal { (x1 - x0, y1 - y0) } else { (y1 - y0, x1 - x0) };
+    let at = |i: usize, j: usize| if horizontal { pixel(frame, x0 + i, y0 + j) } else { pixel(frame, x0 + j, y0 + i) };
     let distance = |p: [u8; 3], color: [u8; 3]| (0..3).map(|c| (p[c] as f32 - color[c] as f32).powi(2)).sum::<f32>().sqrt();
-    let part = |p: [u8; 3]| {
-        let full = distance(p, zone.color);
-        match zone.empty_color {
-            Some(empty) => {
-                let empty = distance(p, empty);
-                if full <= empty && full <= zone.tolerance {
-                    Part::Full
-                } else if empty < full && empty <= zone.tolerance {
-                    Part::Empty
-                } else {
-                    Part::Other
-                }
-            }
-            None if full <= zone.tolerance => Part::Full,
-            None => Part::Other,
-        }
+    // Distances of a pixel to the full and the empty colors.
+    let distances = |p: [u8; 3]| (distance(p, zone.color), zone.empty_color.map_or(f32::INFINITY, |e| distance(p, e)));
+    let near = |p: [u8; 3]| {
+        let (full, empty) = distances(p);
+        full.min(empty) <= zone.tolerance
     };
-    let mut parts = Vec::with_capacity(length);
-    for i in 0..length {
-        // The middle third across the bar: borders and shadows stay out.
-        let lines = (across / 3).max(1);
-        let start = (across - lines) / 2;
-        let mut counts = [0; 3];
-        for j in start..start + lines {
-            let (x, y) = if horizontal { (x0 + i, y0 + j) } else { (x0 + j, y0 + i) };
-            match part(pixel(frame, x, y)) {
-                Part::Full => counts[0] += 1,
-                Part::Empty => counts[1] += 1,
-                Part::Other => counts[2] += 1,
+    let counts: Vec<usize> = (0..across).map(|j| (0..length).filter(|&i| near(at(i, j))).count()).collect();
+    let most = counts.iter().copied().max().unwrap_or(0);
+    let lines: Vec<usize> = (0..across).filter(|&j| most > 0 && counts[j] * 2 >= most).collect();
+    let mut parts: Vec<Part> = (0..length)
+        .map(|i| {
+            let pixels: Vec<(f32, f32)> = lines.iter().map(|&j| distances(at(i, j))).collect();
+            // Full when one of the bar's lines has the full color (shaded bars)...
+            let full = pixels.iter().any(|&(f, e)| f <= zone.tolerance && f <= e);
+            // ...empty only when most of them have the empty color: a line under
+            // the bars in that color (a decoration) does not make one.
+            let empty = pixels.iter().filter(|&&(f, e)| e <= zone.tolerance && e < f).count();
+            if full {
+                Part::Full
+            } else if empty > 0 && empty * 2 >= pixels.len() {
+                Part::Empty
+            } else {
+                Part::Other
             }
-        }
-        parts.push(if counts[0] * 2 >= lines {
-            Part::Full
-        } else if counts[1] * 2 >= lines {
-            Part::Empty
-        } else if counts[0] + counts[1] > counts[2] {
-            // Mixed full and empty: the edge between them.
-            if counts[0] >= counts[1] { Part::Full } else { Part::Empty }
-        } else {
-            Part::Other
-        });
+        })
+        .collect();
+    if matches!(zone.direction, Direction::Left | Direction::Up) {
+        parts.reverse();
     }
     parts
 }
@@ -265,24 +307,39 @@ impl ZoneReader {
         let mut changed = Vec::new();
         self.measures.clear();
         self.values.retain(|name, _| zones.iter().any(|z| z.name == *name));
+        // Zones sharing a name are places of one zone.
+        let mut names: Vec<&str> = Vec::new();
         for zone in zones {
-            let measure = measure(zone, frame);
-            self.measures.insert(zone.name.clone(), measure);
-            let previous = self.values.get(&zone.name).copied();
-            let missing = self.missing.entry(zone.name.clone()).or_default();
-            *missing = if measure.is_none() { *missing + 1 } else { 0 };
-            let value = match (zone.kind, measure, previous) {
-                (ZoneKind::Visible, Some(m), Some(ZoneValue::Visible(true))) => ZoneValue::Visible(m >= zone.threshold - HYSTERESIS),
-                (ZoneKind::Visible, m, _) => ZoneValue::Visible(m.unwrap_or(0.0) >= zone.threshold),
-                // Briefly lost (a flash, an effect over it): keep the last value.
-                (ZoneKind::Bar, None, Some(old)) if *missing < UNKNOWN_FRAMES => old,
-                (ZoneKind::Bar, None, _) => ZoneValue::Unknown,
-                (ZoneKind::Bar, Some(m), Some(ZoneValue::Bar(old))) if (m as f64 - old).abs() < BAR_STEP => ZoneValue::Bar(old),
-                (ZoneKind::Bar, Some(m), _) => ZoneValue::Bar((m as f64 * 100.0).round() / 100.0),
+            if !names.contains(&zone.name.as_str()) {
+                names.push(&zone.name);
+            }
+        }
+        for name in names {
+            let places: Vec<&Zone> = zones.iter().filter(|z| z.name == name).collect();
+            let previous = self.values.get(name).copied();
+            let (measure, value) = match places[0].kind {
+                ZoneKind::Visible => {
+                    let (shown, best) = shown_anywhere(&places, frame, previous == Some(ZoneValue::Visible(true)));
+                    (Some(best), ZoneValue::Visible(shown))
+                }
+                ZoneKind::Bar => {
+                    let measure = fill_anywhere(&places, frame);
+                    let missing = self.missing.entry(name.to_owned()).or_default();
+                    *missing = if measure.is_none() { *missing + 1 } else { 0 };
+                    let value = match (measure, previous) {
+                        // Briefly lost (a flash, an effect over it): keep the last value.
+                        (None, Some(old)) if *missing < UNKNOWN_FRAMES => old,
+                        (None, _) => ZoneValue::Unknown,
+                        (Some(m), Some(ZoneValue::Bar(old))) if (m as f64 - old).abs() < BAR_STEP => ZoneValue::Bar(old),
+                        (Some(m), _) => ZoneValue::Bar((m as f64 * 100.0).round() / 100.0),
+                    };
+                    (measure, value)
+                }
             };
+            self.measures.insert(name.to_owned(), measure);
             if previous != Some(value) {
-                self.values.insert(zone.name.clone(), value);
-                changed.push((zone.name.clone(), value));
+                self.values.insert(name.to_owned(), value);
+                changed.push((name.to_owned(), value));
             }
         }
         changed
@@ -347,9 +404,10 @@ mod tests {
         assert_eq!(reader.update(&zones, &with_hud(false, 10)), vec![("battle_hud".to_owned(), ZoneValue::Visible(false))]);
     }
 
-    /// Metaphor: a character's stance shifts its health bar sideways.
+    /// Metaphor: a character's stance shifts its health bar sideways, and the
+    /// zone may run over the mana bar next to it.
     #[test]
-    fn floating_bars_are_found_where_they_are() {
+    fn bars_are_found_in_their_zone() {
         // Health (green) then wounds (red), 60 px long, starting at `left`, among other colors.
         let bar = |left: u32, level: f32| {
             frame(move |x, y| match (x, y) {
@@ -367,7 +425,6 @@ mod tests {
             rect,
             color: [40, 200, 60],
             empty_color: Some([190, 30, 30]),
-            floating: true,
             ..Zone::default()
         };
         for (left, level) in [(10, 1.0), (30, 0.5), (85, 0.25), (60, 0.0)] {
@@ -387,8 +444,76 @@ mod tests {
         assert_eq!(reader.update(&zones, &menu), vec![], "briefly lost: the last value stays");
         reader.update(&zones, &menu);
         assert_eq!(reader.update(&zones, &menu), vec![("hp".to_owned(), ZoneValue::Unknown)]);
-        let fixed = Zone { floating: false, ..zone };
-        assert_eq!(measure(&fixed, &bar(30, 0.5)), None, "read as a fixed bar filling the zone, it is not found");
+        // Where it was found, for the editor: 60 px from x = 30 in a zone from x = 5, 150 px long.
+        let ((start, full_end), (_, end)) = bar_extent(&zone, &bar(30, 0.5));
+        let near = |a: f32, px: f32| (a - px / 150.0).abs() < 0.02;
+        assert!(near(start, 25.0) && near(full_end, 55.0) && near(end, 85.0), "{start} {full_end} {end}");
+        // Without the empty color the whole zone is the bar: 30 px full of 150.
+        let full_only = Zone { empty_color: None, ..zone };
+        assert!((measure(&full_only, &bar(30, 0.5)).unwrap() - 0.2).abs() < 0.03);
+    }
+
+    /// Metaphor's bars are 3 pixels high and shaded, with numbers above them.
+    #[test]
+    fn shaded_bars_under_text_are_read() {
+        let shades = [[62, 143, 113], [82, 188, 149], [48, 112, 89]];
+        let bar = |level: f32| {
+            frame(move |x, y| match (x, y) {
+                (20..=79, 20..=22) if ((x - 20) as f32) < level * 60.0 => shades[(y - 20) as usize],
+                (20..=79, 20..=22) => [117, 23, 44],
+                // The health number above, in the bar's green.
+                (24..=40, 12..=17) if x % 3 != 0 => [80, 182, 144],
+                _ => [17, 17, 17],
+            })
+        };
+        // Drawn exactly on the bar, and larger with the number in it; the color picked on the darkest line.
+        for rect in [[20.0 / 160.0, 20.0 / 90.0, 60.0 / 160.0, 3.0 / 90.0], [18.0 / 160.0, 10.0 / 90.0, 70.0 / 160.0, 14.0 / 90.0]] {
+            let zone = Zone {
+                name: "hp".into(),
+                kind: ZoneKind::Bar,
+                rect,
+                color: pick_color(&bar(1.0), 30.0 / 160.0, 22.5 / 90.0),
+                empty_color: Some([117, 23, 44]),
+                tolerance: 50.0,
+                ..Zone::default()
+            };
+            assert_eq!(zone.color, [48, 112, 89]);
+            for level in [1.0, 0.7, 0.3] {
+                let got = measure(&zone, &bar(level)).unwrap();
+                assert!((got - level).abs() < 0.04, "{rect:?} {level}: {got}");
+            }
+        }
+    }
+
+    /// The health bar is in one place in battle and in another out of it.
+    #[test]
+    fn a_zone_drawn_in_two_places_reads_where_it_is_found() {
+        let bar_at = |top: u32, level: f32| {
+            frame(move |x, y| match (x, y) {
+                (20..=79, _) if (top..top + 6).contains(&y) => {
+                    if ((x - 20) as f32) < level * 60.0 { [40, 200, 60] } else { [190, 30, 30] }
+                }
+                _ => [25, 25, 35],
+            })
+        };
+        let place = |top: u32| Zone {
+            name: "hp".into(),
+            kind: ZoneKind::Bar,
+            rect: [15.0 / 160.0, (top as f32 - 1.0) / 90.0, 70.0 / 160.0, 8.0 / 90.0],
+            color: [40, 200, 60],
+            empty_color: Some([190, 30, 30]),
+            length: 60.0 / 70.0,
+            ..Zone::default()
+        };
+        let (battle, field) = (place(10), place(60));
+        assert!((fill_anywhere(&[&battle, &field], &bar_at(10, 0.75)).unwrap() - 0.75).abs() < 0.04);
+        assert!((fill_anywhere(&[&battle, &field], &bar_at(60, 0.25)).unwrap() - 0.25).abs() < 0.04);
+        assert_eq!(fill_anywhere(&[&battle, &field], &frame(|_, _| [25, 25, 35])), None, "in no place: unknown");
+
+        let mut reader = ZoneReader::default();
+        let zones = [battle, field];
+        let first = reader.update(&zones, &bar_at(60, 0.25));
+        assert!(matches!(first[..], [(ref n, ZoneValue::Bar(v))] if n == "hp" && (v - 0.25).abs() < 0.04), "one value for both places: {first:?}");
     }
 
     #[test]

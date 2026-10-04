@@ -1379,9 +1379,15 @@ impl Engine {
         }
         self.embed_captures();
         self.screen_view.model = Model::Image.state();
-        self.screen_view.zones = self.profile.iter().flat_map(|p| &p.zones).map(|z| {
-            (z.name.clone(), self.zones.measures.get(&z.name).copied().flatten(), self.zones.values().get(&z.name).copied())
-        }).collect();
+        // One entry per zone, whatever the number of places it is drawn in.
+        let mut names: Vec<&String> = self.profile.iter().flat_map(|p| &p.zones).map(|z| &z.name).collect();
+        names.dedup();
+        names.sort();
+        names.dedup();
+        self.screen_view.zones = names
+            .into_iter()
+            .map(|n| (n.clone(), self.zones.measures.get(n).copied().flatten(), self.zones.values().get(n).copied()))
+            .collect();
     }
 
     /// Captures the game's current image into its profile under `scene` ("": to
