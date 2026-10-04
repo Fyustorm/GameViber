@@ -285,24 +285,41 @@ audio_scene_window = 10,   -- seconds the probabilities are averaged over (2 to 
   which mechanics are active), not to time effects; combine them with the rumble and the
   buttons, which say when the action really happens.
 - **Typical use: the scene sets the tension, not the algorithm.** The mode keeps the
-  same mechanics everywhere; in tense phases it adds a low, almost continuous vibration
-  and lets its peaks come from the rumble, the buttons and hits, as usual. Fade the
-  baseline in and out over a few seconds, so a late or wrong scene is barely felt:
+  same mechanics everywhere; in tense phases it adds a background that runs whatever
+  the player does, and lets its peaks come from the rumble, the buttons and hits, as
+  usual. The background is usually:
+  - a **slow wave** (a sine, 2 to 10 s per cycle) in battles and intense action;
+  - a **heartbeat** (a `pattern`, §8) in games built on tension (horror, stealth).
+
+  **A wave never goes down to 0**: its low point is a parameter above 0 (e.g. 0.05 to
+  0.15, with a minimum above 0 too), not silence. GameViber plays any value of 0.01 or
+  more at least at each toy's weakest intensity (§12), so the low point is felt as the
+  toy's gentlest vibration and the wave never stops while the phase lasts. Fade the
+  background in and out over a few seconds, so a late or wrong scene is barely felt:
 
 ```lua
 audio_scenes = {
   dungeon = "epic rhythmic orchestral music with heavy drums",
   story   = "people talking, voice acting dialogue over soft music",
 },
-params = { tension = number(0.15, 0, 0.4, "Background vibration in dungeons") },
+params = {
+  wave_low    = number(0.08, 0.02, 0.4, "Dungeon wave low point"),
+  wave_high   = number(0.3, 0.05, 1, "Dungeon wave high point"),
+  wave_period = number(5, 2, 10, "Dungeon wave period (s)"),
+},
 
-local base = 0
+local tension = 0
 function tick(dt, input)
-  local target = input.audio.scene == "dungeon" and P.tension or 0
-  base += (target - base) * math.min(1, dt / 3)       -- ~3 s fade
-  set(math.max(base, input.rumble.level))             -- peaks still follow the game
+  local target = input.audio.scene == "dungeon" and 1 or 0
+  tension += (target - tension) * math.min(1, dt / 3)  -- ~3 s fade
+  local phase = 0.5 - 0.5 * math.cos(2 * math.pi * input.time / P.wave_period)
+  local wave = (P.wave_low + (P.wave_high - P.wave_low) * phase) * tension
+  set(math.max(wave, input.rumble.level))              -- peaks still follow the game
 end
 ```
+
+  The same background suits phases told apart without sound, e.g. "the game rumbled in
+  the last 10 s" for a fight (with the delay as a parameter).
 
 - Scenes need the sound model, downloaded once from the Sound page (about 200 MB), and
   cost a little processor time while the mode is active. Without it, or without sound,

@@ -71,10 +71,18 @@ way the game actually uses rumble.
   while. Use them for the mood (overall level, which mechanics are active) and tell the
   rest apart with the rumble and buttons (e.g. a fight inside a dungeon); never time an
   effect on them. The typical use (§6.3): the scene sets the tension, not the algorithm.
-  The mechanics stay the same everywhere; in tense phases the mode adds a low, almost
-  continuous vibration (a parameter with its own label), faded in and out over a few
-  seconds, and its peaks still come from the rumble, buttons and hits. The mode must still work when `input.audio.scene` is
-  nil (no sound captured, model not downloaded).
+  The mechanics stay the same everywhere; in tense phases the mode adds a background,
+  faded in and out over a few seconds, and its peaks still come from the rumble, buttons
+  and hits. The mode must still work when `input.audio.scene` is nil (no sound captured,
+  model not downloaded).
+- **Intense phases usually feel best with a background that runs whatever the player
+  does**: a slow sine **wave** (2 to 10 s per cycle) for battles and intense action, or
+  a **heartbeat** pattern for games built on tension (horror, stealth). Detect the phase
+  with an audio scene, recent rumble or combat activity (with tunable delays), and make
+  the wave's low point, high point and period parameters. **A wave never goes down to
+  0**: its low point is above 0 (e.g. 0.05 to 0.15, and its parameter minimum above 0
+  too). GameViber plays any value of 0.01 or more at least at each toy's weakest
+  intensity, so the low point is felt as the toy's gentlest vibration.
 - `on_audio_hit` fires on any sudden sound, music beats included: filter `ev.strength`
   with a parameter and prefer the rumble for hits when the game rumbles.
 - Call `plot("name", value)` for the internal state worth tuning (gauges, counters).

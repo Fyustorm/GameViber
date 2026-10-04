@@ -336,6 +336,7 @@ async fn run_async(
     if opts.hide {
         settings.hide = true;
     }
+    overlay::update_installed(settings.overlay.all_games);
     let (source_tx, mut rx) = mpsc::unbounded_channel::<SourceEvent>();
     let intiface = opts.intiface.then(|| Intiface::spawn(settings.url.clone()));
     let audio = Audio::start(settings.audio.clone());

@@ -94,7 +94,8 @@ Run `cargo test` after any change to the runtime or to a mode.
   Phases sharing their music cannot be told apart (Metaphor: dungeon exploration and
   fights); story versus action is reliable. The prompts tell the AI to declare only
   scenes the music separates and to never rely on them alone: a scene sets the tension
-  (a faded low baseline in tense phases), the rumble and buttons make the peaks.
+  (a faded background in tense phases: a slow wave in battles, a heartbeat in tense
+  games, whose low point never goes to 0), the rumble and buttons make the peaks.
   Two or three contrasted scenes described as sound beat many close ones.
 - The CLAP mel spectrogram (`audio/clap.rs`) must match `transformers`'
   `ClapFeatureExtractor`; its test holds reference values computed with it.

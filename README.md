@@ -98,7 +98,8 @@ Like MangoHud, GameViber can draw a small panel over the game: the active mode
 and preset, the scene recognized in the game's sound, how strong the toys run (with the global cap), the mode's gauges
 and what it detects ("Parry!"), and warnings (toy lost, Intiface disconnected,
 mode error, panic stop). Install it from the **Overlay** page, then enable it
-per game with a Steam launch option:
+per game with a Steam launch option (once installed, GameViber updates it when
+it starts with a newer version; restart running games to get it):
 
 - Proton and Vulkan games: `GAMEVIBER_OVERLAY=1 %command%` (or turn it on for
   every Vulkan game). It is an implicit Vulkan layer

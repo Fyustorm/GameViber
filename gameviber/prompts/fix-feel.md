@@ -70,8 +70,13 @@ Mode **{{NAME}}**, with the player's current settings:
   fixed by rewording: describe what is only heard in that scene, the others as lighter
   background, or merge close scenes. When two phases share the same kind of music, no
   wording separates them: merge them into one scene and tell them apart with the rumble
-  and buttons. Never rely on scenes alone: a scene sets the tension (a faded, low
-  background vibration in tense phases), the rumble and buttons make the peaks. The session above shows when each scene was
+  and buttons. Never rely on scenes alone: a scene sets the tension (a faded background
+  in tense phases), the rumble and buttons make the peaks.
+- Intense phases usually feel best with a background that runs whatever the player
+  does: a slow sine wave (2 to 10 s per cycle) in battles, a heartbeat pattern in games
+  built on tension. A wave never goes down to 0: its low point stays above 0 (with a
+  parameter minimum above 0), since GameViber plays any value of 0.01 or more at least
+  at each toy's weakest intensity. The session above shows when each scene was
   recognized. Scenes arrive 2 to 15 s
   late: use them for the mood, never to time an effect, and keep the mode working
   when `input.audio.scene` is nil.

@@ -284,6 +284,21 @@ pub fn install(all_games: bool) -> io::Result<()> {
     Ok(())
 }
 
+/// Brings an installed overlay up to date with the one this GameViber ships,
+/// keeping its scope, so that games get the features of this version. Does
+/// nothing when the overlay is not installed.
+pub fn update_installed(all_games: bool) {
+    let states = install_state(all_games);
+    let installed = states.iter().any(|(arch, s)| *arch == Arch::X86_64 && *s != InstallState::NotInstalled && *s != InstallState::NotBuilt);
+    if !installed || !states.iter().any(|(_, s)| *s == InstallState::Outdated) {
+        return;
+    }
+    match install(all_games) {
+        Ok(()) => log::info!("in-game overlay updated to this version of GameViber: restart running games to get it"),
+        Err(e) => log::warn!("cannot update the in-game overlay: {e}"),
+    }
+}
+
 /// Library locations of earlier versions.
 fn remove_legacy_files() {
     let dir = install_dir();
