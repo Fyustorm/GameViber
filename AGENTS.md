@@ -50,7 +50,8 @@ script) → **safety layer** → **Intiface output**.
 | `gameviber-overlay/` | in-game overlay: panel layout with epaint (`hud.rs`); `linux/`: implicit Vulkan layer (`layer.rs`, `render.rs`), OpenGL swap hooks when preloaded (`gl/`), socket client, copies of the game's image (`capture.rs`, `render.rs`, `gl/capture.rs`) |
 | `gameviber/src/overlay/` | the games' overlays and their frame memory; `linux/`: the Unix socket and sealed memfds, `linux/install.rs`: layer and launcher installation |
 | `docs/spec-modes.md` | mode API specification (source of truth for the script API) |
-| `packaging/linux/` | files a package installs under `/usr` (Vulkan layer manifests, OpenGL launcher, udev rule, polkit action, desktop entry), `stage.sh` laying them out with the built binaries, `postinstall.sh`; tests check they match what the code expects |
+| `packaging/linux/` | files a package installs under `/usr` (Vulkan layer manifests, OpenGL launcher, udev rule, polkit action, desktop entry), `stage.sh` laying them out with the built binaries, `postinstall.sh`; tests check they match what the code expects. `package.sh` makes the release files (deb, rpm, Arch with `nfpm.yaml`, an archive for systems without packages) |
+| `.github/workflows/` | `ci.yml`: tests and the Windows check; `packages.yml`: packages built on Ubuntu 24.04 (glibc 2.39, the oldest the prebuilt ONNX Runtime links with), attached to a draft release on a `v*` tag |
 | `prototype/` | original Python prototype (reference only) |
 | `tools/` | test helpers: fake gamepad, SDL rumble game, `check-windows.sh` (Platforms) |
 
@@ -96,6 +97,10 @@ Run `cargo test` after any change to the runtime or to a mode.
   action) must stay identical to it: change both, the tests compare them. Paths
   are under `/usr`. Without a package, the app keeps installing for the user
   in `~/.local/share` (`overlay/linux/install.rs`).
+- **Releases**: the version is in `gameviber/Cargo.toml` (and
+  `gameviber-overlay/Cargo.toml`), semver with a prerelease while in alpha
+  (`0.1.0-alpha.1`); tag `v<version>` to build the packages. Nothing is
+  published to stores or package repositories yet.
 - **Privileges**: the GUI and the main process must never run as root. Root-only work
   (eBPF probe, hiding gamepad nodes) goes through the helper, whose scope must stay
   minimal.

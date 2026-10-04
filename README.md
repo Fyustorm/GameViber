@@ -285,6 +285,16 @@ builds above, the files a package installs under `/usr`:
 | `/usr/share/polkit-1/actions/io.github.gameviber.GameViber.policy` | the helper's polkit action |
 | `/usr/share/applications/io.github.gameviber.GameViber.desktop` | the menu entry, also needed by the keyboard shortcuts portal |
 
+[`packaging/linux/package.sh`](packaging/linux/package.sh) makes the release
+files in `target/package/` (needs [nfpm](https://nfpm.goreleaser.com)): deb,
+rpm and Arch packages, and an archive for systems without packages (SteamOS,
+Bazzite, Silverblue), whose GameViber installs the overlay for the user. The
+`Packages` workflow does the same on GitHub on Ubuntu 24.04: glibc 2.39, the
+oldest the prebuilt ONNX Runtime links with, so the packages need Ubuntu 24.04,
+Debian 13, Fedora 40 or newer (Arch and SteamOS are fine); pushing a tag `v<version>`
+(`git tag v0.1.0-alpha.1 && git push origin v0.1.0-alpha.1`) attaches them to
+a draft release, published by hand.
+
 Packages run [`postinstall.sh`](packaging/linux/postinstall.sh) after installing
 (applies the udev rule without a reboot). With these files, GameViber writes
 nothing system-like in the user's home: it only adds user manifests overriding

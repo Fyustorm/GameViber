@@ -1,0 +1,69 @@
+# deb, rpm and Arch packages of GameViber, made with nfpm (https://nfpm.goreleaser.com)
+# from the tree `stage.sh` lays out, from the repository's root:
+#   packaging/linux/stage.sh target/package/root
+#   VERSION=0.1.0 PRERELEASE=alpha.1 nfpm package -f packaging/linux/nfpm.yaml -p deb -t target/package/
+# (`package.sh` does it all.)
+name: gameviber
+arch: amd64
+platform: linux
+# 0.1.0-alpha.1 becomes 0.1.0~alpha.1 (deb, rpm), which comes before 0.1.0.
+version: ${VERSION}
+version_schema: none
+prerelease: ${PRERELEASE}
+release: 1
+section: games
+priority: optional
+maintainer: Fyustorm <fyustorm@gmail.com>
+description: |
+  Game rumble, sound and image to toys.
+  Intercepts the rumble games send to the gamepad, listens to the game's sound,
+  looks at its image through an in-game overlay, transforms all of it through a
+  Lua mode and drives toys connected to Intiface Central.
+vendor: GameViber
+homepage: https://github.com/Fyustorm/GameViber
+license: Proprietary
+
+contents:
+  - src: target/package/root/usr/bin/gameviber
+    dst: /usr/bin/gameviber
+    file_info: { mode: 0755 }
+  - src: target/package/root/usr/bin/gameviber-overlay
+    dst: /usr/bin/gameviber-overlay
+    file_info: { mode: 0755 }
+  - src: target/package/root/usr/lib/gameviber/x86_64/libgameviber_overlay.so
+    dst: /usr/lib/gameviber/x86_64/libgameviber_overlay.so
+    file_info: { mode: 0755 }
+  - src: target/package/root/usr/lib/gameviber/i686/libgameviber_overlay.so
+    dst: /usr/lib/gameviber/i686/libgameviber_overlay.so
+    file_info: { mode: 0755 }
+  - src: x86_64
+    dst: /usr/lib/gameviber/haswell
+    type: symlink
+  - src: x86_64
+    dst: /usr/lib/gameviber/xeon_phi
+    type: symlink
+  - src: target/package/root/usr/share/vulkan/implicit_layer.d/gameviber_overlay.x86_64.json
+    dst: /usr/share/vulkan/implicit_layer.d/gameviber_overlay.x86_64.json
+  - src: target/package/root/usr/share/vulkan/implicit_layer.d/gameviber_overlay.x86.json
+    dst: /usr/share/vulkan/implicit_layer.d/gameviber_overlay.x86.json
+  - src: target/package/root/usr/lib/udev/rules.d/60-gameviber-uinput.rules
+    dst: /usr/lib/udev/rules.d/60-gameviber-uinput.rules
+  - src: target/package/root/usr/share/polkit-1/actions/io.github.gameviber.GameViber.policy
+    dst: /usr/share/polkit-1/actions/io.github.gameviber.GameViber.policy
+  - src: target/package/root/usr/share/applications/io.github.gameviber.GameViber.desktop
+    dst: /usr/share/applications/io.github.gameviber.GameViber.desktop
+
+scripts:
+  postinstall: packaging/linux/postinstall.sh
+
+# The sound needs PipeWire's tools (pw-record, pw-dump, pw-link); pkexec only
+# the eBPF source and hiding the real gamepad.
+overrides:
+  deb:
+    depends: [pipewire-bin]
+    recommends: [pkexec | policykit-1]
+  rpm:
+    depends: [pipewire-utils]
+    recommends: [polkit]
+  archlinux:
+    depends: [pipewire]
