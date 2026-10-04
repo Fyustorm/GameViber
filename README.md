@@ -43,7 +43,7 @@ again from **Setup** at the bottom of the left bar. Then the GUI provides:
   image as the in-game overlay copies it, **captures** of its scenes, the
   **zones** of its screen modes read (drawn on a capture), the image scene model
   to download, and the values other programs send;
-- **Keybindings**: the panic stop and mark-a-moment gamepad combos;
+- **Keybindings**: the panic stop, mark-a-moment and capture-the-screen gamepad combos;
 - **Settings** (bottom of the left bar): the language AI assistants answer and
   write modes in, the templates of the requests sent to them (editable, with
   GameViber's version one click away), and the setup guide;
@@ -116,9 +116,12 @@ image only the captures you take.
 For a game you play a lot, the **Game** page lets you teach GameViber more,
 for every mode (saved in `~/.config/gameviber/games/`):
 
-- **captures**: press "Capture as battle" while the game shows a battle, and
-  likewise for each scene; add more later, in other places. A few captures per
-  scene make the image recognition much more reliable;
+- **captures**: hold the capture combo on the gamepad (BACK + LS by default,
+  Keybindings page) while the game shows a battle, an exploration, a
+  dialogue...: the image is captured without leaving the game, so it keeps the
+  game's gamepad prompts, and the in-game overlay confirms. Captures go to the
+  scene picked on the Game page, or "to sort" and filed there later. A few
+  captures per scene make the image recognition much more reliable;
 - **zones**: on a capture (zoom in as needed), draw a rectangle around something
   shown only at times (the battle interface) or around a bar (health, with the
   colors of its full and empty parts picked on the image; a bar that moves is

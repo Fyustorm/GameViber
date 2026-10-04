@@ -375,8 +375,9 @@ On the Game page the player can teach GameViber about the game being played; eve
 gets it while that game runs. Everything here exists only once the player set it up:
 **read it defensively** (`input.zones.hp or 1`).
 
-**Captures**: images of the game the player captured per scene ("battle", "dungeon"...).
-They are the examples scenes are recognized with, and zones are drawn on them.
+**Captures**: images of the game the player captured per scene ("battle", "dungeon"...),
+in game with a gamepad combo or from the Game page. They are the examples scenes are
+recognized with, and zones are drawn on them.
 
 **Zones**: rectangles of the screen the player drew on a capture, and checked on all of
 them.

@@ -37,6 +37,7 @@ pub struct Profile {
 pub struct Capture {
     /// PNG file name in the profile's directory.
     pub file: String,
+    /// Empty for a capture to sort (taken in game, filed later).
     pub scene: String,
     /// Its embedding (`screen::clip`); empty until the image model computed it.
     pub embedding: Vec<f32>,
@@ -189,10 +190,11 @@ pub fn save_capture(game: &str, scene: &str, frame: &Frame) -> std::io::Result<S
     let dir = captures_dir(game);
     config::create_dir(&dir)?;
     let stamp = crate::session::local_time().replace([' ', ':'], "-");
-    let mut file = format!("{scene}-{stamp}.png");
+    let label = if scene.is_empty() { "capture" } else { scene };
+    let mut file = format!("{label}-{stamp}.png");
     let mut n = 2;
     while dir.join(&file).exists() {
-        file = format!("{scene}-{stamp}-{n}.png");
+        file = format!("{label}-{stamp}-{n}.png");
         n += 1;
     }
     let out = fs::File::create(dir.join(&file))?;
@@ -265,9 +267,9 @@ impl Profile {
         }
     }
 
-    /// Scene names of the captures, sorted.
+    /// Scene names of the captures, sorted (captures to sort left out).
     pub fn scenes(&self) -> Vec<String> {
-        let mut scenes: Vec<String> = self.captures.iter().map(|c| c.scene.clone()).collect();
+        let mut scenes: Vec<String> = self.captures.iter().filter(|c| !c.scene.is_empty()).map(|c| c.scene.clone()).collect();
         scenes.sort();
         scenes.dedup();
         scenes

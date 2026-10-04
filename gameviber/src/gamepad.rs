@@ -1,6 +1,6 @@
 //! Gamepad normalization: evdev key/axis codes to the Xbox-layout names
 //! exposed to modes (A, B, LB, DPAD_UP, LX, LT...), plus idle tracking and
-//! detection of the panic and "mark this moment" combos.
+//! detection of the panic, "mark this moment" and "capture the screen" combos.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -24,6 +24,8 @@ pub const DEFAULT_PANIC_COMBO: [&str; 2] = ["BACK", "START"];
 pub const MARK_HOLD_SECS: f64 = 0.3;
 /// Default combo marking a moment that felt wrong.
 pub const DEFAULT_MARK_COMBO: [&str; 2] = ["BACK", "RS"];
+/// Default combo capturing the game's image into its profile.
+pub const DEFAULT_CAPTURE_COMBO: [&str; 2] = ["BACK", "LS"];
 /// A combo needs at least this many buttons, so that no single press triggers it.
 pub const PANIC_COMBO_MIN: usize = 2;
 
@@ -108,6 +110,8 @@ pub struct PadState {
     mark_combo: BTreeSet<&'static str>,
     /// Since when the mark combo is held, and whether this hold already marked.
     mark_since: Option<(f64, bool)>,
+    capture_combo: BTreeSet<&'static str>,
+    capture_since: Option<(f64, bool)>,
 }
 
 impl Default for PadState {
@@ -120,6 +124,8 @@ impl Default for PadState {
             panic_since: None,
             mark_combo: DEFAULT_MARK_COMBO.into_iter().collect(),
             mark_since: None,
+            capture_combo: DEFAULT_CAPTURE_COMBO.into_iter().collect(),
+            capture_since: None,
         }
     }
 }
@@ -129,6 +135,12 @@ impl PadState {
     pub fn set_mark_combo(&mut self, combo: BTreeSet<&'static str>) {
         self.mark_combo = combo;
         self.mark_since = None;
+    }
+
+    /// Buttons to hold together to capture the game's image (see `parse_combo`).
+    pub fn set_capture_combo(&mut self, combo: BTreeSet<&'static str>) {
+        self.capture_combo = combo;
+        self.capture_since = None;
     }
 
     /// Buttons to hold together for the panic stop (see `parse_combo`).
@@ -143,6 +155,7 @@ impl PadState {
         self.axes.values_mut().for_each(|v| *v = 0.0);
         self.panic_since = None;
         self.mark_since = None;
+        self.capture_since = None;
         std::mem::take(&mut self.held).into_iter().map(|name| ButtonEvent { name, pressed: false }).collect()
     }
 
@@ -218,12 +231,13 @@ impl PadState {
     }
 
     fn update_panic(&mut self, time: f64) {
-        let mark = self.mark_combo.is_subset(&self.held);
-        self.mark_since = match (mark, self.mark_since) {
+        let held = |combo: &BTreeSet<&str>, since: Option<(f64, bool)>| match (combo.is_subset(&self.held), since) {
             (true, None) => Some((time, false)),
             (true, since) => since,
             (false, _) => None,
         };
+        self.mark_since = held(&self.mark_combo, self.mark_since);
+        self.capture_since = held(&self.capture_combo, self.capture_since);
         let combo = self.panic_combo.is_subset(&self.held);
         self.panic_since = match (combo, self.panic_since) {
             (true, None) => Some(time),
@@ -234,18 +248,27 @@ impl PadState {
 
     /// True once per hold of the mark combo, after `MARK_HOLD_SECS`.
     pub fn take_mark(&mut self, time: f64) -> bool {
-        match &mut self.mark_since {
-            Some((since, fired)) if !*fired && time - *since >= MARK_HOLD_SECS => {
-                *fired = true;
-                true
-            }
-            _ => false,
-        }
+        once_held(&mut self.mark_since, time)
+    }
+
+    /// True once per hold of the capture combo, after `MARK_HOLD_SECS`.
+    pub fn take_capture(&mut self, time: f64) -> bool {
+        once_held(&mut self.capture_since, time)
     }
 
     /// True once the panic combo has been held for `PANIC_HOLD_SECS`.
     pub fn panic_combo(&self, time: f64) -> bool {
         self.panic_since.is_some_and(|since| time - since >= PANIC_HOLD_SECS)
+    }
+}
+
+fn once_held(since: &mut Option<(f64, bool)>, time: f64) -> bool {
+    match since {
+        Some((since, fired)) if !*fired && time - *since >= MARK_HOLD_SECS => {
+            *fired = true;
+            true
+        }
+        _ => false,
     }
 }
 
@@ -333,6 +356,21 @@ mod tests {
         pad.button("RS", true, 1.2);
         assert!(pad.take_mark(1.5), "new hold");
         assert!(!pad.panic_combo(2.0));
+    }
+
+    #[test]
+    fn capture_combo_fires_once_per_hold_apart_from_the_mark() {
+        let mut pad = PadState::default();
+        pad.button("BACK", true, 0.0);
+        pad.button("LS", true, 0.1);
+        assert!(!pad.take_capture(0.3));
+        assert!(pad.take_capture(0.4));
+        assert!(!pad.take_capture(1.0), "still the same hold");
+        assert!(!pad.take_mark(1.0), "not the mark combo");
+        pad.set_capture_combo(["LB", "RB"].into_iter().collect());
+        pad.button("LB", true, 2.0);
+        pad.button("RB", true, 2.0);
+        assert!(pad.take_capture(2.5), "the new combo");
     }
 
     #[test]

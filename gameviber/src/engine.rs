@@ -94,6 +94,8 @@ pub enum Command {
     SetPanicCombo(Vec<String>),
     /// Buttons held together to mark a moment that felt wrong (at least two).
     SetMarkCombo(Vec<String>),
+    /// Buttons held together to capture the game's image (at least two).
+    SetCaptureCombo(Vec<String>),
     SetToySettings { toy: String, settings: ToySettings },
     SetSource { source: SourceChoice, hide: bool },
     /// Intiface server address; reconnects.
@@ -126,8 +128,11 @@ pub enum Command {
     SetScreen(bool),
     /// Replaces the profile of the game being played (zones, inputs...).
     SaveProfile(Profile),
-    /// Captures the game's current image into its profile, as an example of a scene.
+    /// Captures the game's current image into its profile, as an example of a
+    /// scene ("" for captures to sort later).
     CaptureScene(String),
+    /// The scene the capture combo files images under ("" to sort them later).
+    SetCaptureScene(String),
     /// Deletes a capture of the profile (by file name).
     DeleteCapture(String),
     /// Files a capture under another scene.
@@ -230,6 +235,8 @@ pub struct Shared {
     /// Profile of the game being played (the one showing the overlay).
     pub profile: Option<Profile>,
     pub inputs: InputsView,
+    /// The scene the capture combo files images under ("": to sort).
+    pub capture_scene: String,
     pub time: f64,
     pub stopped: bool,
 }
@@ -357,6 +364,7 @@ struct Engine {
     last_image_submit: f64,
     /// Embeddings of the profile's captures being computed: game, then (file, embedding) as they come.
     capture_job: Option<(String, std_mpsc::Receiver<(String, Embedding)>)>,
+    capture_scene: String,
     /// Profile of the game being played, and the mean of its examples per scene.
     profile: Option<Profile>,
     example_centroids: Vec<(String, Embedding)>,
@@ -441,6 +449,7 @@ async fn run_async(
         image_scenes: ImageScenes::start(),
         last_image_submit: f64::NEG_INFINITY,
         capture_job: None,
+        capture_scene: String::new(),
         profile: None,
         example_centroids: Vec::new(),
         zones: ZoneReader::default(),
@@ -530,9 +539,8 @@ impl Engine {
         }
     }
 
-    /// Applies the saved panic combo, falling back to the default when it is invalid.
-    /// Applies the saved panic and mark combos, falling back to the defaults when
-    /// invalid or identical.
+    /// Applies the saved combos, falling back to the defaults when invalid or
+    /// identical to another.
     fn apply_combos(&mut self) {
         let parse = |names: &mut Vec<String>, default: [&'static str; 2], what: &str| {
             gamepad::parse_combo(names).unwrap_or_else(|| {
@@ -548,8 +556,15 @@ impl Engine {
             self.settings.mark_combo = gamepad::DEFAULT_MARK_COMBO.map(str::to_owned).to_vec();
             mark = gamepad::DEFAULT_MARK_COMBO.into_iter().collect();
         }
+        let mut capture = parse(&mut self.settings.capture_combo, gamepad::DEFAULT_CAPTURE_COMBO, "capture");
+        if capture == panic || capture == mark {
+            log::warn!("the capture combo is another combo, using the default");
+            self.settings.capture_combo = gamepad::DEFAULT_CAPTURE_COMBO.map(str::to_owned).to_vec();
+            capture = gamepad::DEFAULT_CAPTURE_COMBO.into_iter().collect();
+        }
         self.pad.set_panic_combo(panic);
         self.pad.set_mark_combo(mark);
+        self.pad.set_capture_combo(capture);
     }
 
     /// The player marked this moment as feeling wrong: noted in the recordings,
@@ -674,15 +689,27 @@ impl Engine {
                 self.settings.save();
             }
             Command::SetPanicCombo(combo) => {
-                if gamepad::parse_combo(&combo).is_some_and(|c| Some(c) != gamepad::parse_combo(&self.settings.mark_combo)) {
+                let taken = [&self.settings.mark_combo, &self.settings.capture_combo].map(|c| gamepad::parse_combo(c));
+                if gamepad::parse_combo(&combo).is_some_and(|c| !taken.contains(&Some(c))) {
                     log::info!("panic combo set to {}", gamepad::combo_text(&combo));
                     self.settings.panic_combo = combo;
                     self.apply_combos();
                     self.settings.save();
                 }
             }
+            Command::SetCaptureCombo(combo) => {
+                let taken = [&self.settings.panic_combo, &self.settings.mark_combo].map(|c| gamepad::parse_combo(c));
+                if gamepad::parse_combo(&combo).is_some_and(|c| !taken.contains(&Some(c))) {
+                    log::info!("capture combo set to {}", gamepad::combo_text(&combo));
+                    self.settings.capture_combo = combo;
+                    self.apply_combos();
+                    self.settings.save();
+                }
+            }
+            Command::SetCaptureScene(scene) => self.capture_scene = scene,
             Command::SetMarkCombo(combo) => {
-                if gamepad::parse_combo(&combo).is_some_and(|c| Some(c) != gamepad::parse_combo(&self.settings.panic_combo)) {
+                let taken = [&self.settings.panic_combo, &self.settings.capture_combo].map(|c| gamepad::parse_combo(c));
+                if gamepad::parse_combo(&combo).is_some_and(|c| !taken.contains(&Some(c))) {
                     log::info!("mark combo set to {}", gamepad::combo_text(&combo));
                     self.settings.mark_combo = combo;
                     self.apply_combos();
@@ -744,18 +771,7 @@ impl Engine {
                     self.set_profile(Some(profile));
                 }
             }
-            Command::CaptureScene(scene) => match (&mut self.profile, &self.screen_view.frame) {
-                (Some(profile), Some(frame)) => match profile.add_capture(&scene, frame) {
-                    Ok(()) => {
-                        profile.save();
-                        log::info!("capture of '{scene}' added to the profile of {}", profile.game);
-                        let profile = profile.clone();
-                        self.set_profile(Some(profile));
-                    }
-                    Err(e) => log::error!("cannot save the capture: {e}"),
-                },
-                _ => log::warn!("no image of the game to capture"),
-            },
+            Command::CaptureScene(scene) => self.capture(scene, self.time()),
             Command::DeleteCapture(file) => self.edit_profile(|p| p.remove_capture(&file)),
             Command::MoveCapture { file, scene } => self.edit_profile(|p| {
                 if let Some(capture) = p.captures.iter_mut().find(|c| c.file == file) {
@@ -1117,6 +1133,9 @@ impl Engine {
         if self.pad.panic_combo(time) {
             self.trigger_panic(&gamepad::combo_text(&self.settings.panic_combo));
         }
+        if self.pad.take_capture(time) && self.player.is_none() {
+            self.capture(self.capture_scene.clone(), time);
+        }
         if self.pad.take_mark(time) && self.player.is_none() {
             self.mark_moment(time);
         }
@@ -1235,6 +1254,7 @@ impl Engine {
         shared.scenes = self.scene_view();
         shared.profile = self.profile.clone();
         shared.inputs = self.inputs.view();
+        shared.capture_scene = self.capture_scene.clone();
         shared.overlay_unavailable = self.overlay.unavailable();
         shared.history.push_back(Sample { t: time, strong: levels.strong, weak: levels.weak, channels });
         while shared.history.front().is_some_and(|s| time - s.t > HISTORY_SECS) {
@@ -1362,6 +1382,28 @@ impl Engine {
         self.screen_view.zones = self.profile.iter().flat_map(|p| &p.zones).map(|z| {
             (z.name.clone(), self.zones.measures.get(&z.name).copied().unwrap_or(0.0), self.zones.values().get(&z.name).copied())
         }).collect();
+    }
+
+    /// Captures the game's current image into its profile under `scene` ("": to
+    /// sort), and says so in the in-game overlay.
+    fn capture(&mut self, scene: String, time: f64) {
+        let (Some(profile), Some(frame)) = (&mut self.profile, &self.screen_view.frame) else {
+            log::warn!("no image of the game to capture");
+            self.overlay_events.push(("No image to capture".to_owned(), time));
+            return;
+        };
+        match profile.add_capture(&scene, frame) {
+            Ok(()) => {
+                profile.save();
+                let count = profile.captures.iter().filter(|c| c.scene == scene).count();
+                let what = if scene.is_empty() { "to sort".to_owned() } else { scene.clone() };
+                log::info!("capture ({what}) added to the profile of {}", profile.game);
+                self.overlay_events.push((format!("📸 Captured: {what} ({count})"), time));
+                let profile = profile.clone();
+                self.set_profile(Some(profile));
+            }
+            Err(e) => log::error!("cannot save the capture: {e}"),
+        }
     }
 
     fn edit_profile(&mut self, edit: impl FnOnce(&mut Profile)) {

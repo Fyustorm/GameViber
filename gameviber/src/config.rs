@@ -76,6 +76,8 @@ pub struct Settings {
     pub panic_combo: Vec<String>,
     /// Gamepad buttons held together to mark a moment that felt wrong (at least two).
     pub mark_combo: Vec<String>,
+    /// Gamepad buttons held together to capture the game's image into its profile.
+    pub capture_combo: Vec<String>,
     /// Toy name -> how it renders intensities (missing: `ToySettings::default()`).
     pub toys: BTreeMap<String, ToySettings>,
     /// The first-launch setup was completed or skipped.
@@ -176,6 +178,7 @@ impl Default for Settings {
             routing: BTreeMap::new(),
             panic_combo: crate::gamepad::DEFAULT_PANIC_COMBO.map(str::to_owned).to_vec(),
             mark_combo: crate::gamepad::DEFAULT_MARK_COMBO.map(str::to_owned).to_vec(),
+            capture_combo: crate::gamepad::DEFAULT_CAPTURE_COMBO.map(str::to_owned).to_vec(),
             toys: BTreeMap::new(),
             onboarded: false,
             overlay: OverlaySettings::default(),

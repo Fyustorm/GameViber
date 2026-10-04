@@ -29,8 +29,8 @@ pub struct State {
     texture: Option<egui::TextureHandle>,
     /// Count of the frame in the texture.
     shown: Option<u32>,
-    /// Scene the next capture goes to.
-    capture_scene: String,
+    /// A new scene name typed for captures.
+    new_scene: String,
     /// The game whose captures are loaded, and each capture: its image and texture.
     loaded_game: Option<String>,
     captures: HashMap<String, (Arc<Frame>, egui::TextureHandle)>,
@@ -272,28 +272,40 @@ impl App {
                     scenes.push(scene);
                 }
             }
-            let st = &mut self.screen;
-            if st.capture_scene.is_empty() {
-                st.capture_scene = scenes.first().cloned().unwrap_or_else(|| "battle".to_owned());
-            }
-            let mut capture = None;
+            let current = s.capture_scene.clone();
+            let label = |scene: &str| if scene.is_empty() { "To sort later".to_owned() } else { scene.to_owned() };
+            let mut target = None;
+            let mut capture = false;
             ui.horizontal(|ui| {
-                ui.label("Scene");
-                egui::ComboBox::from_id_salt("capture-scene").selected_text(&st.capture_scene).show_ui(ui, |ui| {
-                    for scene in &scenes {
-                        ui.selectable_value(&mut st.capture_scene, scene.clone(), scene);
+                ui.label("Captures go to");
+                egui::ComboBox::from_id_salt("capture-scene").selected_text(label(&current)).show_ui(ui, |ui| {
+                    for scene in std::iter::once(String::new()).chain(scenes.iter().cloned()) {
+                        if ui.selectable_label(scene == current, label(&scene)).clicked() {
+                            target = Some(scene);
+                        }
                     }
                 });
-                ui.add(egui::TextEdit::singleline(&mut st.capture_scene).desired_width(110.0).hint_text("or a new one"));
-                let scene = st.capture_scene.trim().to_owned();
-                let label = format!("📸 Capture as {scene}");
-                if ui.add_enabled(valid_name(&scene), primary(&label)).on_disabled_hover_text("Scene names: letters, digits and _").clicked() {
-                    capture = Some(scene);
+                let new = &mut self.screen.new_scene;
+                ui.add(egui::TextEdit::singleline(new).desired_width(110.0).hint_text("a new scene"));
+                if ui.add_enabled(valid_name(new.trim()), egui::Button::new("Use")).clicked() {
+                    target = Some(new.trim().to_owned());
+                    new.clear();
                 }
+                capture = ui.button("📸 Capture now").clicked();
             });
-            ui.label(muted("Capture while the game shows that scene; add more images later, in other places.").size(12.0));
-            if let Some(scene) = capture {
-                self.send(Command::CaptureScene(scene));
+            ui.label(
+                muted(format!(
+                    "In game, hold {} on the gamepad to capture without leaving it (Keybindings page): the image \
+                     keeps the game's gamepad prompts.",
+                    crate::gamepad::combo_text(&s.settings.capture_combo)
+                ))
+                .size(12.0),
+            );
+            if let Some(scene) = target {
+                self.send(Command::SetCaptureScene(scene));
+            }
+            if capture {
+                self.send(Command::CaptureScene(current));
             }
         });
     }
@@ -317,9 +329,21 @@ impl App {
             }
             let mut delete = None;
             let mut moved = None;
-            let scenes = profile.scenes();
+            let mut scenes = profile.scenes();
+            // Where captures can be filed: the active mode's scenes too.
+            let mut targets: Vec<String> = s.mode.info.iter().flat_map(|i| i.scenes.iter().map(|sc| sc.name.clone())).collect();
             for scene in &scenes {
-                ui.label(RichText::new(format!("{scene} ({})", profile.captures.iter().filter(|c| c.scene == *scene).count())).strong());
+                if !targets.contains(scene) {
+                    targets.push(scene.clone());
+                }
+            }
+            if profile.captures.iter().any(|c| c.scene.is_empty()) {
+                scenes.insert(0, String::new());
+            }
+            for scene in &scenes {
+                let count = profile.captures.iter().filter(|c| c.scene == *scene).count();
+                let title = if scene.is_empty() { format!("To sort ({count}): right-click to file them") } else { format!("{scene} ({count})") };
+                ui.label(RichText::new(title).strong());
                 ui.horizontal_wrapped(|ui| {
                     for capture in profile.captures.iter().filter(|c| c.scene == *scene) {
                         let Some((frame, texture)) = self.screen.captures.get(&capture.file) else { continue };
@@ -330,7 +354,7 @@ impl App {
                             self.screen.selected = Some(capture.file.clone());
                         }
                         response.context_menu(|ui| {
-                            for other in scenes.iter().filter(|o| *o != scene) {
+                            for other in targets.iter().filter(|o| *o != scene) {
                                 if ui.button(format!("Move to {other}")).clicked() {
                                     moved = Some((capture.file.clone(), other.clone()));
                                 }
@@ -376,7 +400,7 @@ impl App {
             }
             match self.screen.selected.clone().and_then(|f| self.screen.captures.get(&f).cloned().map(|c| (f, c))) {
                 Some((file, (frame, texture))) => {
-                    let scene = profile.captures.iter().find(|c| c.file == file).map(|c| c.scene.clone());
+                    let scene = profile.captures.iter().find(|c| c.file == file).map(|c| c.scene.clone()).filter(|s| !s.is_empty());
                     if let Some(p) = self.zone_editor(ui, profile, &frame, &texture, scene) {
                         changed = Some(p);
                     }
@@ -476,10 +500,13 @@ impl App {
             ui.add(egui::Slider::new(&mut draft.zoom, 1.0..=MAX_ZOOM).logarithmic(true).suffix("x"));
             ui.label(muted("or Ctrl + wheel over the image").size(12.0));
         });
-        let base = ui.available_width().min(PREVIEW_WIDTH * 1.25);
+        // As large as the window allows.
+        let max_height = ui.ctx().content_rect().height() * 0.75;
+        let fit = image_size(ui.available_width(), frame);
+        let base = if fit.y > max_height { fit.x * max_height / fit.y } else { fit.x };
         let size = image_size(base * draft.zoom, frame);
         let mut save = None;
-        egui::ScrollArea::both().id_salt("zone-editor").max_height(base * 9.0 / 16.0 + 16.0).show(ui, |ui| {
+        egui::ScrollArea::both().id_salt("zone-editor").max_height(max_height + 16.0).show(ui, |ui| {
             let (area, response) = ui.allocate_exact_size(size, Sense::click_and_drag());
             ui.painter().image(texture.id(), area, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
             if response.hovered() {
