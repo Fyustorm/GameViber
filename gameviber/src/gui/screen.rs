@@ -1,11 +1,15 @@
 //! A game's captures and zones (Games › game › Signals › Captures and
 //! zones), in two columns: on the left its captures (saved images of its
 //! scenes, which are also the examples scenes are recognized with), filtered
-//! by scene, and how to add some; on the right the zone editor — the selected
-//! capture zoomable to draw on, the zone's settings and places, what it reads
-//! on every capture, and the game's zones as chips.
+//! by scene, each with what the zone selected reads on it, and how to add
+//! some; on the right the zone editor — the game's zones, the places of the
+//! one selected, the capture shown (zoomable) to draw them on, the zone's
+//! settings (shared by its places) and the place's.
+//!
+//! A zone is picked first, then one of its places. Leaving a zone or a place
+//! for another saves its changes; Save does it in place.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use eframe::egui::{self, Color32, CornerRadius, Margin, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Vec2};
@@ -27,6 +31,8 @@ const SIDE_MIN_WIDTH: f32 = 250.0;
 const PANEL_MARGIN: f32 = 14.0;
 /// Distance (in points) from a rectangle's edge that grabs the edge.
 const HANDLE: f32 = 6.0;
+/// Seconds "Saved" shows after Save.
+const SAVED_SECS: f64 = 2.0;
 
 pub struct State {
     /// The game whose captures are loaded, and each capture: its image and texture.
@@ -46,6 +52,9 @@ pub struct State {
     center_zone: bool,
     /// Which zones the image shows.
     show: Show,
+    /// When Save was last pressed, and whether deleting the zone waits for confirmation.
+    saved_at: f64,
+    confirm_delete: bool,
     /// Heights taken last frame under the captures grid and under the image
     /// edited (which take what is left), and where the latter began.
     captures_below: f32,
@@ -67,6 +76,8 @@ impl Default for State {
             scroll_to: None,
             center_zone: false,
             show: Show::All,
+            saved_at: f64::NEG_INFINITY,
+            confirm_delete: false,
             captures_below: 0.0,
             editor_below: 0.0,
             below_image_top: 0.0,
@@ -75,19 +86,43 @@ impl Default for State {
     }
 }
 
+/// Where the editor goes.
+enum Target {
+    NewZone,
+    /// A zone, none of its places (one is then picked, or a new one drawn).
+    Zone(String),
+    /// A place, by index; true: shown on its capture.
+    Place(usize, bool),
+}
+
 impl State {
-    /// Opens the editor on a zone's place (index `i`), on the capture shown.
+    /// Opens a place (index `i`) on the capture shown (the screenshot tour).
     pub(super) fn edit_zone(&mut self, i: usize, game: &Game) {
+        self.open_place(i, game, false);
+    }
+
+    /// Leaves what is edited, saving its changes (returned), for `to`.
+    fn go(&mut self, to: Target, game: &Game) -> Option<Game> {
+        let save = if self.dirty() { self.applied(game).map(|(g, _)| g) } else { None };
+        let g = save.as_ref().unwrap_or(game);
+        self.confirm_delete = false;
+        match to {
+            Target::NewZone => self.draft = Draft { zoom: self.draft.zoom, ..Draft::default() },
+            Target::Zone(name) => self.select_zone(&name, g),
+            Target::Place(i, on_capture) => self.open_place(i, g, on_capture),
+        }
+        save
+    }
+
+    /// A place, and its capture when `on_capture`: the one it was drawn on,
+    /// else one it is found on (its scene's first).
+    fn open_place(&mut self, i: usize, game: &Game, on_capture: bool) {
         let Some(zone) = game.zones.get(i) else { return };
         self.draft = Draft::edit(self.draft.zoom, i, zone);
         self.center_zone = true;
-    }
-
-    /// Opens a place picked by its name, on its capture: the one it was drawn
-    /// on, else one it is found on (its scene's first).
-    fn edit_place(&mut self, i: usize, game: &Game) {
-        self.edit_zone(i, game);
-        let Some(zone) = game.zones.get(i) else { return };
+        if !on_capture {
+            return;
+        }
         if let Some(file) = zone.capture.as_ref().filter(|f| self.captures.contains_key(*f)) {
             self.selected = Some(file.clone());
             return;
@@ -109,20 +144,130 @@ impl State {
         }
     }
 
-    /// Selects a zone, none of its places yet: one is picked above the image
-    /// or on it, or a new one drawn.
-    fn select_zone(&mut self, i: usize, game: &Game) {
-        let Some(zone) = game.zones.get(i) else { return };
-        let mut draft = Draft::edit(self.draft.zoom, i, zone);
-        draft.editing = None;
-        draft.start = None;
-        draft.end = None;
-        self.draft = draft;
+    /// A zone, none of its places: its settings from its first place.
+    fn select_zone(&mut self, name: &str, game: &Game) {
+        match game.zones.iter().position(|z| z.name == name) {
+            Some(i) => {
+                let mut draft = Draft::edit(self.draft.zoom, i, &game.zones[i]);
+                draft.editing = None;
+                draft.start = None;
+                draft.end = None;
+                draft.mark_opened();
+                self.draft = draft;
+            }
+            None => self.draft = Draft { zoom: self.draft.zoom, ..Draft::default() },
+        }
     }
 
-    /// Starts a new zone, keeping the zoom.
-    fn new_zone(&mut self) {
-        self.draft = Draft { zoom: self.draft.zoom, ..Draft::default() };
+    /// The place the draft makes (edited or new), its look taken from the
+    /// capture it was drawn on; None until a rectangle is drawn.
+    fn draft_zone(&self, game: &Game) -> Option<Zone> {
+        let d = &self.draft;
+        let rect = d.rect()?;
+        let first = d.zone.as_ref().and_then(|name| game.zones.iter().find(|z| z.name == *name));
+        let base = d.editing.and_then(|i| game.zones.get(i)).or(first).cloned().unwrap_or_default();
+        let drawn = d.drawn_on.as_ref().and_then(|f| self.captures.get(f)).map(|(frame, _)| frame);
+        let scene = d.drawn_on.as_ref().and_then(|f| game.captures.iter().find(|c| c.file == *f)).map(|c| c.scene.clone());
+        let mut zone = Zone {
+            rect,
+            threshold: d.threshold,
+            scene: if drawn.is_some() { scene.filter(|s| !s.is_empty()) } else { base.scene.clone() },
+            capture: if drawn.is_some() { d.drawn_on.clone() } else { base.capture.clone() },
+            ..base.clone()
+        };
+        self.shared(&mut zone);
+        match zone.kind {
+            ZoneKind::Visible => {
+                if let Some(frame) = drawn {
+                    zone.reference = zones::reference(frame, rect);
+                }
+            }
+            ZoneKind::Bar => {
+                zone.reference.clear();
+                if d.full.is_empty() {
+                    zone.color = match drawn {
+                        Some(frame) => zones::bar_color(frame, rect),
+                        None => base.color,
+                    };
+                }
+                if let Some(frame) = drawn {
+                    zone.length = zones::bar_length(&zone, frame);
+                }
+            }
+        }
+        Some(zone)
+    }
+
+    /// The draft's settings shared by every place of its zone.
+    fn shared(&self, zone: &mut Zone) {
+        let d = &self.draft;
+        zone.name = d.name.clone();
+        zone.kind = d.kind;
+        zone.direction = d.direction;
+        zone.tolerance = d.tolerance;
+        if d.kind == ZoneKind::Bar {
+            if let Some(color) = d.full.first() {
+                zone.color = *color;
+            }
+            zone.more_colors = d.full.iter().skip(1).copied().collect();
+            zone.empty_color = d.empty.first().copied();
+            zone.more_empty = d.empty.iter().skip(1).copied().collect();
+        }
+    }
+
+    /// Why the draft cannot be saved.
+    fn problem(&self, game: &Game) -> Option<&'static str> {
+        let d = &self.draft;
+        let placing = d.zone.is_none() || d.editing.is_some() || d.rect().is_some();
+        if d.zone.is_none() && !d.kind_chosen {
+            Some("Choose what the zone reads.")
+        } else if placing && d.rect().is_none() {
+            Some("Draw it on the image.")
+        } else if d.kind == ZoneKind::Visible && d.editing.is_none() && d.rect().is_some() && d.drawn_on.is_none() {
+            Some("Draw the rectangle on a capture that shows the element.")
+        } else if !valid_name(&d.name) {
+            Some("Name: letters, digits and _, starting with a letter.")
+        } else if game.zones.iter().any(|z| z.name == d.name && Some(&z.name) != d.zone.as_ref()) {
+            Some("Another zone has this name.")
+        } else {
+            None
+        }
+    }
+
+    /// The game with the draft applied — the zone's settings on all its places
+    /// (renamed with the scene it is a sign of), the place edited or added —
+    /// and the place now edited; None when it cannot be saved.
+    fn applied(&self, game: &Game) -> Option<(Game, Option<usize>)> {
+        if self.problem(game).is_some() {
+            return None;
+        }
+        let d = &self.draft;
+        let mut g = game.clone();
+        if let Some(old) = &d.zone {
+            for zone in g.zones.iter_mut().filter(|z| z.name == *old) {
+                self.shared(zone);
+            }
+            if *old != d.name {
+                g.scenes.iter_mut().filter(|sc| sc.zone.as_ref() == Some(old)).for_each(|sc| sc.zone = Some(d.name.clone()));
+            }
+        }
+        let place = match (d.editing, self.draft_zone(game)) {
+            (Some(i), Some(zone)) if i < g.zones.len() => {
+                g.zones[i] = zone;
+                Some(i)
+            }
+            (None, Some(zone)) => {
+                g.zones.push(zone);
+                Some(g.zones.len() - 1)
+            }
+            _ => None,
+        };
+        Some((g, place))
+    }
+
+    /// The draft changed since it was opened (whether it can be saved or not).
+    fn dirty(&self) -> bool {
+        self.draft.changed()
     }
 }
 
@@ -140,7 +285,7 @@ enum Pick {
 }
 
 /// What dragging on the image does.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 enum Grab {
     /// Draws a new rectangle.
     New,
@@ -192,12 +337,19 @@ impl Grab {
     }
 }
 
-/// The zone being drawn on the selected capture, or edited.
+
+/// The zone and place being edited: the zone's settings (shared by its
+/// places) and the place's rectangle and threshold.
+#[derive(Clone)]
 struct Draft {
     zoom: f32,
-    /// Index of the zone being edited; None for a new one.
+    /// The zone selected, by its saved name; None for a new zone.
+    zone: Option<String>,
+    /// A new zone: what it reads was chosen.
+    kind_chosen: bool,
+    /// Index of the place edited; None for a new place (or none yet).
     editing: Option<usize>,
-    /// The capture the rectangle was drawn on: the zone's look (and a bar's
+    /// The capture the rectangle was drawn on: the place's look (and a bar's
     /// length) is taken from it. None while editing without redrawing.
     drawn_on: Option<String>,
     threshold: f32,
@@ -216,12 +368,16 @@ struct Draft {
     /// full color: taken from the capture.
     full: Vec<[u8; 3]>,
     empty: Vec<[u8; 3]>,
+    /// The draft as it was opened, to tell whether it changed.
+    opened: Option<Box<Draft>>,
 }
 
 impl Default for Draft {
     fn default() -> Self {
         Self {
             zoom: 1.0,
+            zone: None,
+            kind_chosen: false,
             editing: None,
             drawn_on: None,
             threshold: Zone::default().threshold,
@@ -235,30 +391,74 @@ impl Default for Draft {
             picking: None,
             full: Vec::new(),
             empty: Vec::new(),
+            opened: None,
         }
     }
 }
 
 impl Draft {
-    /// A draft to edit `zone` (index `i`), keeping the zoom.
+    /// What it is now is what it was opened as.
+    fn mark_opened(&mut self) {
+        self.opened = None;
+        self.opened = Some(Box::new(self.clone()));
+    }
+
+    /// Something saved would change since it was opened (a new zone or place: once drawn).
+    fn changed(&self) -> bool {
+        let Some(o) = &self.opened else { return self.rect().is_some() };
+        self.name != o.name
+            || self.direction != o.direction
+            || self.tolerance != o.tolerance
+            || self.full != o.full
+            || self.empty != o.empty
+            || self.threshold != o.threshold
+            || self.start != o.start
+            || self.end != o.end
+            || self.drawn_on.is_some()
+    }
+
+    /// A draft to edit the place `zone` (index `i`), keeping the zoom.
     fn edit(zoom: f32, i: usize, zone: &Zone) -> Self {
+        let mut draft = Self { zoom, zone: Some(zone.name.clone()), kind_chosen: true, ..Self::default() };
+        draft.take_zone(zone);
+        draft.take_place(i, zone);
+        draft.mark_opened();
+        draft
+    }
+
+    /// The zone's settings, from one of its places.
+    fn take_zone(&mut self, zone: &Zone) {
+        self.name = zone.name.clone();
+        self.kind = zone.kind;
+        self.direction = zone.direction;
+        self.tolerance = zone.tolerance;
+        self.full = if zone.kind == ZoneKind::Bar { std::iter::once(zone.color).chain(zone.more_colors.iter().copied()).collect() } else { Vec::new() };
+        self.empty = zone.empty_color.into_iter().chain(zone.more_empty.iter().copied()).collect();
+    }
+
+    /// The place's own settings.
+    fn take_place(&mut self, i: usize, zone: &Zone) {
         let [x, y, w, h] = zone.rect;
-        Self {
-            zoom,
-            editing: Some(i),
-            drawn_on: None,
-            threshold: zone.threshold,
-            tolerance: zone.tolerance,
-            start: Some(Pos2::new(x, y)),
-            end: Some(Pos2::new(x + w, y + h)),
-            grab: None,
-            name: zone.name.clone(),
-            kind: zone.kind,
-            direction: zone.direction,
-            picking: None,
-            full: if zone.kind == ZoneKind::Bar { std::iter::once(zone.color).chain(zone.more_colors.iter().copied()).collect() } else { Vec::new() },
-            empty: zone.empty_color.into_iter().chain(zone.more_empty.iter().copied()).collect(),
+        self.editing = Some(i);
+        self.drawn_on = None;
+        self.threshold = zone.threshold;
+        self.start = Some(Pos2::new(x, y));
+        self.end = Some(Pos2::new(x + w, y + h));
+        self.grab = None;
+        self.picking = None;
+        // The place as it is saved is where its changes count from.
+        if let Some(o) = &mut self.opened {
+            (o.editing, o.start, o.end, o.threshold, o.drawn_on) = (self.editing, self.start, self.end, self.threshold, None);
         }
+    }
+
+    /// Moves the rectangle by `delta` (fractions of the image), inside it.
+    fn nudge(&mut self, delta: Vec2) {
+        let Some([x, y, w, h]) = self.rect() else { return };
+        let dx = delta.x.clamp(-x, 1.0 - x - w);
+        let dy = delta.y.clamp(-y, 1.0 - y - h);
+        self.start = Some(Pos2::new(x + dx, y + dy));
+        self.end = Some(Pos2::new(x + dx + w, y + dy + h));
     }
 
     fn rect(&self) -> Option<[f32; 4]> {
@@ -379,31 +579,20 @@ impl App {
         heading(ui, "Captures and zones");
         ui.label(muted("Zones are drawn on captures and checked on all of them. Captures stay on your computer."));
         ui.add_space(4.0);
-        // What the zone being edited (with its other places) reads on each capture.
-        let tested = self.draft_zone(game);
-        let readings: HashMap<String, (String, Color32)> = match &tested {
-            Some(zone) => {
-                let mut places: Vec<&Zone> = game
-                    .zones
-                    .iter()
-                    .enumerate()
-                    .filter(|(i, z)| z.name == zone.name && Some(*i) != self.screen.draft.editing)
-                    .map(|(_, z)| z)
-                    .collect();
-                places.push(zone);
-                self.screen.captures.iter().map(|(file, (frame, _))| (file.clone(), reading_places(&places, frame))).collect()
-            }
-            // A zone selected without a place: what its places read.
-            None => {
-                let d = &self.screen.draft;
-                let places: Vec<&Zone> = game.zones.iter().filter(|z| d.editing.is_none() && z.name == d.name && z.kind == d.kind).collect();
-                if places.is_empty() {
-                    HashMap::new()
-                } else {
-                    self.screen.captures.iter().map(|(file, (frame, _))| (file.clone(), reading_places(&places, frame))).collect()
-                }
-            }
+        // What the zone selected reads on each capture: its places, the one edited as drawn now.
+        let st = &self.screen;
+        let d = &st.draft;
+        let tested = st.draft_zone(game);
+        let mut places: Vec<&Zone> =
+            game.zones.iter().enumerate().filter(|(i, z)| d.zone.as_ref() == Some(&z.name) && Some(*i) != d.editing).map(|(_, z)| z).collect();
+        places.extend(tested.as_ref());
+        let readings: HashMap<String, (String, Color32)> = if places.is_empty() {
+            HashMap::new()
+        } else {
+            st.captures.iter().map(|(file, (frame, _))| (file.clone(), reading_places(&places, frame))).collect()
         };
+        // The captures its places were drawn on.
+        let marked: HashSet<String> = game.zones.iter().filter(|z| d.zone.as_ref() == Some(&z.name)).filter_map(|z| z.capture.clone()).collect();
         let mut changed = None;
         let gap = 16.0;
         let side = (ui.available_width() * 0.3).clamp(SIDE_MIN_WIDTH, SIDE_WIDTH);
@@ -414,11 +603,11 @@ impl App {
             let layout = egui::Layout::top_down(egui::Align::Min);
             ui.allocate_ui_with_layout(Vec2::new(side, height), layout, |ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
-                self.captures_panel(ui, s, game, &readings);
+                self.captures_panel(ui, s, game, &readings, &marked);
             });
             ui.allocate_ui_with_layout(Vec2::new(main, height), layout, |ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
-                changed = self.zone_panel(ui, game, tested.as_ref());
+                changed = self.zone_panel(ui, game);
             });
         });
         if let Some(p) = changed {
@@ -458,7 +647,7 @@ impl App {
     }
 
     /// The left column: the captures by scene (scrolling if they must), then how to add some.
-    fn captures_panel(&mut self, ui: &mut egui::Ui, s: &Shared, game: &Game, readings: &HashMap<String, (String, Color32)>) {
+    fn captures_panel(&mut self, ui: &mut egui::Ui, s: &Shared, game: &Game, readings: &HashMap<String, (String, Color32)>, marked: &HashSet<String>) {
         let inner = ui.available_size() - Vec2::splat(2.0 * PANEL_MARGIN + 2.0);
         card(PANEL).inner_margin(Margin::same(PANEL_MARGIN as i8)).show(ui, |ui| {
             ui.set_width(inner.x);
@@ -475,7 +664,7 @@ impl App {
                 });
             } else {
                 egui::ScrollArea::vertical().id_salt("captures").auto_shrink([false, false]).max_height(height).min_scrolled_height(height).show(ui, |ui| {
-                    self.capture_grid(ui, game, readings);
+                    self.capture_grid(ui, game, readings, marked);
                 });
             }
             let top = ui.cursor().top();
@@ -513,8 +702,9 @@ impl App {
     }
 
     /// The captures shown by the scene filter, three per row, each with what
-    /// the zone being edited reads on it; a click opens one in the editor.
-    fn capture_grid(&mut self, ui: &mut egui::Ui, game: &Game, readings: &HashMap<String, (String, Color32)>) {
+    /// the zone selected reads on it (📍: a place of it was drawn there); a
+    /// click opens one in the editor.
+    fn capture_grid(&mut self, ui: &mut egui::Ui, game: &Game, readings: &HashMap<String, (String, Color32)>, marked: &HashSet<String>) {
         let shown: Vec<&game::Capture> =
             game.captures.iter().filter(|c| self.screen.filter.as_ref().is_none_or(|f| c.scene == *f)).collect();
         let targets = game.scenes();
@@ -534,6 +724,9 @@ impl App {
                         ui.spacing_mut().item_spacing.y = 2.0;
                         let response = thumbnail(ui, texture, image_size(width, frame), selected)
                             .on_hover_text("Open it in the editor; right-click to file it under another scene or delete it");
+                        if marked.contains(&capture.file) {
+                            tag(ui, response.rect.right_top() + Vec2::new(-3.0, 3.0), egui::Align2::RIGHT_TOP, "📍".to_owned(), ACCENT_TEXT);
+                        }
                         if response.clicked() {
                             self.screen.selected = Some(capture.file.clone());
                         }
@@ -631,8 +824,8 @@ impl App {
         });
     }
 
-    /// The right column: the zone being edited or drawn, then the game's zones as chips.
-    fn zone_panel(&mut self, ui: &mut egui::Ui, game: &Game, tested: Option<&Zone>) -> Option<Game> {
+    /// The right column: the zone editor, once there is a capture to draw on.
+    fn zone_panel(&mut self, ui: &mut egui::Ui, game: &Game) -> Option<Game> {
         let inner = ui.available_size() - Vec2::splat(2.0 * PANEL_MARGIN + 2.0);
         let mut changed = None;
         card(PANEL).inner_margin(Margin::same(PANEL_MARGIN as i8)).show(ui, |ui| {
@@ -640,7 +833,7 @@ impl App {
             ui.set_height(inner.y);
             match self.screen.selected.clone().and_then(|f| self.screen.captures.get(&f).cloned().map(|c| (f, c))) {
                 Some((file, (frame, texture))) => {
-                    changed = self.zone_editor(ui, game, &file, &frame, &texture, tested);
+                    changed = self.zone_editor(ui, game, &file, &frame, &texture);
                 }
                 None => {
                     ui.label(RichText::new("Zones").strong().size(16.0));
@@ -650,130 +843,86 @@ impl App {
                     ));
                 }
             }
-            // Under the editor (and part of what it measures below its image).
-            self.zone_chips(ui, game);
             remember_height(ui, &mut self.screen.editor_below, self.screen.below_image_top);
         });
         changed
     }
 
-    /// One chip per zone, whatever its number of places, and one for a new zone.
-    fn zone_chips(&mut self, ui: &mut egui::Ui, game: &Game) {
-        ui.add_space(4.0);
-        ui.separator();
-        ui.label(RichText::new("Zones").strong());
-        let editing_name = self.screen.draft.editing.and_then(|i| game.zones.get(i)).map(|z| z.name.clone());
-        let new_draft = self.screen.draft.editing.is_none();
-        let mut open = None;
+    /// The zones, the places of the one selected, the capture shown to draw
+    /// them on, the zone's and the place's settings. Returns the game to save.
+    fn zone_editor(&mut self, ui: &mut egui::Ui, game: &Game, file: &str, frame: &Frame, texture: &egui::TextureHandle) -> Option<Game> {
+        let now = ui.input(|i| i.time);
+        let tested = self.screen.draft_zone(game);
+        let problem = self.screen.problem(game);
+        let dirty = self.screen.dirty();
+        let mut target: Option<Target> = None;
+        let mut save_now = false;
+        let mut cancel = false;
+        let mut delete_place = None;
+        let mut delete_zone = false;
+        let mut linked = None;
+        let mut show_capture = None;
+        let st = &mut self.screen;
+        let draft = &mut st.draft;
+        let zone_name = draft.zone.clone();
+        let places: Vec<usize> = match &zone_name {
+            Some(name) => game.zones.iter().enumerate().filter(|(_, z)| z.name == *name).map(|(i, _)| i).collect(),
+            None => Vec::new(),
+        };
+
+        // The zones.
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
+            ui.label(RichText::new("Zones").strong());
             let mut seen: Vec<&str> = Vec::new();
-            for (i, zone) in game.zones.iter().enumerate() {
+            for zone in &game.zones {
                 if seen.contains(&zone.name.as_str()) {
                     continue;
                 }
                 seen.push(&zone.name);
-                let places = game.zones.iter().filter(|z| z.name == zone.name).count();
+                let n = game.zones.iter().filter(|z| z.name == zone.name).count();
                 let kind = if zone.kind == ZoneKind::Bar { "bar" } else { "shown or not" };
-                let label = if places > 1 { format!("{} · {kind} · {places} places", zone.name) } else { format!("{} · {kind}", zone.name) };
-                if ui.selectable_label(editing_name.as_deref() == Some(zone.name.as_str()), label).clicked() {
-                    open = Some(i);
+                let on = zone_name.as_deref() == Some(zone.name.as_str());
+                let text = if n > 1 { format!("{} · {kind} · {n}", zone.name) } else { format!("{} · {kind}", zone.name) };
+                if ui.selectable_label(on, text).on_hover_text(format!("{n} place(s)")).clicked() && !on {
+                    target = Some(Target::Zone(zone.name.clone()));
                 }
             }
-            if ui.selectable_label(new_draft, RichText::new("+ New zone").color(ACCENT_TEXT)).clicked() && !new_draft {
-                self.screen.new_zone();
+            if ui.selectable_label(zone_name.is_none(), RichText::new("+ New zone").color(ACCENT_TEXT)).clicked() && zone_name.is_some() {
+                target = Some(Target::NewZone);
             }
         });
-        if let Some(i) = open {
-            self.screen.select_zone(i, game);
-        }
-    }
-
-    /// The zone the draft makes, its look taken from the capture it was drawn on.
-    fn draft_zone(&self, profile: &Game) -> Option<Zone> {
-        let d = &self.screen.draft;
-        let rect = d.rect()?;
-        let base = d.editing.and_then(|i| profile.zones.get(i)).cloned().unwrap_or_default();
-        let drawn = d.drawn_on.as_ref().and_then(|f| self.screen.captures.get(f)).map(|(frame, _)| frame);
-        let scene = d.drawn_on.as_ref().and_then(|f| profile.captures.iter().find(|c| c.file == *f)).map(|c| c.scene.clone());
-        let mut zone = Zone {
-            name: d.name.clone(),
-            kind: d.kind,
-            rect,
-            threshold: d.threshold,
-            tolerance: d.tolerance,
-            direction: d.direction,
-            empty_color: d.empty.first().copied(),
-            more_empty: d.empty.iter().skip(1).copied().collect(),
-            more_colors: d.full.iter().skip(1).copied().collect(),
-            scene: if drawn.is_some() { scene.filter(|s| !s.is_empty()) } else { base.scene.clone() },
-            capture: if drawn.is_some() { d.drawn_on.clone() } else { base.capture.clone() },
-            ..base.clone()
-        };
-        match zone.kind {
-            ZoneKind::Visible => {
-                if let Some(frame) = drawn {
-                    zone.reference = zones::reference(frame, rect);
-                }
-            }
-            ZoneKind::Bar => {
-                zone.reference.clear();
-                zone.color = match (d.full.first(), drawn) {
-                    (Some(color), _) => *color,
-                    (None, Some(frame)) => zones::bar_color(frame, rect),
-                    (None, None) => base.color,
-                };
-                if let Some(frame) = drawn {
-                    zone.length = zones::bar_length(&zone, frame);
-                }
-            }
-        }
-        Some(zone)
-    }
-
-    /// The selected capture, zoomable, to draw a zone on (a new one or the one
-    /// edited), and the zone's settings. Returns the game once saved.
-    fn zone_editor(
-        &mut self,
-        ui: &mut egui::Ui,
-        profile: &Game,
-        file: &str,
-        frame: &Frame,
-        texture: &egui::TextureHandle,
-        tested: Option<&Zone>,
-    ) -> Option<Game> {
-        let tested = tested.cloned();
-        let mut delete_place = None;
-        let mut open = None;
-        let mut pick_place = None;
-        let st = &mut self.screen;
-        let draft = &mut st.draft;
-        let adding_place = draft.editing.is_none() && profile.zones.iter().any(|z| z.name == draft.name && z.kind == draft.kind);
-        let name = draft.editing.and_then(|i| profile.zones.get(i)).map(|z| z.name.clone()).or_else(|| adding_place.then(|| draft.name.clone()));
-        let places: Vec<usize> = match &name {
-            Some(name) => profile.zones.iter().enumerate().filter(|(_, z)| z.name == *name).map(|(i, _)| i).collect(),
-            None => Vec::new(),
-        };
-
-        // Title, the zone's places, zoom.
+        // Its places, or what a new zone reads.
         ui.horizontal_wrapped(|ui| {
-            match &name {
+            ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
+            match &zone_name {
                 Some(name) => {
-                    ui.label(RichText::new("Zone").strong().size(16.0));
-                    ui.label(RichText::new(name).monospace().strong().size(15.0).color(ACCENT_TEXT));
-                    if draft.editing.is_none() && draft.rect().is_some() {
-                        ui.label(RichText::new("· new place").strong().size(16.0));
+                    ui.label(RichText::new("Places").strong());
+                    for (n, &i) in places.iter().enumerate() {
+                        let on = draft.editing == Some(i);
+                        let scene = game.zones[i].scene.as_deref().unwrap_or("any scene");
+                        let hover = if on { "Leave this place" } else { "Edit this place, on its capture" };
+                        if ui.selectable_label(on, format!("{} · {scene}", n + 1)).on_hover_text(hover).clicked() {
+                            target = Some(if on { Target::Zone(name.clone()) } else { Target::Place(i, true) });
+                        }
+                    }
+                    let hover = "Draw it again where, or as, the game also shows it: the health bar out of battles, \
+                                 another menu. Its value comes from the place where it is found; shown when any place is.";
+                    if ui.selectable_label(draft.editing.is_none(), "+ Place").on_hover_text(hover).clicked() && draft.editing.is_some() {
+                        target = Some(Target::Zone(name.clone()));
                     }
                 }
                 None => {
-                    ui.label(RichText::new("New zone").strong().size(16.0));
-                }
-            }
-            // Picking a place shows its capture; picking it again leaves it.
-            for (n, i) in places.iter().enumerate() {
-                let on = draft.editing == Some(*i);
-                if ui.selectable_label(on, format!("Place {}", n + 1)).on_hover_text(if on { "Leave this place" } else { "Edit this place, on its capture" }).clicked() {
-                    pick_place = Some((*i, on));
+                    ui.label(RichText::new("New zone, reads").strong());
+                    for (kind, help) in [
+                        (ZoneKind::Visible, "Whether an element is on screen: a battle menu, a dialogue box"),
+                        (ZoneKind::Bar, "How full a bar is: health, mana, a timer"),
+                    ] {
+                        if ui.selectable_label(draft.kind_chosen && draft.kind == kind, kind.label()).on_hover_text(help).clicked() {
+                            draft.kind = kind;
+                            draft.kind_chosen = true;
+                        }
+                    }
                 }
             }
         });
@@ -782,7 +931,7 @@ impl App {
             ui.label(muted("Show"));
             for (show, label, help) in [
                 (Show::All, "All zones", "Every zone"),
-                (Show::Zone, "This zone", "Only the places of the zone being edited"),
+                (Show::Zone, "This zone", "Only the places of the zone selected"),
                 (Show::Nothing, "None", "Hide every zone, to see the image"),
             ] {
                 ui.selectable_value(&mut st.show, show, label).on_hover_text(help);
@@ -815,6 +964,7 @@ impl App {
         if let Some(offset) = st.scroll_to.take() {
             scroll = scroll.scroll_offset(offset.max(Vec2::ZERO));
         }
+        let can_draw = draft.zone.is_some() || draft.kind_chosen;
         let output = scroll.show(ui, |ui| {
             // Centered when narrower than the column.
             let (outer, response) = ui.allocate_exact_size(Vec2::new(size.x.max(ui.available_width()), size.y), Sense::click_and_drag());
@@ -836,6 +986,8 @@ impl App {
                     st.last_zoom = new;
                 }
             }
+            // The place of the zone selected under a point, when none is being edited.
+            let place_at = |p: Pos2| places.iter().copied().find(|&i| on_image(area, game.zones[i].rect).expand(3.0).contains(p));
             if let Some(pick) = draft.picking {
                 if hover.is_some() {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
@@ -851,15 +1003,25 @@ impl App {
                     }
                     draft.picking = None;
                 }
-            } else {
-                let grab_at = |p: Pos2| draft.rect().map_or(Grab::New, |rect| Grab::at(on_image(area, rect), p));
+            } else if can_draw {
+                let grab_at = |draft: &Draft, p: Pos2| match draft.rect() {
+                    Some(rect) => Grab::at(on_image(area, rect), p),
+                    // On one of the zone's places: picks it and moves it.
+                    None if draft.editing.is_none() && place_at(p).is_some() => Grab::Move { from: Pos2::ZERO, rect: [0.0; 4] },
+                    None => Grab::New,
+                };
                 if let Some(p) = hover.filter(|_| draft.grab.is_none()) {
-                    ui.ctx().set_cursor_icon(grab_at(p).cursor());
+                    ui.ctx().set_cursor_icon(grab_at(draft, p).cursor());
                 }
                 if response.drag_started() {
                     // Where the button went down: egui only calls it a drag once the pointer moved a little.
                     if let Some(origin) = ui.input(|i| i.pointer.press_origin()).or(response.interact_pointer_pos()) {
-                        let mut grab = grab_at(origin);
+                        if draft.rect().is_none() && draft.editing.is_none() {
+                            if let Some(i) = place_at(origin) {
+                                draft.take_place(i, &game.zones[i]);
+                            }
+                        }
+                        let mut grab = grab_at(draft, origin);
                         if let Some([x, y, w, h]) = draft.rect() {
                             draft.start = Some(Pos2::new(x, y));
                             draft.end = Some(Pos2::new(x + w, y + h));
@@ -888,22 +1050,25 @@ impl App {
                 if response.drag_stopped() {
                     draft.grab = None;
                 }
-                // A click on another zone opens it.
-                if response.clicked() {
-                    if let Some(p) = response.interact_pointer_pos() {
-                        open = profile
-                            .zones
-                            .iter()
-                            .enumerate()
-                            .filter(|(i, z)| draft.editing != Some(*i) && on_image(area, z.rect).expand(3.0).contains(p))
-                            .min_by(|(_, a), (_, b)| (a.rect[2] * a.rect[3]).total_cmp(&(b.rect[2] * b.rect[3])))
-                            .map(|(i, _)| i);
+            }
+            // A click on another zone's place, or one of this zone, opens it.
+            if response.clicked() && draft.picking.is_none() {
+                if let Some(p) = response.interact_pointer_pos() {
+                    let hit = game
+                        .zones
+                        .iter()
+                        .enumerate()
+                        .filter(|(i, z)| draft.editing != Some(*i) && on_image(area, z.rect).expand(3.0).contains(p))
+                        .min_by(|(_, a), (_, b)| (a.rect[2] * a.rect[3]).total_cmp(&(b.rect[2] * b.rect[3])))
+                        .map(|(i, _)| i);
+                    if let Some(i) = hit {
+                        target = Some(Target::Place(i, false));
                     }
                 }
             }
-            // The other zones; their name and reading when hovered.
-            for (i, zone) in profile.zones.iter().enumerate() {
-                let same = name.as_deref() == Some(zone.name.as_str());
+            // The other places; their name and reading when hovered.
+            for (i, zone) in game.zones.iter().enumerate() {
+                let same = zone_name.as_deref() == Some(zone.name.as_str());
                 let shown = match st.show {
                     Show::All => true,
                     Show::Zone => same,
@@ -914,7 +1079,7 @@ impl App {
                 }
                 let r = on_image(area, zone.rect);
                 let hovered = hover.is_some_and(|p| r.expand(3.0).contains(p)) && draft.grab.is_none();
-                // The zone's other places stand out.
+                // The zone's places stand out.
                 let stroke = match (hovered, same) {
                     (true, _) => Stroke::new(1.5, TEXT),
                     (false, true) => Stroke::new(1.5, ACCENT.gamma_multiply(0.8)),
@@ -960,226 +1125,277 @@ impl App {
             let center = output.state.offset + output.inner_rect.size() / 2.0;
             st.view_center = Pos2::new((center.x / content.x).clamp(0.0, 1.0), (center.y / content.y).clamp(0.0, 1.0));
         }
+
+        // Keys, while nothing is typed: Esc leaves (the color picking, the
+        // place, the zone), Delete deletes the place, arrows nudge it.
+        if ui.ctx().memory(|m| m.focused().is_none()) {
+            let (escape, delete, step) = ui.input(|i| {
+                let px = if i.modifiers.shift { 10.0 } else { 1.0 };
+                let key = |k: egui::Key| if i.key_pressed(k) { px } else { 0.0 };
+                let step = Vec2::new(key(egui::Key::ArrowRight) - key(egui::Key::ArrowLeft), key(egui::Key::ArrowDown) - key(egui::Key::ArrowUp));
+                (i.key_pressed(egui::Key::Escape), i.key_pressed(egui::Key::Delete), step)
+            });
+            if escape {
+                if draft.picking.is_some() {
+                    draft.picking = None;
+                } else if let (Some(_), Some(name)) = (draft.editing, &zone_name) {
+                    target = Some(Target::Zone(name.clone()));
+                } else if zone_name.is_some() {
+                    target = Some(Target::NewZone);
+                }
+            }
+            if delete && places.len() > 1 {
+                delete_place = draft.editing;
+            }
+            if step != Vec2::ZERO && draft.rect().is_some() {
+                draft.nudge(Vec2::new(step.x / frame.width.max(1) as f32, step.y / frame.height.max(1) as f32));
+                draft.drawn_on = Some(file.to_owned());
+            }
+        }
+
         let hint = match (draft.picking, draft.rect()) {
-            (Some(Pick::Full), _) => "Click the bar's full part on the image.",
-            (Some(Pick::Empty), _) => "Click the bar's empty part on the image.",
-            (None, None) if adding_place => "Pick a place to edit, above or on the image, or drag a rectangle for a new one.",
+            (Some(Pick::Full), _) => "Click the bar's full part on the image (Esc: stop).",
+            (Some(Pick::Empty), _) => "Click the bar's empty part on the image (Esc: stop).",
+            (None, None) if !can_draw => "Choose what the new zone reads, above, then draw it on the image.",
+            (None, None) if zone_name.is_some() => "Pick a place above, or click or drag it on the image; or draw a new place.",
             (None, None) if draft.kind == ZoneKind::Bar => "Drag a rectangle along the bar, from its empty end to its full end.",
             (None, None) => "Drag a rectangle around fixed parts of the element (not text that changes).",
-            (None, Some(_)) => "Drag its edges to resize it, its inside to move it. Click another zone to edit it.",
+            (None, Some(_)) => "Drag its edges to resize it, its inside to move it; arrow keys nudge it (Shift: 10 px). Esc leaves it.",
         };
         ui.label(muted(hint).size(12.0));
 
-        // The zone's settings.
-        ui.horizontal_wrapped(|ui| {
-            ui.label("Name");
-            ui.add(egui::TextEdit::singleline(&mut draft.name).hint_text("battle_hud").desired_width(130.0).font(egui::TextStyle::Monospace));
-            egui::ComboBox::from_id_salt("zone-kind").selected_text(draft.kind.label()).show_ui(ui, |ui| {
-                for kind in [ZoneKind::Visible, ZoneKind::Bar] {
-                    ui.selectable_value(&mut draft.kind, kind, kind.label());
+        // The zone's settings, shared by its places.
+        if can_draw {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new("Zone").strong());
+                ui.label("Name");
+                ui.add(egui::TextEdit::singleline(&mut draft.name).hint_text("battle_menu").desired_width(130.0).font(egui::TextStyle::Monospace))
+                    .on_hover_text("Renaming renames all its places, and keeps the scene it is a sign of");
+                if draft.zone.is_some() {
+                    ui.label(muted(draft.kind.label())).on_hover_text("Set when the zone was made: for another kind, make a new zone");
                 }
-            });
-            match draft.kind {
-                ZoneKind::Visible => {
-                    ui.add(egui::Slider::new(&mut draft.threshold, 0.1..=0.95).text("threshold"))
-                        .on_hover_text("Similarity with its look (where it was drawn) above which it counts as shown");
-                }
-                ZoneKind::Bar => {
+                if draft.kind == ZoneKind::Bar {
                     egui::ComboBox::from_id_salt("zone-direction").selected_text(draft.direction.label()).show_ui(ui, |ui| {
                         for d in Direction::ALL {
                             ui.selectable_value(&mut draft.direction, d, d.label());
                         }
                     });
                 }
+                // The scene this zone is a sure sign of (saved right away).
+                if let Some(name) = zone_name.as_ref().filter(|_| !game.scenes.is_empty()) {
+                    let current = game.scenes.iter().find(|sc| sc.zone.as_ref() == Some(name)).map(|sc| sc.name.clone());
+                    let mut chosen = current.clone();
+                    ui.label("Sure sign of").on_hover_text(
+                        "While this zone is shown (any of its places), GameViber is sure of the scene, right away (a \
+                         battle menu: battle). How long the scene is kept once it hides is set with the scene, in Signals.",
+                    );
+                    egui::ComboBox::from_id_salt("zone-scene").selected_text(chosen.clone().unwrap_or_else(|| "no scene".to_owned())).show_ui(ui, |ui| {
+                        ui.selectable_value(&mut chosen, None, "no scene");
+                        for scene in &game.scenes {
+                            ui.selectable_value(&mut chosen, Some(scene.name.clone()), &scene.name);
+                        }
+                    });
+                    if chosen != current {
+                        let mut g = game.clone();
+                        for scene in &mut g.scenes {
+                            if Some(&scene.name) == chosen.as_ref() {
+                                scene.zone = Some(name.clone());
+                            } else if scene.zone.as_ref() == Some(name) {
+                                scene.zone = None;
+                            }
+                        }
+                        linked = Some(g);
+                    }
+                }
+            });
+            if draft.kind == ZoneKind::Bar {
+                ui.horizontal_wrapped(|ui| {
+                    let mut remove = None;
+                    for (pick, label) in [(Pick::Full, "Full"), (Pick::Empty, "Empty")] {
+                        let colors = if pick == Pick::Full { &draft.full } else { &draft.empty };
+                        ui.label(label);
+                        if colors.is_empty() {
+                            swatch(ui, None);
+                        }
+                        for (k, color) in colors.iter().enumerate() {
+                            if color_button(ui, *color).on_hover_text("Click to remove this color").clicked() {
+                                remove = Some((pick, k));
+                            }
+                        }
+                        let picking = draft.picking == Some(pick);
+                        let help = "Then click on the image. Pick several shades when the bar blinks or changes color. With both \
+                                    colors the bar is found inside the zone (green and red under it): the zone may be larger than \
+                                    the bar, and a bar gone from the screen reads unknown (nil).";
+                        let text = if colors.is_empty() { "🖊 Pick" } else { "🖊 +" };
+                        if ui.selectable_label(picking, text).on_hover_text(help).clicked() {
+                            draft.picking = if picking { None } else { Some(pick) };
+                        }
+                        ui.add_space(8.0);
+                    }
+                    match remove {
+                        Some((Pick::Full, k)) => {
+                            draft.full.remove(k);
+                        }
+                        Some((Pick::Empty, k)) => {
+                            draft.empty.remove(k);
+                        }
+                        None => {}
+                    }
+                    ui.add(egui::Slider::new(&mut draft.tolerance, 10.0..=150.0).text("tolerance")).on_hover_text("How far from the colors a pixel may be");
+                });
+                if draft.empty.is_empty() {
+                    ui.label(RichText::new("Pick the empty color too: the bar is then found inside the zone, and reads unknown (nil) when not on screen.").color(WARN).size(12.0));
+                }
             }
-        });
-        if draft.kind == ZoneKind::Bar {
+        }
+
+        // The place's own settings.
+        if draft.rect().is_some() {
+            let saved = draft.editing.and_then(|i| game.zones.get(i));
             ui.horizontal_wrapped(|ui| {
-                let mut remove = None;
-                for (pick, label) in [(Pick::Full, "Full"), (Pick::Empty, "Empty")] {
-                    let colors = if pick == Pick::Full { &draft.full } else { &draft.empty };
-                    ui.label(label);
-                    if colors.is_empty() {
-                        swatch(ui, None);
-                    }
-                    for (k, color) in colors.iter().enumerate() {
-                        if color_button(ui, *color).on_hover_text("Click to remove this color").clicked() {
-                            remove = Some((pick, k));
-                        }
-                    }
-                    let picking = draft.picking == Some(pick);
-                    let help = "Then click on the image. Pick several shades when the bar blinks or changes color. With both \
-                                colors the bar is found inside the zone (green and red under it): the zone may be larger than \
-                                the bar, and a bar gone from the screen reads unknown (nil).";
-                    let text = if colors.is_empty() { "🖊 Pick" } else { "🖊 +" };
-                    if ui.selectable_label(picking, text).on_hover_text(help).clicked() {
-                        draft.picking = if picking { None } else { Some(pick) };
-                    }
-                    ui.add_space(8.0);
+                ui.label(RichText::new("Place").strong());
+                if draft.kind == ZoneKind::Visible {
+                    ui.add(egui::Slider::new(&mut draft.threshold, 0.1..=0.95).text("threshold"))
+                        .on_hover_text("Similarity with its look (where it was drawn) above which it counts as shown");
                 }
-                match remove {
-                    Some((Pick::Full, k)) => {
-                        draft.full.remove(k);
+                match saved.and_then(|z| z.capture.as_ref()) {
+                    Some(capture) if capture == file => {
+                        ui.label(RichText::new("📍 drawn on this capture").color(OK).size(12.0));
                     }
-                    Some((Pick::Empty, k)) => {
-                        draft.empty.remove(k);
+                    Some(capture) if st.captures.contains_key(capture) && ui.small_button("Show the capture it was drawn on").clicked() => {
+                        show_capture = Some(capture.clone());
                     }
-                    None => {}
+                    _ => {}
                 }
-                ui.add(egui::Slider::new(&mut draft.tolerance, 10.0..=150.0).text("tolerance")).on_hover_text("How far from the two colors a pixel may be");
             });
-            if draft.empty.is_empty() {
-                ui.label(RichText::new("Pick the empty color too: the bar is then found inside the zone, and reads unknown (nil) when not on screen.").color(WARN).size(12.0));
-            }
-        }
-        if draft.editing.is_some() && draft.drawn_on.is_none() && draft.kind == ZoneKind::Visible {
-            ui.label(muted("Move or redraw the rectangle to take the zone's look again from the capture shown.").size(12.0));
-        }
-        // The scene this zone is a sure sign of (saved right away, with the game's scenes).
-        let mut linked = None;
-        if let Some(name) = draft.editing.and_then(|i| profile.zones.get(i)).map(|z| z.name.clone()).filter(|_| !profile.scenes.is_empty()) {
-            let current = profile.scenes.iter().find(|sc| sc.zone.as_deref() == Some(name.as_str())).map(|sc| sc.name.clone());
-            let mut chosen = current.clone();
-            ui.horizontal(|ui| {
-                ui.label("Sure sign of").on_hover_text(
-                    "While this zone is shown, GameViber is sure of the scene, right away (a battle menu: battle). \
-                     How long the scene is kept once it hides is set with the scene, in Signals.",
-                );
-                egui::ComboBox::from_id_salt("zone-scene").selected_text(chosen.clone().unwrap_or_else(|| "no scene".to_owned())).show_ui(ui, |ui| {
-                    ui.selectable_value(&mut chosen, None, "no scene");
-                    for scene in &profile.scenes {
-                        ui.selectable_value(&mut chosen, Some(scene.name.clone()), &scene.name);
-                    }
-                });
-            });
-            if chosen != current {
-                let mut p = profile.clone();
-                for scene in &mut p.scenes {
-                    if Some(&scene.name) == chosen.as_ref() {
-                        scene.zone = Some(name.clone());
-                    } else if scene.zone.as_deref() == Some(name.as_str()) {
-                        scene.zone = None;
-                    }
+            if draft.kind == ZoneKind::Visible {
+                if draft.editing.is_some() && draft.drawn_on.is_some() {
+                    ui.label(muted("Its look is taken again from this capture.").size(12.0));
+                } else if saved.is_some_and(|z| zones::measure(z, frame).is_none_or(|m| m < z.threshold)) {
+                    ui.label(
+                        RichText::new("Hidden on this capture: moving it here would take its look from an image without it.").color(WARN).size(12.0),
+                    );
                 }
-                linked = Some(p);
             }
-        }
-
-        // A threshold telling the zone's scene from the others, from all the captures.
-        if let Some(zone) = tested.as_ref().filter(|z| z.kind == ZoneKind::Visible) {
-            if let Some(scene) = &zone.scene {
-                let (mut shown_in, mut others) = (Vec::new(), Vec::new());
-                for capture in profile.captures.iter().filter(|c| !c.scene.is_empty()) {
-                    let Some((capture_frame, _)) = st.captures.get(&capture.file) else { continue };
-                    let m = zones::measure(zone, capture_frame).unwrap_or(-1.0);
-                    if capture.scene == *scene { shown_in.push(m) } else { others.push(m) }
-                }
-                ui.horizontal(|ui| match zones::suggest_threshold(&shown_in, &others) {
-                    Some(t) if (t - draft.threshold).abs() > 0.01 => {
-                        if ui.button(format!("Use threshold {t:.2}")).on_hover_text(format!("Tells the {scene} captures from the others")).clicked() {
-                            draft.threshold = t;
+            // A threshold telling the place's scene from the others, from all the captures.
+            if let Some(zone) = tested.as_ref().filter(|z| z.kind == ZoneKind::Visible) {
+                if let Some(scene) = &zone.scene {
+                    let (mut shown_in, mut others) = (Vec::new(), Vec::new());
+                    for capture in game.captures.iter().filter(|c| !c.scene.is_empty()) {
+                        let Some((capture_frame, _)) = st.captures.get(&capture.file) else { continue };
+                        let m = zones::measure(zone, capture_frame).unwrap_or(-1.0);
+                        if capture.scene == *scene { shown_in.push(m) } else { others.push(m) }
+                    }
+                    ui.horizontal(|ui| match zones::suggest_threshold(&shown_in, &others) {
+                        Some(t) if (t - draft.threshold).abs() > 0.01 => {
+                            if ui.button(format!("Use threshold {t:.2}")).on_hover_text(format!("Tells the {scene} captures from the others")).clicked() {
+                                draft.threshold = t;
+                            }
                         }
-                    }
-                    Some(_) => {
-                        ui.label(RichText::new(format!("✔ tells {scene} from the other scenes")).color(OK).size(12.0));
-                    }
-                    None if !shown_in.is_empty() && !others.is_empty() => {
-                        ui.label(RichText::new("No threshold tells the scenes apart: draw it tighter, on fixed parts").color(WARN).size(12.0));
-                    }
-                    None => {}
-                });
+                        Some(_) => {
+                            ui.label(RichText::new(format!("✔ tells {scene} from the other scenes")).color(OK).size(12.0));
+                        }
+                        None if !shown_in.is_empty() && !others.is_empty() => {
+                            ui.label(RichText::new("No threshold tells the scenes apart: draw it tighter, on fixed parts").color(WARN).size(12.0));
+                        }
+                        None => {}
+                    });
+                }
             }
         }
 
-        let problem = if draft.rect().is_none() {
-            Some("Draw the zone on the image first.")
-        } else if draft.kind == ZoneKind::Visible && draft.editing.is_none() && draft.drawn_on.is_none() {
-            Some("Draw the rectangle on a capture that shows the element.")
-        } else if !valid_name(&draft.name) {
-            Some("Name: letters, digits and _, starting with a letter.")
-        } else if profile.zones.iter().enumerate().any(|(i, z)| z.name == draft.name && z.kind != draft.kind && Some(i) != draft.editing) {
-            Some("A zone of another kind has this name.")
-        } else {
-            None
-        };
-
-        // Where this place is, and the actions.
-        let mut save = None;
-        let mut close = false;
+        // Where things stand, and the actions.
         ui.add_space(2.0);
         ui.horizontal_wrapped(|ui| {
-            if let Some(i) = draft.editing {
-                let n = places.iter().position(|p| *p == i).unwrap_or(0) + 1;
-                let scene = profile.zones[i].scene.as_deref().map_or("any scene".to_owned(), |s| format!("in {s}"));
-                ui.label(muted(format!("Place {n} of {} · {scene}", places.len())));
+            match problem {
+                Some(problem) if dirty || draft.rect().is_some() => {
+                    ui.label(RichText::new(problem).color(WARN).size(12.5));
+                }
+                _ if dirty => {
+                    ui.label(RichText::new("Unsaved changes: saved when you leave it").color(WARN).size(12.5));
+                }
+                _ if now - st.saved_at < SAVED_SECS => {
+                    ui.label(RichText::new("✔ Saved").color(OK).size(12.5));
+                }
+                _ => {}
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let label = if draft.editing.is_some() { "Save" } else { "Save the zone" };
-                if ui.add_enabled(problem.is_none(), primary(label)).clicked() {
-                    if let Some(zone) = tested.clone() {
-                        let mut p = profile.clone();
-                        match draft.editing {
-                            Some(i) if i < p.zones.len() => {
-                                // Renamed: all its places, and the scene it is a sign of, follow.
-                                let old = std::mem::replace(&mut p.zones[i], zone.clone()).name;
-                                if old != zone.name {
-                                    p.zones.iter_mut().filter(|z| z.name == old).for_each(|z| z.name = zone.name.clone());
-                                    p.scenes.iter_mut().filter(|sc| sc.zone.as_deref() == Some(old.as_str())).for_each(|sc| sc.zone = Some(zone.name.clone()));
-                                }
-                            }
-                            _ => p.zones.push(zone),
+                let label = match (&zone_name, draft.editing, draft.rect()) {
+                    (None, ..) => "Save the zone",
+                    (Some(_), None, Some(_)) => "Save the place",
+                    _ => "Save",
+                };
+                if ui.add_enabled(dirty && problem.is_none(), primary(label)).clicked() {
+                    save_now = true;
+                }
+                if dirty && ui.button("Cancel").on_hover_text("Forget the changes").clicked() {
+                    cancel = true;
+                }
+                if let Some(name) = &zone_name {
+                    if st.confirm_delete {
+                        let really = egui::Button::new(RichText::new(format!("Delete {name} and its {} place(s)", places.len())).color(Color32::WHITE)).fill(DANGER);
+                        if ui.add(really).clicked() {
+                            delete_zone = true;
                         }
-                        save = Some(p);
+                        if ui.button("Keep it").clicked() {
+                            st.confirm_delete = false;
+                        }
+                    } else if ui.button(RichText::new("Delete the zone").color(DANGER_TEXT)).clicked() {
+                        st.confirm_delete = true;
                     }
-                }
-                if (draft.editing.is_some() || adding_place) && ui.button("Cancel").clicked() {
-                    close = true;
-                }
-                if let Some(i) = draft.editing {
-                    let what = if places.len() > 1 { "Delete this place" } else { "Delete the zone" };
-                    if ui.button(RichText::new(what).color(DANGER_TEXT)).clicked() {
-                        delete_place = Some(i);
-                    }
-                    if ui
-                        .button("+ Place")
-                        .on_hover_text(
-                            "Draw it again where, or as, the game also shows it: the health bar out of battles, \
-                             another menu. Its value comes from the place where it is found; shown when any place is.",
-                        )
-                        .clicked()
-                    {
-                        let mut place = std::mem::take(draft);
-                        place.editing = None;
-                        place.start = None;
-                        place.end = None;
-                        place.drawn_on = None;
-                        *draft = place;
+                    if let Some(i) = draft.editing.filter(|_| places.len() > 1) {
+                        if ui.button(RichText::new("Delete this place").color(DANGER_TEXT)).on_hover_text("Also the Delete key").clicked() {
+                            delete_place = Some(i);
+                        }
                     }
                 }
             });
         });
-        if let Some(problem) = problem.filter(|_| draft.rect().is_some()) {
-            ui.label(RichText::new(problem).color(WARN).size(12.0));
-        }
 
+        if let Some(capture) = show_capture {
+            st.selected = Some(capture);
+        }
         if let Some(i) = delete_place {
-            let mut p = profile.clone();
-            p.zones.remove(i);
-            st.new_zone();
-            return Some(p);
+            let mut g = game.clone();
+            g.zones.remove(i);
+            if let Some(name) = &zone_name {
+                st.select_zone(name, &g);
+            }
+            return Some(g);
         }
-        if save.is_some() || close {
-            st.new_zone();
+        if delete_zone {
+            if let Some(name) = &zone_name {
+                let mut g = game.clone();
+                g.zones.retain(|z| z.name != *name);
+                g.scenes.iter_mut().filter(|sc| sc.zone.as_ref() == Some(name)).for_each(|sc| sc.zone = None);
+                st.draft = Draft { zoom: st.draft.zoom, ..Draft::default() };
+                st.confirm_delete = false;
+                return Some(g);
+            }
         }
-        if let Some(i) = open {
-            st.edit_zone(i, profile);
+        if save_now {
+            if let Some((g, place)) = st.applied(game) {
+                let name = st.draft.name.clone();
+                match place {
+                    Some(i) => st.open_place(i, &g, false),
+                    None => st.select_zone(&name, &g),
+                }
+                st.saved_at = now;
+                return Some(g);
+            }
         }
-        match pick_place {
-            Some((i, true)) => st.select_zone(i, profile),
-            Some((i, false)) => st.edit_place(i, profile),
-            None => {}
+        if cancel {
+            match (zone_name, st.draft.editing) {
+                (Some(_), Some(i)) => st.open_place(i, game, false),
+                (Some(name), None) => st.select_zone(&name, game),
+                (None, _) => st.draft = Draft { zoom: st.draft.zoom, ..Draft::default() },
+            }
+            return None;
         }
-        save.or(linked)
+        if let Some(target) = target {
+            return st.go(target, game).or(linked);
+        }
+        linked
     }
 }
 
