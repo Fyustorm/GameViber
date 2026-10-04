@@ -31,7 +31,7 @@ enum Stop {
     ZoneEdit,
 }
 
-const STOPS: [(&str, Stop); 18] = [
+const STOPS: [(&str, Stop); 19] = [
     ("games", Stop::Games(|_| Some(Route::Library))),
     ("add-game", Stop::AddGame),
     ("builtin-modes", Stop::Games(|_| Some(Route::BuiltIn))),
@@ -42,6 +42,7 @@ const STOPS: [(&str, Stop); 18] = [
     ("captures-zones", Stop::Games(|s| game(s, GameView::Screen))),
     ("zone-edit", Stop::ZoneEdit),
     ("sessions", Stop::Games(|s| game(s, GameView::Sessions))),
+    ("live", Stop::Page(Page::Live)),
     ("toys", Stop::Page(Page::Toys)),
     ("setup-gamepad", Stop::Setup(setup::Tab::Gamepad)),
     ("setup-combos", Stop::Setup(setup::Tab::Combos)),

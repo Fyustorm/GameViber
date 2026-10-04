@@ -188,7 +188,7 @@ impl App {
         }
     }
 
-    fn param(&self, ui: &mut egui::Ui, def: &ParamDef, mode: &ModeView) {
+    pub(super) fn param(&self, ui: &mut egui::Ui, def: &ParamDef, mode: &ModeView) {
         if let Some(value) = mode.values.get(&def.name) {
             if let Some(new) = param_widget(ui, def, value) {
                 self.send(Command::SetParam(def.name.clone(), new));
@@ -196,7 +196,7 @@ impl App {
         }
     }
 
-    fn preset_picker(&self, ui: &mut egui::Ui, info: &ModeInfo, mode: &ModeView) {
+    pub(super) fn preset_picker(&self, ui: &mut egui::Ui, info: &ModeInfo, mode: &ModeView) {
         let presets = &mode.presets.presets;
         let active = mode.presets.active.as_deref().filter(|name| presets.contains_key(*name));
         let modified = active.is_some_and(|name| !matches_values(info, &presets[name], &mode.values));

@@ -39,6 +39,10 @@ again from **Setup** at the bottom of the left bar. Then the GUI provides:
 
   a game linked to its executable becomes the game being played by itself;
   built-in modes can also be played without a game;
+- **Live**: what happens while you play, to keep on a second screen: the mode
+  (switch it, its preset and main settings, what it tracks), what goes to the
+  toys, the scene, zones, sound and values from other programs right now, and
+  the gamepad with its combos;
 - **Toys**: the connection to Intiface Central (status, address), the toys it
   found, a test buzz, which mode channels each one plays, and how it renders
   them: weakest and strongest intensity and a response curve, with buttons to

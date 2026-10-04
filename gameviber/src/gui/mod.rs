@@ -16,6 +16,7 @@ mod gamepad;
 mod games;
 mod generator;
 mod keybindings;
+mod live;
 mod luau;
 mod onboarding;
 mod overlay;
@@ -46,6 +47,7 @@ const RECENT_RUMBLE_SECS: f64 = 5.0;
 #[derive(PartialEq, Clone, Copy)]
 enum Page {
     Games,
+    Live,
     Toys,
     Setup,
     Creator,
@@ -215,6 +217,7 @@ impl eframe::App for App {
         }
         match self.page {
             Page::Games => self.games_ui(ui, &s),
+            Page::Live => self.live_ui(ui, &s),
             Page::Toys => self.toys_ui(ui, &s),
             Page::Setup => self.setup_ui(ui, &s),
             Page::Creator => self.creator_ui(ui, &s),
@@ -311,6 +314,7 @@ impl App {
             ui.vertical_centered(|ui| {
                 for (page, icon, label) in [
                     (Page::Games, "🎮", "Games"),
+                    (Page::Live, "📺", "Live"),
                     (Page::Toys, "📳", "Toys"),
                     (Page::Setup, "🛠", "Setup"),
                     (Page::Creator, "🔧", "Creator"),
