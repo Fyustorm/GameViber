@@ -1,4 +1,5 @@
 use super::*;
+use crate::audio::AudioHit;
 
 const SIMPLE: &str = include_str!("../../modes/simple.luau");
 const ACCUMULATION: &str = include_str!("../../modes/accumulation.luau");
@@ -590,4 +591,96 @@ fn apply_params_sets_all_values_and_defaults_the_rest() {
     assert_eq!(values["c"], ParamValue::Text("a".into()), "invalid -> default");
     // y set by hand, then x and y changed by the preset; c unchanged: no callback.
     assert_eq!(plot_value(&step(&mut rt, rumble(0.0, 0.0)), "changes"), 3.0);
+}
+
+fn audio_levels(level: f64) -> AudioLevels {
+    AudioLevels { level, low: level / 2.0, mid: 0.0, high: 0.0, intensity: 0.25 }
+}
+
+#[test]
+fn input_audio_and_hits_follow_the_game_sound() {
+    let src = wrap(
+        "hits = 0
+         function on_audio_hit(ev) hits += 1; plot('strength', ev.strength); log(ev.band) end
+         function tick(dt, input)
+           plot('active', input.audio.active and 1 or 0)
+           plot('level', input.audio.level)
+           plot('low', input.audio.low)
+           plot('intensity', input.audio.intensity)
+           plot('hits', hits)
+           plot('scene', input.audio.scene == nil and 0 or 1)
+         end",
+    );
+    let mut rt = load(&src);
+    let out = step(&mut rt, rumble(0.0, 0.0));
+    assert_eq!((plot_value(&out, "active"), plot_value(&out, "level")), (0.0, 0.0));
+
+    rt.set_audio(Some(audio_levels(0.8)));
+    let hit = ModeEvent::AudioHit(AudioHit { strength: 0.6, band: crate::audio::Band::Low });
+    let out = rt.step(DT, rumble(0.0, 0.0), &PadState::default(), 1e9, &[hit.clone()]).unwrap();
+    assert_eq!(plot_value(&out, "active"), 1.0);
+    assert_eq!(plot_value(&out, "level"), 0.8);
+    assert_eq!(plot_value(&out, "low"), 0.4);
+    assert_eq!(plot_value(&out, "intensity"), 0.25);
+    assert_eq!(plot_value(&out, "hits"), 1.0);
+    assert_eq!(plot_value(&out, "strength"), 0.6);
+    assert_eq!(plot_value(&out, "scene"), 0.0, "no scenes declared");
+
+    // Hits are dropped while the sound is not captured.
+    rt.set_audio(None);
+    let out = rt.step(DT, rumble(0.0, 0.0), &PadState::default(), 1e9, &[hit]).unwrap();
+    assert_eq!((plot_value(&out, "active"), plot_value(&out, "hits")), (0.0, 1.0));
+}
+
+#[test]
+fn audio_scenes_are_declared_and_reported() {
+    let src = "mode { api = 1, name = 'T', audio_scene_window = 4,
+                 audio_scenes = { calm = 'calm ambient music', battle = 'intense battle music' } }
+               last, previous, changes = 'none', 'none', 0
+               function on_audio_scene(ev)
+                 changes += 1
+                 last = ev.scene or 'none'
+                 previous = ev.previous or 'none'
+                 plot('confidence', ev.confidence)
+               end
+               function tick(dt, input)
+                 plot('changes', changes)
+                 plot('battle', input.audio.scenes.battle)
+                 plot('is_battle', input.audio.scene == 'battle' and 1 or 0)
+               end";
+    let mut rt = load(src);
+    assert_eq!(rt.info().audio_scenes[0], ("battle".to_owned(), "intense battle music".to_owned()), "sorted by name");
+    assert_eq!(rt.info().audio_scene_window, 4.0);
+    assert_eq!(rt.scene_descriptions(), ["intense battle music", "calm ambient music"]);
+    // Text embeddings of battle and calm: two axes.
+    let axis = |i: usize| -> crate::audio::Embedding { (0..2).map(|k| if k == i { 1.0 } else { 0.0 }).collect() };
+    rt.set_audio(Some(audio_levels(0.5)));
+    let clip = ModeEvent::AudioClip(axis(0));
+    let out = rt.step(DT, rumble(0.0, 0.0), &PadState::default(), 1e9, &[clip.clone()]).unwrap();
+    assert_eq!(plot_value(&out, "changes"), 0.0, "nothing before the descriptions are encoded");
+    assert!(!rt.scenes_ready());
+
+    rt.set_scene_texts(vec![axis(0), axis(1)]);
+    let out = rt.step(DT, rumble(0.0, 0.0), &PadState::default(), 1e9, &[clip]).unwrap();
+    assert_eq!(plot_value(&out, "changes"), 1.0);
+    assert_eq!(plot_value(&out, "is_battle"), 1.0);
+    assert!(plot_value(&out, "confidence") > 0.99);
+    assert!(plot_value(&out, "battle") > 0.99);
+    assert_eq!(rt.scene_state().0.as_deref(), Some("battle"));
+
+    // The sound stops: the scene is forgotten, with an event.
+    rt.set_audio(None);
+    let out = step(&mut rt, rumble(0.0, 0.0));
+    assert_eq!(plot_value(&out, "changes"), 2.0);
+    assert_eq!(plot_value(&out, "is_battle"), 0.0);
+}
+
+#[test]
+fn audio_scene_declarations_are_checked() {
+    let one = load_err("mode { api = 1, name = 'T', audio_scenes = { a = 'x' } } function tick() end");
+    assert!(one.contains("2 to 8 scenes"), "{one}");
+    let empty = load_err("mode { api = 1, name = 'T', audio_scenes = { a = 'x', b = ' ' } } function tick() end");
+    assert!(empty.contains("needs a description"), "{empty}");
+    let window = load_err("mode { api = 1, name = 'T', audio_scene_window = 0.5 } function tick() end");
+    assert!(window.contains("between 2 and 60"), "{window}");
 }

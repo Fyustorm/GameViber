@@ -1,6 +1,7 @@
 //! GameViber: intercepts the rumble games send to the gamepad, runs it
 //! through a scriptable Lua mode and drives toys through Intiface Central.
 
+mod audio;
 mod config;
 mod engine;
 mod gamepad;

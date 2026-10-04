@@ -8,6 +8,7 @@ use eframe::egui::{self, Margin, RichText, Vec2};
 
 use super::theme::*;
 use super::{mode_icon, App, Page};
+use crate::audio::clap::ModelState;
 use crate::config::NEW_MODE_TEMPLATE;
 use crate::engine::{Command, ModeView, Shared};
 use crate::gamepad::BUTTONS;
@@ -182,6 +183,18 @@ impl App {
             ui.label(muted("This mode does not load. Fix it in Creator, or pick another one."));
             return;
         };
+        if !info.audio_scenes.is_empty() && s.audio.model != ModelState::Ready {
+            card(RAISED).inner_margin(Margin::same(12)).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("This mode recognizes scenes from the game's music. It needs the scene model:");
+                    if ui.button("Get it on the Sound page").clicked() {
+                        self.page = Page::Audio;
+                    }
+                });
+            });
+            ui.add_space(8.0);
+        }
 
         let (main, others): (Vec<&ParamDef>, Vec<&ParamDef>) = if info.main_params.is_empty() {
             (info.params.iter().collect(), Vec::new())

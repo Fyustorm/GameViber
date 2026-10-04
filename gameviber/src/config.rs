@@ -80,6 +80,20 @@ pub struct Settings {
     /// The first-launch setup was completed or skipped.
     pub onboarded: bool,
     pub overlay: OverlaySettings,
+    /// Where the game's sound is captured from (docs/spec-modes.md §6.3).
+    pub audio: AudioSource,
+}
+
+/// Which sound the audio analysis listens to.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AudioSource {
+    Off,
+    /// The game showing the in-game overlay, or else everything the computer plays.
+    #[default]
+    Auto,
+    /// One application, by the name it gives PipeWire.
+    App(String),
 }
 
 /// How one toy renders the 0..1 intensity it is asked for (safety layer, after the mode).
@@ -152,6 +166,7 @@ impl Default for Settings {
             toys: BTreeMap::new(),
             onboarded: false,
             overlay: OverlaySettings::default(),
+            audio: AudioSource::Auto,
         }
     }
 }
@@ -178,6 +193,14 @@ pub fn config_dir() -> PathBuf {
     }
 }
 
+/// Downloaded data (the audio scene model), under `~/.local/share/gameviber`.
+pub fn data_dir() -> PathBuf {
+    match std::env::var_os("XDG_DATA_HOME") {
+        Some(dir) if std::env::var_os("SUDO_USER").is_none() => PathBuf::from(dir).join("gameviber"),
+        _ => user_home().join(".local").join("share").join("gameviber"),
+    }
+}
+
 pub fn modes_dir() -> PathBuf {
     config_dir().join("modes")
 }
@@ -189,7 +212,7 @@ fn chown_to_caller(path: &Path) {
     let _ = std::os::unix::fs::chown(path, Some(uid), Some(gid));
 }
 
-fn create_dir(dir: &Path) -> io::Result<()> {
+pub fn create_dir(dir: &Path) -> io::Result<()> {
     if !dir.exists() {
         if let Some(parent) = dir.parent() {
             create_dir(parent)?;
@@ -429,6 +452,18 @@ pub fn unused_mode_path(stem: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn audio_source_round_trips_in_the_settings_file() {
+        for audio in [AudioSource::Off, AudioSource::Auto, AudioSource::App("METAPHOR.exe".into())] {
+            let settings = Settings { audio: audio.clone(), ..Settings::default() };
+            let text = toml::to_string(&settings).unwrap();
+            let back: Settings = toml::from_str(&text).unwrap();
+            assert_eq!(back.audio, audio, "{text}");
+        }
+        let old: Settings = toml::from_str("url = 'ws://x'").unwrap();
+        assert_eq!(old.audio, AudioSource::Auto, "settings saved before audio existed");
+    }
 
     #[test]
     fn builtin_entries_resolve_source_and_key() {

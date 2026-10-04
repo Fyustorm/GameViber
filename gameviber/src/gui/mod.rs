@@ -2,11 +2,13 @@
 //! Central, their toys, the gamepad and a first mode; afterwards a status bar
 //! (with the panic stop) sits above the pages: Play (mode tiles, then the
 //! chosen mode's page with its settings), Toys (with Intiface Central),
-//! Gamepad (capture and troubleshooting), Keybindings (gamepad combos),
+//! Gamepad (capture and troubleshooting), Sound (the game's sound and the
+//! scene model), Keybindings (gamepad combos),
 //! Overlay (in-game overlay) and Creator (mode editor, graphs, simulator,
 //! sessions, logs). Dialogs help players get a mode made for their game by an
 //! AI assistant, and get one fixed when it does not feel right.
 
+mod audio;
 mod creator;
 mod feedback;
 mod gamepad;
@@ -39,6 +41,7 @@ enum Page {
     Play,
     Toys,
     Gamepad,
+    Audio,
     Keybindings,
     Overlay,
     Creator,
@@ -161,6 +164,7 @@ impl eframe::App for App {
             Page::Play => self.play_ui(ui, &s),
             Page::Toys => self.toys_ui(ui, &s),
             Page::Gamepad => self.gamepad_ui(ui, &s),
+            Page::Audio => self.audio_ui(ui, &s),
             Page::Keybindings => self.keybindings_ui(ui, &s),
             Page::Overlay => self.overlay_ui(ui, &s),
             Page::Creator => self.creator_ui(ui, &s),
@@ -249,6 +253,7 @@ impl App {
                     (Page::Play, "▶", "Play"),
                     (Page::Toys, "📳", "Toys"),
                     (Page::Gamepad, "🎮", "Gamepad"),
+                    (Page::Audio, "🔊", "Sound"),
                     (Page::Keybindings, "⌨", "Keybindings"),
                     (Page::Overlay, "🖵", "Overlay"),
                     (Page::Creator, "🔧", "Creator"),

@@ -1,11 +1,11 @@
 # GameViber — Mode specification (API v1)
 
-Status: implemented (v1) · API version: `1`
+Status: implemented (v1, with the game's sound) · API version: `1`
 
 ## 1. Goal and scope
 
 A **mode** is a Lua script that turns what happens in the game (rumble sent to the
-gamepad, player inputs, time) into commands for the toys connected to Intiface.
+gamepad, player inputs, the game's sound, time) into commands for the toys connected to Intiface.
 Modes are created and edited on the fly from the built-in editor, without recompiling.
 
 **Included in v1**
@@ -14,6 +14,7 @@ Modes are created and edited on the fly from the built-in editor, without recomp
 - A single intercepted gamepad.
 - Scalar Buttplug outputs: `Vibrate`, `Rotate`, `Oscillate`.
 - Hot reload, parameters adjustable from the GUI, debug graphs, simulator.
+- The game's sound: levels, hits, and scenes recognized from the music (§6.3).
 
 **Not in v1** (see §13): mode chaining, automatic per-game mode, linear outputs
 (strokers), multiple gamepads, block editor.
@@ -27,6 +28,8 @@ Gamepad proxy ──► event queue ──► Lua runtime (active mode) ──�
 ```
 
 - The **proxy** produces raw events: FF effects (upload, play, stop), buttons, axes.
+- The **audio analysis** listens to the game's sound through PipeWire and produces levels,
+  hits and scene embeddings (§6.3), on its own threads.
 - The **runtime** normalizes these events, dispatches them to the mode's callbacks, then
   calls `tick`. It runs in its own thread.
 - The **safety layer** applies the global cap and the panic button, and handles connection
@@ -55,6 +58,7 @@ mode {
   channels    = { "main" },                 -- output channels, default { "main" }
   params      = { ... },                    -- see §4
   feedback    = { ... },                    -- questions for the player, see §4.2
+  audio_scenes = { ... },                   -- scenes recognized from the sound, see §6.3
 }
 ```
 
@@ -164,6 +168,8 @@ All callbacks are optional, except `tick`.
 | `on_button(ev)` | a button is pressed or released |
 | `on_param_changed(name, value)` | a parameter was changed in the GUI |
 | `on_device(ev)` | a toy is connected or disconnected (`ev.connected`, `ev.name`) |
+| `on_audio_hit(ev)` | a hit is heard in the game's sound (§6.3) |
+| `on_audio_scene(ev)` | the scene recognized in the game's sound changes (§6.3) |
 
 **Execution order on every tick:**
 
@@ -222,6 +228,86 @@ down.
 Axis movements do not generate callbacks, to avoid a flood of events. Their current state
 is read from `input.axes` on every tick.
 
+### 6.3 The game's sound
+
+GameViber listens to the game's sound through PipeWire: by default the game showing the
+in-game overlay, or else everything the computer plays; the player can pick one
+application on the Sound page, or turn it off. The sound is analysed on the player's
+computer and never saved: recorded sessions keep only the levels, hits and scene
+embeddings, so that a replay feeds the mode the same sound events.
+
+**Levels** (`input.audio`, §7) are measured every 20 ms. They are relative to the game's
+recent loudest moments (a 40 dB range under a slowly decaying peak), so they do not
+depend on the volume setting; silence reads 0.
+
+- `level`: overall loudness; `low` (below 250 Hz: explosions, engines, bass), `mid`
+  (250 Hz to 4 kHz: voices, most effects), `high` (4 to 16 kHz: clashes, shots, cymbals).
+- `intensity`: loudness and density of hits over the last ~6 s; a slow "how busy is it".
+
+**Hits**: `on_audio_hit(ev)` is called on sudden attacks in the sound (impacts, shots,
+explosions, but also a door or a music beat), about 20 ms after them.
+
+- `ev.strength`: 0..1, compared with the strongest recent hits of the same band.
+- `ev.band`: `"low"`, `"mid"` or `"high"`, where the attack is strongest.
+- Hits are frequent and do not say what happened: filter them with a parameter
+  (`if ev.strength > P.min_hit then ... end`) and combine them with the rumble.
+
+**Scenes**: a mode describes, in words, the scenes it wants to tell apart:
+
+```lua
+audio_scenes = {
+  battle  = "intense fast battle music with drums and electric guitar",
+  explore = "calm ambient exploration music",
+  talk    = "people talking, voice acting dialogue",
+},
+audio_scene_window = 10,   -- seconds the probabilities are averaged over (2 to 60), default 10
+```
+
+- 2 to 8 scenes, sorted by name. A sound model (CLAP) compares the last 10 s of sound
+  with each description every 2 s; the probabilities (summing to 1) are averaged over
+  `audio_scene_window`.
+- A scene is entered when its average reaches 0.5 and, when another scene is current,
+  beats it by 0.1. `on_audio_scene(ev)` is then called with `ev.scene`, `ev.previous`
+  (nil at first) and `ev.confidence` (its average). When the sound stops being captured
+  the scene is forgotten: `ev.scene` is nil.
+- **Describe the sound, not the game**: music style, tempo, instruments, voices. Two or
+  three contrasted scenes work much better than many close ones ("boss" versus "battle"
+  is rarely heard). Make them contrast: describe what is **only** heard in that scene
+  ("aggressive battle theme with heavy drums, brass stabs and screams") and the others
+  as lighter background ("light adventurous orchestral background music").
+- **The sound only knows what the music says.** Phases that share their music cannot be
+  told apart: in Metaphor: ReFantazio, dungeons play epic, rhythmic music both while
+  exploring and in fights. Declare one scene for them (`dungeon`), and let the mode tell
+  a fight from exploration with the rumble and buttons. Measured on that game, dialogue
+  and story were told from dungeons and fights reliably.
+- **Expect mistakes.** A scene appears **2 to 15 s late** and can stay wrong for a
+  while (a cutscene keeping the battle music). Use scenes for the mood (overall level,
+  which mechanics are active), not to time effects; combine them with the rumble and the
+  buttons, which say when the action really happens.
+- **Typical use: the scene sets the tension, not the algorithm.** The mode keeps the
+  same mechanics everywhere; in tense phases it adds a low, almost continuous vibration
+  and lets its peaks come from the rumble, the buttons and hits, as usual. Fade the
+  baseline in and out over a few seconds, so a late or wrong scene is barely felt:
+
+```lua
+audio_scenes = {
+  dungeon = "epic rhythmic orchestral music with heavy drums",
+  story   = "people talking, voice acting dialogue over soft music",
+},
+params = { tension = number(0.15, 0, 0.4, "Background vibration in dungeons") },
+
+local base = 0
+function tick(dt, input)
+  local target = input.audio.scene == "dungeon" and P.tension or 0
+  base += (target - base) * math.min(1, dt / 3)       -- ~3 s fade
+  set(math.max(base, input.rumble.level))             -- peaks still follow the game
+end
+```
+
+- Scenes need the sound model, downloaded once from the Sound page (about 200 MB), and
+  cost a little processor time while the mode is active. Without it, or without sound,
+  `input.audio.scene` stays nil: **a mode must work without scenes**.
+
 ## 7. The `input` table (current state, read-only)
 
 ```lua
@@ -237,7 +323,16 @@ input.axes.LT, RT        -- 0..1
 input.rumble_idle        -- s since the end of the last vibration (0 while active)
 input.input_idle         -- s since the last player input (button, or axis outside the dead zone)
 input.idle               -- min(rumble_idle, input_idle)
+input.audio.active       -- true while the game's sound is captured (§6.3)
+input.audio.level        -- 0..1, and input.audio.low, .mid, .high per band
+input.audio.intensity    -- 0..1, loudness and hits over the last ~6 s
+input.audio.scene        -- name of the current audio scene, or nil
+input.audio.scene_confidence -- 0..1, average probability of the current scene
+input.audio.scenes.battle    -- 0..1, average probability of each declared scene
 ```
+
+When the sound is not captured, every `input.audio` number is 0. The idle times do not
+take the sound into account.
 
 ## 8. Outputs
 
@@ -360,6 +455,8 @@ resolution is therefore 20 ms.
 - **Linear outputs** (`LinearCmd`, for strokers): `stroke(speed, range)`.
 - **Multiple gamepads**: `ev.pad` and `input.pads[i]`.
 - **Block editor** generating Luau.
+- **The game's image**: regions of the screen read by the in-game overlay (a health bar,
+  the battle interface), as more inputs next to the sound.
 
 ## 14. Examples
 

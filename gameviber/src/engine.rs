@@ -1,11 +1,11 @@
 //! The engine ties everything together on its own thread: event sources,
-//! force-feedback state, gamepad state, the active Lua mode (with hot
-//! reload), the safety layer, channel -> toy routing and the Intiface
+//! force-feedback state, gamepad state, the game's sound, the active Lua mode
+//! (with hot reload), the safety layer, channel -> toy routing and the Intiface
 //! output. It publishes a `Shared` snapshot for the GUI and obeys `Command`s.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{mpsc as std_mpsc, Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 use gameviber_common::overlay::{Event, Gauge, Hello, OverlayState};
@@ -13,8 +13,10 @@ use gameviber_common::overlay::{Event, Gauge, Hello, OverlayState};
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::mpsc;
 
+use crate::audio::clap::{self, ModelState};
+use crate::audio::{self, Audio, AudioHit, AudioLevels, Embedding};
 pub use crate::config::SourceChoice;
-use crate::config::{self, ModeEntry, OverlaySettings, Presets, Settings, ToySettings};
+use crate::config::{self, AudioSource, ModeEntry, OverlaySettings, Presets, Settings, ToySettings};
 use crate::helper::client::Helper;
 use crate::gamepad::{self, PadState, BUTTONS};
 use crate::intiface::{Intiface, IntifaceStatus, Toy, ToyOutputs};
@@ -22,7 +24,7 @@ use crate::mode::rumble_events::RumbleLevels;
 use crate::mode::{HudGauge, ModeEvent, ModeInfo, ModeRuntime, ParamValue};
 use crate::overlay;
 use crate::rumble::RumbleState;
-use crate::session::{self, Player, Recorder, RecordingInfo};
+use crate::session::{self, AudioTick, Player, Recorder, RecordingInfo};
 use crate::source::ebpf::EbpfSource;
 use crate::source::proxy::{Hide, ProxySource};
 pub use crate::source::SourceHealth;
@@ -103,6 +105,10 @@ pub enum Command {
     Replay { path: PathBuf, to_toys: bool },
     StopReplay,
     DeleteRecording(PathBuf),
+    /// Where the game's sound is captured from.
+    SetAudio(AudioSource),
+    /// Downloads the audio scene model.
+    DownloadAudioModel,
     Shutdown,
 }
 
@@ -123,6 +129,22 @@ pub struct ReplayView {
     /// Seconds into the recording.
     pub position: f64,
     pub to_toys: bool,
+}
+
+/// The game's sound, for the GUI.
+#[derive(Debug, Clone, Default)]
+pub struct AudioView {
+    pub status: audio::Status,
+    pub levels: Option<AudioLevels>,
+    /// Engine time of the last hit, and the hit.
+    pub last_hit: Option<(f64, AudioHit)>,
+    pub model: ModelState,
+    /// The active mode's audio scenes: the current one...
+    pub scene: Option<String>,
+    /// ...and the average probability of each.
+    pub scenes: Vec<(String, f64)>,
+    /// The scenes' descriptions are encoded: scenes are being recognized.
+    pub scenes_ready: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -168,6 +190,7 @@ pub struct Shared {
     pub replay: Option<ReplayView>,
     /// Saved recordings, newest first.
     pub recordings: Vec<RecordingInfo>,
+    pub audio: AudioView,
     pub time: f64,
     pub stopped: bool,
 }
@@ -276,8 +299,19 @@ struct Engine {
     overlay_events: Vec<(String, f64)>,
     /// Mode name and preset shown by the overlay, and since when.
     overlay_title: (String, Option<String>, f64),
+    audio: Option<Audio>,
+    audio_levels: Option<AudioLevels>,
+    last_hit: Option<(f64, AudioHit)>,
+    /// Text embeddings of audio scene descriptions, computed off the engine thread.
+    scene_texts: (std_mpsc::Sender<SceneTexts>, std_mpsc::Receiver<SceneTexts>),
+    /// Descriptions being encoded.
+    scene_request: Option<Vec<String>>,
+    /// Descriptions that could not be encoded (not tried again).
+    scene_failed: Option<Vec<String>>,
     ticks: u64,
 }
+
+type SceneTexts = (Vec<String>, Result<Vec<Embedding>, String>);
 
 /// Runs the engine until `Command::Shutdown` or SIGINT/SIGTERM.
 pub fn run(opts: EngineOptions, shared: SharedHandle, commands: mpsc::UnboundedReceiver<Command>) -> anyhow::Result<()> {
@@ -304,6 +338,7 @@ async fn run_async(
     }
     let (source_tx, mut rx) = mpsc::unbounded_channel::<SourceEvent>();
     let intiface = opts.intiface.then(|| Intiface::spawn(settings.url.clone()));
+    let audio = Audio::start(settings.audio.clone());
     let now = Instant::now();
     let mut engine = Engine {
         opts,
@@ -337,6 +372,12 @@ async fn run_async(
         overlay: overlay::Server::new(),
         overlay_events: Vec::new(),
         overlay_title: (String::new(), None, 0.0),
+        audio: Some(audio),
+        audio_levels: None,
+        last_hit: None,
+        scene_texts: std_mpsc::channel(),
+        scene_request: None,
+        scene_failed: None,
         ticks: 0,
     };
     engine.apply_combos();
@@ -600,6 +641,15 @@ impl Engine {
                 }
                 self.refresh_recordings();
             }
+            Command::SetAudio(source) => {
+                log::info!("game audio: {source:?}");
+                if let Some(audio) = &self.audio {
+                    audio.set_source(source.clone());
+                }
+                self.settings.audio = source;
+                self.settings.save();
+            }
+            Command::DownloadAudioModel => clap::start_download(),
             Command::Shutdown => {}
         }
         self.publish_mode();
@@ -894,6 +944,7 @@ impl Engine {
             let buttons = player.advance(time, &mut self.pad);
             self.events.extend(buttons.into_iter().map(ModeEvent::Button));
         }
+        let (audio_levels, hits, clips) = self.poll_audio(time);
         // While replaying, the recording is the source.
         let lost = self.player.is_none() && self.source.lost();
         if lost != self.source_lost {
@@ -923,15 +974,16 @@ impl Engine {
         let levels = RumbleLevels { strong: game.strong.max(self.sim.strong), weak: game.weak.max(self.sim.weak) };
         let buttons: Vec<_> =
             self.events.iter().filter_map(|e| if let ModeEvent::Button(b) = e { Some(b.clone()) } else { None }).collect();
+        let audio_tick = AudioTick { levels: audio_levels, hits: &hits, clips: &clips };
         if let Some(recorder) = self.recorder.as_mut() {
-            recorder.tick(time, levels, &buttons, &self.pad);
+            recorder.tick(time, levels, &buttons, &self.pad, audio_tick);
             if recorder.elapsed(time) >= session::MAX_SECS {
                 log::warn!("recording stopped after {:.0} min", session::MAX_SECS / 60.0);
                 self.stop_recording();
             }
         }
         if self.player.is_none() {
-            self.recent.tick(time, levels, &buttons, &self.pad);
+            self.recent.tick(time, levels, &buttons, &self.pad, audio_tick);
         }
         if self.pad.panic_combo(time) {
             self.trigger_panic(&gamepad::combo_text(&self.settings.panic_combo));
@@ -963,8 +1015,10 @@ impl Engine {
         let mut hud = Vec::new();
         let events = std::mem::take(&mut self.events);
         let input_idle = self.pad.input_idle(time);
+        self.update_scenes();
         if let Some(active) = self.mode.as_mut() {
             if let Some(rt) = active.runtime.as_mut() {
+                rt.set_audio(audio_levels);
                 if !active.suspended && !self.panic {
                     match rt.step(dt, levels, &self.pad, input_idle, &events) {
                         Ok(out) => {
@@ -1046,6 +1100,7 @@ impl Engine {
             to_toys: *to_toys,
         });
         shared.overlay_clients = self.overlay.clients();
+        shared.audio = self.audio_view(audio_levels);
         shared.overlay_unavailable = self.overlay.unavailable();
         shared.history.push_back(Sample { t: time, strong: levels.strong, weak: levels.weak, channels });
         while shared.history.front().is_some_and(|s| time - s.t > HISTORY_SECS) {
@@ -1104,10 +1159,101 @@ impl Engine {
             mode: name,
             preset,
             mode_age: (time - self.overlay_title.2) as f32,
+            scene: self.mode.as_ref().and_then(|m| m.runtime.as_ref()).and_then(|rt| rt.scene_state().0),
             gauges: hud.into_iter().map(|g| Gauge { label: g.label, value: g.value as f32, max: g.max as f32 }).collect(),
             events: self.overlay_events.iter().map(|(text, t)| Event { text: text.clone(), age: (time - t) as f32 }).collect(),
             alerts,
             ..OverlayState::default()
+        }
+    }
+
+    /// Drains the audio service. While replaying, the recording is the sound.
+    fn poll_audio(&mut self, time: f64) -> (Option<AudioLevels>, Vec<AudioHit>, Vec<Embedding>) {
+        let games = self.overlay.clients().into_iter().map(|c| (c.pid, c.exe)).collect();
+        let outputs = match &self.audio {
+            Some(audio) => {
+                audio.set_games(games);
+                audio.poll()
+            }
+            None => Vec::new(),
+        };
+        if let Some((player, _)) = self.player.as_mut() {
+            for event in player.take_audio_events() {
+                if let ModeEvent::AudioHit(hit) = &event {
+                    self.last_hit = Some((time, *hit));
+                }
+                self.events.push(event);
+            }
+            return (player.audio, Vec::new(), Vec::new());
+        }
+        let (mut hits, mut clips) = (Vec::new(), Vec::new());
+        for output in outputs {
+            match output {
+                audio::Output::Levels(levels) => self.audio_levels = Some(levels),
+                audio::Output::Hit(hit) => {
+                    self.last_hit = Some((time, hit));
+                    self.events.push(ModeEvent::AudioHit(hit));
+                    hits.push(hit);
+                }
+                audio::Output::Clip(clip) => {
+                    self.events.push(ModeEvent::AudioClip(clip.clone()));
+                    clips.push(clip);
+                }
+                audio::Output::Inactive => self.audio_levels = None,
+            }
+        }
+        (self.audio_levels, hits, clips)
+    }
+
+    /// Gets the active mode's audio scene descriptions encoded (off the engine
+    /// thread: the text model takes a moment to load), and asks the audio
+    /// service for embeddings only while a mode can use them.
+    fn update_scenes(&mut self) {
+        while let Ok((descriptions, result)) = self.scene_texts.1.try_recv() {
+            self.scene_request = None;
+            match result {
+                Ok(texts) => {
+                    let rt = self.mode.as_mut().and_then(|m| m.runtime.as_mut());
+                    if let Some(rt) = rt.filter(|rt| rt.scene_descriptions() == descriptions) {
+                        log::info!("audio scenes of '{}' ready", rt.info().name);
+                        rt.set_scene_texts(texts);
+                    }
+                }
+                Err(e) => {
+                    log::error!("cannot prepare the audio scenes: {e}");
+                    self.scene_failed = Some(descriptions);
+                }
+            }
+        }
+        let rt = self.mode.as_ref().and_then(|m| m.runtime.as_ref());
+        let wanted = rt.is_some_and(|rt| !rt.info().audio_scenes.is_empty()) && clap::model_ready();
+        if let Some(audio) = &self.audio {
+            audio.set_scenes(wanted);
+        }
+        let Some(rt) = rt.filter(|rt| wanted && !rt.scenes_ready()) else { return };
+        let descriptions = rt.scene_descriptions();
+        if self.scene_request.is_some() || self.scene_failed.as_ref() == Some(&descriptions) {
+            return;
+        }
+        self.scene_request = Some(descriptions.clone());
+        let tx = self.scene_texts.0.clone();
+        std::thread::spawn(move || {
+            let result = clap::text_embeddings(&descriptions).map_err(|e| format!("{e:#}"));
+            let _ = tx.send((descriptions, result));
+        });
+    }
+
+    fn audio_view(&self, levels: Option<AudioLevels>) -> AudioView {
+        let rt = self.mode.as_ref().and_then(|m| m.runtime.as_ref()).filter(|rt| !rt.info().audio_scenes.is_empty());
+        let (scene, scenes) = rt.map(|rt| rt.scene_state()).unwrap_or_default();
+        AudioView {
+            status: self.audio.as_ref().map(Audio::status).unwrap_or_default(),
+            levels,
+            last_hit: self.last_hit,
+            model: clap::model_state(),
+            scene,
+            scenes,
+            scenes_ready: rt.is_some_and(|rt| rt.scenes_ready()),
         }
     }
 
@@ -1142,6 +1288,9 @@ impl Engine {
             i.shutdown().await;
         }
         std::mem::replace(&mut self.source, Source::None).shutdown();
+        if let Some(audio) = self.audio.take() {
+            audio.shutdown();
+        }
         self.helper.shutdown();
     }
 }

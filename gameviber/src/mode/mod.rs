@@ -2,6 +2,7 @@
 //! docs/spec-modes.md: declaration, parameters, callbacks, outputs, timers,
 //! debug helpers, sandboxing and hot-reload state.
 
+pub mod audio_events;
 pub mod library;
 pub mod outputs;
 pub mod prompt;
@@ -16,7 +17,9 @@ use std::time::{Duration, Instant};
 use mlua::{Function, Lua, LuaOptions, StdLib, Table, Value, Variadic, VmState};
 use serde::{Deserialize, Serialize};
 
+use crate::audio::{AudioHit, AudioLevels, Embedding};
 use crate::gamepad::{ButtonEvent, PadState, AXES, BUTTONS};
+use audio_events::{SceneChange, SceneTracker};
 use outputs::Outputs;
 use rumble_events::{RumbleEvent, RumbleLevels, RumbleTracker, DEFAULT_RELEASE, DEFAULT_THRESHOLD};
 
@@ -27,6 +30,7 @@ const CALLBACK_BUDGET: Duration = Duration::from_millis(10);
 const LOAD_BUDGET: Duration = Duration::from_millis(200);
 const MEMORY_LIMIT: usize = 16 * 1024 * 1024;
 const PERSIST_MAX_DEPTH: usize = 16;
+const MAX_AUDIO_SCENES: usize = 8;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -121,6 +125,11 @@ pub struct ModeInfo {
     pub feedback: Vec<Question>,
     pub rumble_threshold: f64,
     pub rumble_release: f64,
+    /// Scenes recognized from the game's sound (§6.3): name and description,
+    /// sorted by name.
+    pub audio_scenes: Vec<(String, String)>,
+    /// Seconds over which scene probabilities are averaged.
+    pub audio_scene_window: f64,
 }
 
 /// Plain-data copy of the `persist` table, carried across hot reloads.
@@ -137,6 +146,9 @@ pub enum PersistValue {
 pub enum ModeEvent {
     Button(ButtonEvent),
     Device { connected: bool, name: String },
+    AudioHit(AudioHit),
+    /// Embedding of the last 10 s of the game's sound.
+    AudioClip(Embedding),
 }
 
 /// What a tick produced besides channel values.
@@ -207,6 +219,8 @@ struct Callbacks {
     on_button: Option<Function>,
     on_param_changed: Option<Function>,
     on_device: Option<Function>,
+    on_audio_hit: Option<Function>,
+    on_audio_scene: Option<Function>,
 }
 
 struct InputTables {
@@ -214,6 +228,8 @@ struct InputTables {
     rumble: Table,
     buttons: Table,
     axes: Table,
+    audio: Table,
+    scenes: Table,
 }
 
 pub struct ModeRuntime {
@@ -227,6 +243,11 @@ pub struct ModeRuntime {
     persist: Table,
     input: InputTables,
     tracker: RumbleTracker,
+    /// The game's sound right now; None when it is not captured.
+    audio: Option<AudioLevels>,
+    scenes: SceneTracker,
+    /// Scene change to report on the next tick (the sound stopped).
+    pending_scene: Option<SceneChange>,
 }
 
 type LoadResult<T> = Result<T, String>;
@@ -325,6 +346,8 @@ impl ModeRuntime {
             on_button: get("on_button")?,
             on_param_changed: get("on_param_changed")?,
             on_device: get("on_device")?,
+            on_audio_hit: get("on_audio_hit")?,
+            on_audio_scene: get("on_audio_scene")?,
         };
 
         let input = InputTables {
@@ -332,14 +355,33 @@ impl ModeRuntime {
             rumble: lua.create_table().map_err(lua_err)?,
             buttons: lua.create_table().map_err(lua_err)?,
             axes: lua.create_table().map_err(lua_err)?,
+            audio: lua.create_table().map_err(lua_err)?,
+            scenes: lua.create_table().map_err(lua_err)?,
         };
         input.root.raw_set("rumble", &input.rumble).map_err(lua_err)?;
         input.root.raw_set("buttons", &input.buttons).map_err(lua_err)?;
         input.root.raw_set("axes", &input.axes).map_err(lua_err)?;
+        input.root.raw_set("audio", &input.audio).map_err(lua_err)?;
+        input.audio.raw_set("scenes", &input.scenes).map_err(lua_err)?;
 
         ctx.borrow_mut().outputs = Some(Outputs::new(info.channels.clone()));
         let tracker = RumbleTracker::new(info.rumble_threshold, info.rumble_release, 0.0);
-        Ok(Self { lua, ctx, deadline, info, callbacks, param_values, values, persist: persist_table, input, tracker })
+        let scenes = SceneTracker::new(info.audio_scenes.iter().map(|(n, _)| n.clone()).collect(), info.audio_scene_window);
+        Ok(Self {
+            lua,
+            ctx,
+            deadline,
+            info,
+            callbacks,
+            param_values,
+            values,
+            persist: persist_table,
+            input,
+            tracker,
+            audio: None,
+            scenes,
+            pending_scene: None,
+        })
     }
 
     pub fn info(&self) -> &ModeInfo {
@@ -348,6 +390,33 @@ impl ModeRuntime {
 
     pub fn param_values(&self) -> &BTreeMap<String, ParamValue> {
         &self.param_values
+    }
+
+    /// Descriptions of the declared audio scenes, to compute their embeddings.
+    pub fn scene_descriptions(&self) -> Vec<String> {
+        self.info.audio_scenes.iter().map(|(_, d)| d.clone()).collect()
+    }
+
+    /// Embeddings of `scene_descriptions()`, in the same order.
+    pub fn set_scene_texts(&mut self, texts: Vec<Embedding>) {
+        self.scenes.set_texts(texts);
+    }
+
+    pub fn scenes_ready(&self) -> bool {
+        self.scenes.ready()
+    }
+
+    /// The current scene and the average probability of each, sorted by name.
+    pub fn scene_state(&self) -> (Option<String>, Vec<(String, f64)>) {
+        (self.scenes.current().map(str::to_owned), self.scenes.averages().map(|(n, p)| (n.to_owned(), p)).collect())
+    }
+
+    /// The game's sound for the next ticks; None when it stops being captured.
+    pub fn set_audio(&mut self, levels: Option<AudioLevels>) {
+        if levels.is_none() && self.audio.is_some() {
+            self.pending_scene = self.scenes.reset();
+        }
+        self.audio = levels;
     }
 
     fn call(&self, f: &Function, args: impl mlua::IntoLuaMulti) -> Result<(), String> {
@@ -377,6 +446,8 @@ impl ModeRuntime {
         }
         let time = self.ctx.borrow().time;
         self.tracker = RumbleTracker::new(self.info.rumble_threshold, self.info.rumble_release, time);
+        self.scenes.reset();
+        self.pending_scene = None;
         self.call_opt(&self.callbacks.on_start, ())
     }
 
@@ -436,6 +507,9 @@ impl ModeRuntime {
         };
         self.run_timers(time)?;
 
+        if let Some(change) = self.pending_scene.take() {
+            self.scene_changed(change, time)?;
+        }
         for event in events {
             match event {
                 ModeEvent::Button(event) => {
@@ -451,6 +525,21 @@ impl ModeRuntime {
                     t.raw_set("name", name.as_str()).map_err(lua_err)?;
                     t.raw_set("t", time).map_err(lua_err)?;
                     self.call_opt(&self.callbacks.on_device, t)?;
+                }
+                ModeEvent::AudioHit(hit) => {
+                    if self.callbacks.on_audio_hit.is_none() || self.audio.is_none() {
+                        continue;
+                    }
+                    let t = self.lua.create_table().map_err(lua_err)?;
+                    t.raw_set("strength", hit.strength).map_err(lua_err)?;
+                    t.raw_set("band", hit.band.name()).map_err(lua_err)?;
+                    t.raw_set("t", time).map_err(lua_err)?;
+                    self.call_opt(&self.callbacks.on_audio_hit, t)?;
+                }
+                ModeEvent::AudioClip(sound) => {
+                    if let Some(change) = self.scenes.update(time, sound) {
+                        self.scene_changed(change, time)?;
+                    }
                 }
             }
         }
@@ -485,6 +574,19 @@ impl ModeRuntime {
         let hud = ctx.hud.clone();
         let channels = ctx.outputs().map_err(lua_err)?.evaluate(time);
         Ok(TickOutput { channels, plots, hud, hud_events })
+    }
+
+    fn scene_changed(&self, change: SceneChange, time: f64) -> Result<(), String> {
+        log::debug!("audio scene: {:?} -> {:?} ({:.2})", change.previous, change.scene, change.confidence);
+        if self.callbacks.on_audio_scene.is_none() {
+            return Ok(());
+        }
+        let t = self.lua.create_table().map_err(lua_err)?;
+        t.raw_set("scene", change.scene).map_err(lua_err)?;
+        t.raw_set("previous", change.previous).map_err(lua_err)?;
+        t.raw_set("confidence", change.confidence).map_err(lua_err)?;
+        t.raw_set("t", time).map_err(lua_err)?;
+        self.call_opt(&self.callbacks.on_audio_scene, t)
     }
 
     fn run_timers(&mut self, time: f64) -> Result<(), String> {
@@ -535,6 +637,19 @@ impl ModeRuntime {
         }
         for name in AXES {
             self.input.axes.raw_set(name, pad.axes().get(name).copied().unwrap_or(0.0))?;
+        }
+        let a = &self.input.audio;
+        let levels = self.audio.unwrap_or_default();
+        a.raw_set("active", self.audio.is_some())?;
+        a.raw_set("level", levels.level)?;
+        a.raw_set("low", levels.low)?;
+        a.raw_set("mid", levels.mid)?;
+        a.raw_set("high", levels.high)?;
+        a.raw_set("intensity", levels.intensity)?;
+        a.raw_set("scene", self.scenes.current())?;
+        a.raw_set("scene_confidence", self.scenes.confidence())?;
+        for (name, p) in self.scenes.averages() {
+            self.input.scenes.raw_set(name, p)?;
         }
         Ok(())
     }
@@ -621,6 +736,24 @@ fn parse_info(declared: &Table) -> LoadResult<ModeInfo> {
     let number = |key: &str, default: f64| -> LoadResult<f64> {
         Ok(declared.get::<Option<f64>>(key).map_err(|e| format!("mode.{key}: {e}"))?.unwrap_or(default))
     };
+    let mut audio_scenes = Vec::new();
+    if let Some(table) = declared.get::<Option<Table>>("audio_scenes").map_err(|e| format!("mode.audio_scenes: {e}"))? {
+        for pair in table.pairs::<String, String>() {
+            let (name, description) = pair.map_err(|e| format!("mode.audio_scenes: {e} (expected name = \"description\")"))?;
+            if description.trim().is_empty() {
+                return Err(format!("mode.audio_scenes: scene '{name}' needs a description"));
+            }
+            audio_scenes.push((name, description));
+        }
+        audio_scenes.sort();
+        if !(2..=MAX_AUDIO_SCENES).contains(&audio_scenes.len()) {
+            return Err(format!("mode.audio_scenes must declare 2 to {MAX_AUDIO_SCENES} scenes"));
+        }
+    }
+    let audio_scene_window = number("audio_scene_window", audio_events::DEFAULT_WINDOW)?;
+    if !(2.0..=60.0).contains(&audio_scene_window) {
+        return Err("mode.audio_scene_window must be between 2 and 60 seconds".into());
+    }
 
     Ok(ModeInfo {
         name,
@@ -635,6 +768,8 @@ fn parse_info(declared: &Table) -> LoadResult<ModeInfo> {
         feedback: feedback.into_iter().map(|(_, q)| q).collect(),
         rumble_threshold: number("rumble_threshold", DEFAULT_THRESHOLD)?,
         rumble_release: number("rumble_release", DEFAULT_RELEASE)?,
+        audio_scenes,
+        audio_scene_window,
     })
 }
 

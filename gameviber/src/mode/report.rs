@@ -1,8 +1,8 @@
 //! What a mode did during a recorded session, for an AI assistant asked to
 //! fix a mode that does not feel right: the session is replayed offline into
 //! a fresh copy of the mode, and the game's vibrations, the player's presses,
-//! the mode's overlay messages and a timeline of its outputs and `plot()`
-//! values are written out as Markdown.
+//! what was heard of the game's sound, the mode's overlay messages and a
+//! timeline of its outputs and `plot()` values are written out as Markdown.
 
 use std::collections::BTreeMap;
 use std::fmt::Write;
@@ -10,6 +10,7 @@ use std::path::Path;
 
 use super::rumble_events::{RumbleEvent, RumbleTracker};
 use super::{ModeEvent, ModeRuntime, ParamValue};
+use crate::audio::clap;
 use crate::gamepad::PadState;
 use crate::session::{Change, Player, Session};
 
@@ -25,6 +26,9 @@ struct Tick {
     t: f64,
     rumble: f64,
     held: Vec<&'static str>,
+    /// Loudness of the game's sound, when it was captured.
+    sound: Option<f64>,
+    scene: Option<String>,
     channels: BTreeMap<String, f64>,
     plots: Vec<(String, f64)>,
 }
@@ -42,6 +46,14 @@ pub struct Simulation {
     marks: Vec<f64>,
     /// The mode stopped on a runtime error.
     error: Option<(f64, String)>,
+    /// Sounds heard as hits.
+    audio_hits: usize,
+    /// The mode declares audio scenes.
+    has_scenes: bool,
+    /// Why the scenes could not be recognized.
+    scenes_unavailable: Option<String>,
+    /// When the recognized scene changed, and to what.
+    scene_changes: Vec<(f64, Option<String>)>,
 }
 
 /// Replays `session` into a freshly loaded mode with `params`.
@@ -67,7 +79,18 @@ pub fn simulate(
         hud_events: Vec::new(),
         marks,
         error: None,
+        audio_hits: 0,
+        has_scenes: !info.audio_scenes.is_empty(),
+        scenes_unavailable: None,
+        scene_changes: Vec::new(),
     };
+    if sim.has_scenes {
+        match clap::text_embeddings(&rt.scene_descriptions()) {
+            Ok(texts) => rt.set_scene_texts(texts),
+            Err(e) => sim.scenes_unavailable = Some(format!("{e:#}")),
+        }
+    }
+    let mut scene = None;
     let mut vibration_start = 0.0;
     let mut step = 0;
     loop {
@@ -91,7 +114,10 @@ pub fn simulate(
                 RumbleEvent::Changed(_) => {}
             }
         }
-        let events: Vec<ModeEvent> = buttons.into_iter().map(ModeEvent::Button).collect();
+        let audio = player.take_audio_events();
+        sim.audio_hits += audio.iter().filter(|e| matches!(e, ModeEvent::AudioHit(_))).count();
+        let events: Vec<ModeEvent> = buttons.into_iter().map(ModeEvent::Button).chain(audio).collect();
+        rt.set_audio(player.audio);
         let out = match rt.step(DT, player.rumble, &pad, pad.input_idle(t), &events) {
             Ok(out) => out,
             Err(e) => {
@@ -100,10 +126,17 @@ pub fn simulate(
             }
         };
         sim.hud_events.extend(out.hud_events.into_iter().map(|e| (t, e)));
+        let current = rt.scene_state().0;
+        if current != scene {
+            sim.scene_changes.push((t, current.clone()));
+            scene = current;
+        }
         sim.ticks.push(Tick {
             t,
             rumble: player.rumble.level(),
             held: pad.held().iter().copied().collect(),
+            sound: player.audio.map(|a| a.level),
+            scene: scene.clone(),
             channels: out.channels,
             plots: out.plots,
         });
@@ -147,6 +180,8 @@ impl Simulation {
         }
         more(&mut out, self.presses.len(), MAX_PRESSES);
 
+        out.push_str(&self.sound());
+
         if !self.hud_events.is_empty() {
             let _ = writeln!(out, "\n### Messages the mode showed with hud_event ({})\n", self.hud_events.len());
             for (t, text) in self.hud_events.iter().take(MAX_PRESSES) {
@@ -157,6 +192,34 @@ impl Simulation {
 
         out.push('\n');
         out.push_str(&self.timeline());
+        out
+    }
+
+    /// What was heard of the game's sound.
+    fn sound(&self) -> String {
+        let mut out = String::new();
+        if !self.ticks.iter().any(|t| t.sound.is_some()) {
+            if self.has_scenes {
+                out.push_str("\n### The game's sound\n\nNot captured during this session: the audio scenes never changed.\n");
+            }
+            return out;
+        }
+        let _ = writeln!(out, "\n### The game's sound\n\n{} hits heard (on_audio_hit).", self.audio_hits);
+        if let Some(why) = &self.scenes_unavailable {
+            let _ = writeln!(out, "\nThe audio scenes could not be recognized: {why}.");
+        } else if self.has_scenes {
+            let _ = writeln!(out, "\nAudio scene changes ({}):\n", self.scene_changes.len());
+            if self.scene_changes.is_empty() {
+                out.push_str("None: no scene was recognized.\n");
+            }
+            let mut previous: Option<&Option<String>> = None;
+            for (t, scene) in self.scene_changes.iter().take(MAX_PRESSES) {
+                let was = previous.map_or(String::new(), |p| format!(" (was {})", p.as_deref().unwrap_or("none")));
+                let _ = writeln!(out, "- {t:.2} s: {}{was}", scene.as_deref().unwrap_or("none"));
+                previous = Some(scene);
+            }
+            more(&mut out, self.scene_changes.len(), MAX_PRESSES);
+        }
         out
     }
 
@@ -172,14 +235,21 @@ impl Simulation {
         let mut out = String::new();
         let _ = writeln!(
             out,
-            "### Timeline\n\nOne row per {row_secs:.2} s: the game rumble and mode outputs are the maximum over the \
-             row, held buttons and plot() values are taken at its end. Rows equal to the previous one are left \
+            "### Timeline\n\nOne row per {row_secs:.2} s: the game rumble, the sound's loudness and mode outputs are \
+             the maximum over the row, held buttons, the audio scene and plot() values are taken at its end. Rows equal to the previous one are left \
              out.\n"
         );
         let marked = !self.marks.is_empty();
+        let sound = self.ticks.iter().any(|t| t.sound.is_some());
         let mut header = vec!["t (s)".to_owned(), "game rumble".into(), "held".into()];
         if marked {
             header.push("marked".into());
+        }
+        if sound {
+            header.push("sound".into());
+        }
+        if self.has_scenes {
+            header.push("scene".into());
         }
         header.extend(channels.iter().map(|c| format!("out {c}")));
         header.extend(plots.iter().map(|p| format!("plot {p}")));
@@ -201,6 +271,13 @@ impl Simulation {
             if marked {
                 let (from, to) = (row[0].t, end.t + DT);
                 values.push(if self.marks.iter().any(|m| (from..to).contains(m)) { "⚑" } else { "" }.to_owned());
+            }
+            if sound {
+                let loudest = row.iter().filter_map(|t| t.sound).reduce(f64::max);
+                values.push(loudest.map_or("-".to_owned(), |l| format!("{l:.2}")));
+            }
+            if self.has_scenes {
+                values.push(end.scene.clone().unwrap_or_else(|| "-".to_owned()));
             }
             for c in &channels {
                 let max = row.iter().filter_map(|t| t.channels.get(c)).copied().fold(0.0, f64::max);
@@ -271,6 +348,31 @@ end
         // Gain 0.5 halves the 0.8 rumble.
         assert!(report.contains("| 0.50 | 0.80 | - |  | 0.40 | 0.800 |"), "{report}");
         assert!(report.contains("| 1.00 | 0.00 | - | ⚑ | 0.00 | 0.000 |"), "{report}");
+    }
+
+    #[test]
+    fn report_shows_the_game_sound() {
+        let source = r#"
+mode { api = 1, name = "T", audio_scenes = { battle = "intense battle music", calm = "calm music" } }
+function on_audio_hit(ev) pulse(ev.strength, 0.1) end
+function tick(dt, input) end
+"#;
+        let session = Session {
+            header: Header { version: 2, started: "now".into(), game: None, mode: "T".into(), duration: 1.0, marks: 0 },
+            changes: vec![
+                (0.1, Change::Audio { level: 0.6, low: 0.5, mid: 0.2, high: 0.1, intensity: 0.3 }),
+                (0.3, Change::AudioHit { strength: 0.9, band: crate::audio::Band::Low }),
+                (0.6, Change::NoAudio),
+            ],
+        };
+        let report = simulate("t.luau", source, &BTreeMap::new(), session).unwrap().report();
+        assert!(report.contains("### The game's sound\n\n1 hits heard"), "{report}");
+        assert!(report.contains("| sound | scene |"), "{report}");
+        assert!(report.contains("| 0.25 | 0.00 | - | 0.60 | - | 0.90 |"), "{report}");
+        // Without the downloaded model the scenes are explained, not silently missing.
+        if !clap::model_ready() {
+            assert!(report.contains("The audio scenes could not be recognized"), "{report}");
+        }
     }
 
     #[test]

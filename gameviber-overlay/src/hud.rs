@@ -2,7 +2,7 @@
 //! painting library behind the GameViber window, and tessellates it into
 //! meshes for the renderer.
 
-use epaint::text::{FontDefinitions, Fonts, FontsView, TextOptions};
+use epaint::text::{FontDefinitions, Fonts, FontsView, LayoutJob, TextOptions, TextWrapping};
 use epaint::{
     emath::Align2, ClippedPrimitive, ClippedShape, Color32, CornerRadius, FontId, ImageDelta, Pos2, Rect, Shape, Stroke,
     StrokeKind, TessellationOptions, Tessellator, Vec2,
@@ -71,11 +71,16 @@ fn panel(fonts: &mut FontsView<'_>, state: &OverlayState, screen: Vec2) -> Vec<S
     let mut p = Painter { fonts, shapes: Vec::new(), y: PADDING };
     let inner = WIDTH - 2.0 * PADDING;
 
+    // The mode and preset on one short line, so that the scene stands out.
     let fresh = state.mode_age < MODE_HIGHLIGHT_SECS;
-    let (size, color) = if fresh { (18.0, ACCENT_TEXT) } else { (14.0, TEXT) };
-    p.text(&state.mode, size, color, inner);
-    if let Some(preset) = &state.preset {
-        p.text(preset, 12.0, MUTED, inner);
+    let (size, color) = if fresh { (15.0, ACCENT_TEXT) } else { (12.0, MUTED) };
+    let title = match &state.preset {
+        Some(preset) => format!("{} · {preset}", state.mode),
+        None => state.mode.clone(),
+    };
+    p.line(&title, size, color, inner);
+    if let Some(scene) = &state.scene {
+        p.scene(scene);
     }
     p.y += 6.0;
 
@@ -135,6 +140,30 @@ impl Painter<'_, '_> {
         self.y += height + 2.0;
     }
 
+    /// A single text row, cut with "…" when too long.
+    fn line(&mut self, text: &str, size: f32, color: Color32, width: f32) {
+        let mut job = LayoutJob::simple_singleline(text.to_owned(), FontId::proportional(size), color);
+        job.wrap = TextWrapping { max_width: width, max_rows: 1, break_anywhere: true, ..TextWrapping::default() };
+        let galley = self.fonts.layout_job(job);
+        let height = galley.size().y;
+        self.shapes.push(Shape::galley(Pos2::new(PADDING, self.y), galley, color));
+        self.y += height + 2.0;
+    }
+
+    /// The current scene, with a dot, larger than the mode name.
+    fn scene(&mut self, scene: &str) {
+        let mut name: String = scene.chars().take(1).flat_map(char::to_uppercase).collect();
+        name.extend(scene.chars().skip(1).map(|c| if c == '_' { ' ' } else { c }));
+        self.y += 2.0;
+        self.shapes.push(Shape::circle_filled(Pos2::new(PADDING + 4.0, self.y + 10.0), 4.0, GAME));
+        let mut job = LayoutJob::simple_singleline(name, FontId::proportional(17.0), TEXT);
+        job.wrap = TextWrapping { max_width: WIDTH - 2.0 * PADDING - 14.0, max_rows: 1, break_anywhere: true, ..TextWrapping::default() };
+        let galley = self.fonts.layout_job(job);
+        let height = galley.size().y;
+        self.shapes.push(Shape::galley(Pos2::new(PADDING + 14.0, self.y), galley, TEXT));
+        self.y += height + 2.0;
+    }
+
     fn text_at(&mut self, pos: Pos2, anchor: Align2, text: &str, size: f32, color: Color32) {
         let shape = Shape::text(self.fonts, pos, anchor, text, FontId::proportional(size), color);
         self.shapes.push(shape);
@@ -171,7 +200,8 @@ mod tests {
         let mut hud = Hud::new();
         let state = OverlayState {
             mode: "Surge".into(),
-            preset: Some("Lost Crown".into()),
+            preset: Some("Lost Crown with a very long preset name that cannot fit".into()),
+            scene: Some("battle".into()),
             gauges: vec![Gauge { label: "Surge gauge".into(), value: 40.0, max: 100.0 }],
             events: vec![Event { text: "Parry!".into(), age: 0.5 }],
             alerts: vec!["No toy connected".into()],

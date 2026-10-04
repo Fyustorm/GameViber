@@ -1,5 +1,5 @@
-//! Recorded play sessions: the game's rumble and the player's buttons and
-//! axes, as the mode saw them, so that a mode can be tuned on a real session
+//! Recorded play sessions: the game's rumble, the player's buttons and axes
+//! and what was heard of the game's sound, as the mode saw them, so that a mode can be tuned on a real session
 //! without playing it again.
 //!
 //! A recording is a JSON Lines file in `~/.config/gameviber/recordings/`: a
@@ -9,20 +9,25 @@ use std::collections::{BTreeMap, VecDeque};
 use std::fs;
 use std::io::{self, BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+use crate::audio::{AudioHit, AudioLevels, Band, Embedding};
 use crate::config;
 use crate::gamepad::{ButtonEvent, PadState, AXES, BUTTONS};
 use crate::mode::rumble_events::RumbleLevels;
+use crate::mode::ModeEvent;
 
-const FORMAT_VERSION: u32 = 1;
+/// 2: audio changes.
+const FORMAT_VERSION: u32 = 2;
 const EXTENSION: &str = "jsonl";
 /// Recording stops by itself after this long.
 pub const MAX_SECS: f64 = 60.0 * 60.0;
 /// Changes smaller than this are not recorded (sensor noise).
 const AXIS_STEP: f64 = 0.01;
 const RUMBLE_STEP: f64 = 0.001;
+const AUDIO_STEP: f64 = 0.02;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Header {
@@ -40,13 +45,28 @@ pub struct Header {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum Change {
     Rumble { strong: f64, weak: f64 },
     Button { name: String, pressed: bool },
     Axis { name: String, value: f64 },
     /// The player marked this moment as feeling wrong.
     Mark,
+    /// Levels of the game's sound.
+    Audio { level: f64, low: f64, mid: f64, high: f64, intensity: f64 },
+    /// The sound stopped being captured.
+    NoAudio,
+    AudioHit { strength: f64, band: Band },
+    /// Embedding of the last 10 s of sound, for the mode's audio scenes.
+    AudioClip { embedding: Vec<f32> },
+}
+
+/// What was heard of the game's sound during one tick.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AudioTick<'a> {
+    pub levels: Option<AudioLevels>,
+    pub hits: &'a [AudioHit],
+    pub clips: &'a [Embedding],
 }
 
 /// A recording file as listed in the GUI.
@@ -138,6 +158,7 @@ pub struct Recorder {
     window: Option<f64>,
     rumble: RumbleLevels,
     axes: BTreeMap<&'static str, f64>,
+    audio: Option<AudioLevels>,
     changes: VecDeque<(f64, Change)>,
     /// State at the start of the window: changes dropped from it, latest per key.
     base: BTreeMap<String, Change>,
@@ -153,6 +174,7 @@ impl Recorder {
             window: None,
             rumble: RumbleLevels::default(),
             axes: BTreeMap::new(),
+            audio: None,
             changes: VecDeque::new(),
             base: BTreeMap::new(),
         }
@@ -173,7 +195,7 @@ impl Recorder {
     }
 
     /// Records what changed since the previous tick.
-    pub fn tick(&mut self, time: f64, rumble: RumbleLevels, buttons: &[ButtonEvent], pad: &PadState) {
+    pub fn tick(&mut self, time: f64, rumble: RumbleLevels, buttons: &[ButtonEvent], pad: &PadState, audio: AudioTick) {
         let t = round(self.elapsed(time), 1000.0);
         if (rumble.strong - self.rumble.strong).abs() >= RUMBLE_STEP || (rumble.weak - self.rumble.weak).abs() >= RUMBLE_STEP {
             self.rumble = rumble;
@@ -190,6 +212,7 @@ impl Recorder {
                 self.changes.push_back((t, Change::Axis { name: name.to_owned(), value: round(value, 100.0) }));
             }
         }
+        self.record_audio(t, audio);
         if let Some(window) = self.window {
             while self.changes.front().is_some_and(|(at, _)| *at < t - window) {
                 let (_, change) = self.changes.pop_front().unwrap();
@@ -197,10 +220,44 @@ impl Recorder {
                     Change::Rumble { .. } => "rumble".to_owned(),
                     Change::Button { name, .. } => format!("button {name}"),
                     Change::Axis { name, .. } => format!("axis {name}"),
-                    Change::Mark => continue,
+                    Change::Audio { .. } | Change::NoAudio => "audio".to_owned(),
+                    Change::Mark | Change::AudioHit { .. } | Change::AudioClip { .. } => continue,
                 };
                 self.base.insert(key, change);
             }
+        }
+    }
+
+    fn record_audio(&mut self, t: f64, audio: AudioTick) {
+        let moved = match (self.audio, audio.levels) {
+            (None, None) => false,
+            (Some(a), Some(b)) => [a.level - b.level, a.low - b.low, a.mid - b.mid, a.high - b.high, a.intensity - b.intensity]
+                .iter()
+                .any(|d| d.abs() >= AUDIO_STEP),
+            _ => true,
+        };
+        if moved {
+            self.audio = audio.levels;
+            self.changes.push_back((
+                t,
+                match audio.levels {
+                    Some(l) => Change::Audio {
+                        level: round(l.level, 100.0),
+                        low: round(l.low, 100.0),
+                        mid: round(l.mid, 100.0),
+                        high: round(l.high, 100.0),
+                        intensity: round(l.intensity, 100.0),
+                    },
+                    None => Change::NoAudio,
+                },
+            ));
+        }
+        for hit in audio.hits {
+            self.changes.push_back((t, Change::AudioHit { strength: round(hit.strength, 100.0), band: hit.band }));
+        }
+        for clip in audio.clips {
+            let embedding = clip.iter().map(|x| (x * 1e4).round() / 1e4).collect();
+            self.changes.push_back((t, Change::AudioClip { embedding }));
         }
     }
 
@@ -214,7 +271,8 @@ impl Recorder {
             Change::Button { pressed, .. } => *pressed,
             Change::Axis { value, .. } => *value != 0.0,
             Change::Rumble { strong, weak } => *strong != 0.0 || *weak != 0.0,
-            Change::Mark => false,
+            Change::Audio { .. } => true,
+            Change::Mark | Change::NoAudio | Change::AudioHit { .. } | Change::AudioClip { .. } => false,
         });
         let changes: Vec<(f64, Change)> = base
             .cloned()
@@ -244,6 +302,9 @@ pub struct Player {
     next: usize,
     start: f64,
     pub rumble: RumbleLevels,
+    pub audio: Option<AudioLevels>,
+    /// Audio hits and clips due, until `take_audio_events`.
+    audio_events: Vec<ModeEvent>,
 }
 
 impl Player {
@@ -259,7 +320,14 @@ impl Player {
             next: 0,
             start: time,
             rumble: RumbleLevels::default(),
+            audio: None,
+            audio_events: Vec::new(),
         }
+    }
+
+    /// Audio hits and clips replayed since the last call.
+    pub fn take_audio_events(&mut self) -> Vec<ModeEvent> {
+        std::mem::take(&mut self.audio_events)
     }
 
     pub fn position(&self, time: f64) -> f64 {
@@ -292,6 +360,14 @@ impl Player {
                     }
                 }
                 Change::Mark => {}
+                Change::Audio { level, low, mid, high, intensity } => {
+                    self.audio = Some(AudioLevels { level: *level, low: *low, mid: *mid, high: *high, intensity: *intensity })
+                }
+                Change::NoAudio => self.audio = None,
+                Change::AudioHit { strength, band } => {
+                    self.audio_events.push(ModeEvent::AudioHit(AudioHit { strength: *strength, band: *band }))
+                }
+                Change::AudioClip { embedding } => self.audio_events.push(ModeEvent::AudioClip(Arc::from(embedding.as_slice()))),
             }
             self.next += 1;
         }
@@ -333,13 +409,13 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("gameviber-session-{}", std::process::id()));
         let mut pad = PadState::default();
         let mut rec = Recorder::new(10.0, "Simple".into(), Some("Game".into()));
-        rec.tick(10.0, RumbleLevels::default(), &[], &pad);
+        rec.tick(10.0, RumbleLevels::default(), &[], &pad, AudioTick::default());
         let press = pad.button("A", true, 10.5).unwrap();
         pad.set_axis("LX", 0.5, 10.5);
-        rec.tick(10.5, RumbleLevels { strong: 0.8, weak: 0.2 }, &[press], &pad);
-        rec.tick(10.52, RumbleLevels { strong: 0.8, weak: 0.2 }, &[], &pad);
+        rec.tick(10.5, RumbleLevels { strong: 0.8, weak: 0.2 }, &[press], &pad, AudioTick::default());
+        rec.tick(10.52, RumbleLevels { strong: 0.8, weak: 0.2 }, &[], &pad, AudioTick::default());
         let release = pad.button("A", false, 11.0).unwrap();
-        rec.tick(11.0, RumbleLevels::default(), &[release], &pad);
+        rec.tick(11.0, RumbleLevels::default(), &[release], &pad, AudioTick::default());
         assert_eq!(rec.changes.len(), 5);
         let path = rec.session(12.0, None, None).save_in(&dir).unwrap();
 
@@ -364,18 +440,48 @@ mod tests {
     }
 
     #[test]
+    fn audio_is_recorded_and_replayed() {
+        let pad = PadState::default();
+        let mut rec = Recorder::new(0.0, "T".into(), None);
+        let loud = AudioLevels { level: 0.8, low: 0.5, mid: 0.2, high: 0.1, intensity: 0.3 };
+        let hit = AudioHit { strength: 0.7, band: Band::Low };
+        let clip: Embedding = Arc::from(vec![0.6f32, 0.8].as_slice());
+        let none = RumbleLevels::default();
+        rec.tick(0.5, none, &[], &pad, AudioTick { levels: Some(loud), hits: &[hit], clips: &[clip] });
+        // Too small a change to be recorded.
+        rec.tick(0.6, none, &[], &pad, AudioTick { levels: Some(AudioLevels { level: 0.81, ..loud }), hits: &[], clips: &[] });
+        rec.tick(1.0, none, &[], &pad, AudioTick::default());
+        assert_eq!(rec.changes.len(), 4, "{:?}", rec.changes);
+
+        let session = rec.session(1.5, None, None);
+        let text = serde_json::to_string(&session.changes).unwrap();
+        assert!(text.contains(r#"{"audio_hit":{"strength":0.7,"band":"low"}}"#), "{text}");
+        assert!(text.contains(r#""no_audio""#), "{text}");
+
+        let mut player = Player::new(session, Path::new(""), 10.0);
+        let mut pad = PadState::default();
+        player.advance(10.5, &mut pad);
+        assert_eq!(player.audio, Some(loud));
+        let events = player.take_audio_events();
+        assert!(matches!(events[..], [ModeEvent::AudioHit(h), ModeEvent::AudioClip(ref c)] if h == hit && c[..] == [0.6, 0.8]));
+        assert!(player.take_audio_events().is_empty());
+        player.advance(11.0, &mut pad);
+        assert_eq!(player.audio, None);
+    }
+
+    #[test]
     fn rolling_window_keeps_the_starting_state() {
         let mut pad = PadState::default();
         let mut rec = Recorder::rolling(0.0, 1.0);
         let press = pad.button("LT", true, 0.5).unwrap();
-        rec.tick(0.5, RumbleLevels { strong: 0.4, weak: 0.0 }, &[press], &pad);
+        rec.tick(0.5, RumbleLevels { strong: 0.4, weak: 0.0 }, &[press], &pad, AudioTick::default());
         let press = pad.button("A", true, 0.6).unwrap();
-        rec.tick(0.6, RumbleLevels { strong: 0.4, weak: 0.0 }, &[press], &pad);
+        rec.tick(0.6, RumbleLevels { strong: 0.4, weak: 0.0 }, &[press], &pad, AudioTick::default());
         let release = pad.button("A", false, 0.7).unwrap();
-        rec.tick(0.7, RumbleLevels { strong: 0.4, weak: 0.0 }, &[release], &pad);
+        rec.tick(0.7, RumbleLevels { strong: 0.4, weak: 0.0 }, &[release], &pad, AudioTick::default());
         rec.mark(0.8);
         rec.mark(2.0);
-        rec.tick(2.0, RumbleLevels { strong: 0.9, weak: 0.0 }, &[], &pad);
+        rec.tick(2.0, RumbleLevels { strong: 0.9, weak: 0.0 }, &[], &pad, AudioTick::default());
 
         let session = rec.session(2.5, Some("Surge"), Some("Game"));
         assert_eq!(session.header.duration, 1.0);

@@ -1,8 +1,8 @@
 # GameViber
 
 Linux equivalent of the Intiface Game Haptics Router: intercepts the rumble
-games send to the gamepad, transforms it through a **Lua-scriptable mode** and
-drives the toys connected to Intiface Central.
+games send to the gamepad, listens to the game's sound, transforms both through
+a **Lua-scriptable mode** and drives the toys connected to Intiface Central.
 
 ## Usage
 
@@ -35,6 +35,9 @@ again from **Setup** at the bottom of the left bar. Then the GUI provides:
 - **Gamepad**: gamepad and rumble capture status, the buttons and sticks
   received right now, the capture method (standard proxy or kernel probe, which
   needs root) with their pros and cons, gamepad hiding, troubleshooting;
+- **Sound**: which sound modes hear (automatic: the game showing the overlay,
+  else everything; one application; off), what is heard right now (loudness,
+  bass / mids / treble, hits), and the **scene model** to download (see below);
 - **Keybindings**: the panic stop and mark-a-moment gamepad combos;
 - **Creator**: mode editing with hot reload (Ctrl+S), graphs of the rumble,
   outputs and `plot()` values, a simulator (fake rumble and buttons), recorded
@@ -76,10 +79,23 @@ place (the previous version is kept as `.luau.bak`) or creates a tuned copy of
 a built-in one.
 Template: [`gameviber/prompts/fix-feel.md`](gameviber/prompts/fix-feel.md).
 
+### The game's sound
+
+The rumble and the buttons do not say whether you are fighting, exploring or
+watching a cutscene; the music usually does. GameViber listens to the game's
+sound through PipeWire (`pw-record`, no root) and gives modes its loudness per
+band, the hits it hears, and **scenes** each mode describes in words ("intense
+battle music", "calm exploration music"). Scenes are recognized by a sound
+model (LAION's CLAP, quantized, about 200 MB) downloaded from the **Sound**
+page into `~/.local/share/gameviber/models/`; it runs on the CPU (about 0.1 s
+every 2 s, on 2 threads) and only while the active mode declares scenes.
+Nothing leaves the computer and the sound itself is never saved. Scenes come a
+few seconds late: modes use them for the mood of a phase, not to time effects.
+
 ### In-game overlay
 
 Like MangoHud, GameViber can draw a small panel over the game: the active mode
-and preset, how strong the toys run (with the global cap), the mode's gauges
+and preset, the scene recognized in the game's sound, how strong the toys run (with the global cap), the mode's gauges
 and what it detects ("Parry!"), and warnings (toy lost, Intiface disconnected,
 mode error, panic stop). Install it from the **Overlay** page, then enable it
 per game with a Steam launch option:
@@ -175,7 +191,9 @@ sudo dnf install glibc-devel.i686     # Debian/Ubuntu: sudo apt install gcc-mult
 cargo build-overlay32
 ```
 
-Luau is built from source (a C++ compiler is required).
+Luau is built from source (a C++ compiler is required). ONNX Runtime (for the
+scene model) is downloaded prebuilt by the `ort` crate at build time and linked
+statically.
 
 ## Known limitations
 
@@ -183,5 +201,7 @@ Luau is built from source (a C++ compiler is required).
   hidraw by SDL (DualShock/DualSense/Switch) need `SDL_JOYSTICK_HIDAPI=0`.
 - ebpf source: effects uploaded before GameViber started are invisible until
   the game's next upload.
+- Sound: needs PipeWire (`pw-record`, `pw-dump`). In automatic mode without
+  the overlay, music or voice chat playing next to the game is heard too.
 
 `tools/sdl_rumble.py` simulates an SDL3 game, `tools/fake_gamepad.py` a physical gamepad. The original Python prototype is in `prototype/`.

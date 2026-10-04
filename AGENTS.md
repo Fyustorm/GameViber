@@ -12,23 +12,25 @@ another language.
 ## What the project is
 
 GameViber is the Linux equivalent of the Intiface Game Haptics Router. It intercepts
-the rumble games send to a gamepad, transforms it through a Lua (Luau) **mode**, and
-drives toys connected to Intiface Central (Buttplug protocol). Linux only.
+the rumble games send to a gamepad, listens to the game's sound, transforms both through
+a Lua (Luau) **mode**, and drives toys connected to Intiface Central (Buttplug protocol).
+Linux only.
 
-Pipeline: **source** (interception) → **mode** (Luau script) → **safety layer** →
-**Intiface output**.
+Pipeline: **source** (interception) and **audio** (the game's sound) → **mode** (Luau
+script) → **safety layer** → **Intiface output**.
 
 ## Layout
 
 | Path | Contents |
 |---|---|
 | `gameviber/src/source/` | interception sources: `proxy` (uinput virtual gamepad) and `ebpf` |
+| `gameviber/src/audio/` | the game's sound: `capture` (PipeWire `pw-record` / `pw-dump`), `features` (levels, hits), `clap` (scene model: mel spectrogram, ONNX encoders, download) |
 | `gameviber/src/rumble.rs` | evdev force-feedback semantics (ff-memless) → strong/weak levels |
 | `gameviber/src/gamepad.rs` | button/axis normalization (Xbox layout), panic combo |
-| `gameviber/src/mode/` | Luau runtime: `library.rs` (script API), `outputs.rs` (channels, pulses, patterns), `rumble_events.rs`, `prompt.rs` (AI requests: a per-game mode, a fix for a mode that feels wrong), `report.rs` (a session replayed offline into a mode, for the fix request), `tests.rs` |
-| `gameviber/src/engine.rs` | engine thread: sources, mode, safety layer, routing, output |
-| `gameviber/src/session.rs` | recorded play sessions (rumble, buttons, axes) and their replay |
-| `gameviber/src/gui/` | egui GUI: setup guide (`onboarding`), pages (`play`, `toys`, `gamepad`, `keybindings`, `overlay`, `creator`), AI dialogs (`generator`: a mode for a game, `feedback`: a fix for the active mode), Luau highlighting (`luau`), `theme` |
+| `gameviber/src/mode/` | Luau runtime: `library.rs` (script API), `outputs.rs` (channels, pulses, patterns), `rumble_events.rs`, `audio_events.rs` (audio scenes), `prompt.rs` (AI requests: a per-game mode, a fix for a mode that feels wrong), `report.rs` (a session replayed offline into a mode, for the fix request), `tests.rs` |
+| `gameviber/src/engine.rs` | engine thread: sources, audio, mode, safety layer, routing, output |
+| `gameviber/src/session.rs` | recorded play sessions (rumble, buttons, axes, sound levels, hits and scene embeddings) and their replay |
+| `gameviber/src/gui/` | egui GUI: setup guide (`onboarding`), pages (`play`, `toys`, `gamepad`, `audio`, `keybindings`, `overlay`, `creator`), AI dialogs (`generator`: a mode for a game, `feedback`: a fix for the active mode), Luau highlighting (`luau`), `theme` |
 | `gameviber/src/helper/` | privileged helper (`gameviber helper`, started through pkexec) |
 | `gameviber/src/config.rs` | config files, built-in mode registry (`BUILTIN_MODES`) |
 | `gameviber/modes/` | built-in modes, embedded in the binary |
@@ -87,3 +89,12 @@ Run `cargo test` after any change to the runtime or to a mode.
 - Output to each toy is limited to 20 updates/s: waveforms faster than ~5 Hz blur.
 - `input.idle` is `min(rumble_idle, input_idle)`, and `rumble_idle` counts from mode
   activation when no vibration has happened yet.
+- Audio scenes come 2 to 15 s late, can be wrong, and need the downloaded model: modes
+  use them for the mood of a phase, never to time effects, and must work without them.
+  Phases sharing their music cannot be told apart (Metaphor: dungeon exploration and
+  fights); story versus action is reliable. The prompts tell the AI to declare only
+  scenes the music separates and to never rely on them alone: a scene sets the tension
+  (a faded low baseline in tense phases), the rumble and buttons make the peaks.
+  Two or three contrasted scenes described as sound beat many close ones.
+- The CLAP mel spectrogram (`audio/clap.rs`) must match `transformers`'
+  `ClapFeatureExtractor`; its test holds reference values computed with it.
