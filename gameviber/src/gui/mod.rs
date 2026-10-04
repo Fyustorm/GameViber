@@ -1,28 +1,32 @@
 //! egui front end. A first-launch setup guides players through Intiface
 //! Central, their toys, the gamepad and a first mode; afterwards a status bar
-//! (with the panic stop) sits above the pages: Play (mode tiles, then the
-//! chosen mode's page with its settings), Toys (with Intiface Central),
-//! Gamepad (capture and troubleshooting), Sound (the game's sound and the
-//! scene model), Game (its image, zones, scene examples, values from other programs),
-//! Keybindings (gamepad combos),
-//! Overlay (in-game overlay) and Creator (mode editor, graphs, simulator,
-//! sessions, logs). Dialogs help players get a mode made for their game by an
-//! AI assistant, and get one fixed when it does not feel right.
+//! (the game being played, the panic stop) sits above the pages: Games (the
+//! library, then each game by breadcrumb: its modes, each with a page of its
+//! own, its signals — scenes, captures, zones, sound — and its sessions),
+//! Toys (with Intiface Central), Setup (gamepad, combos, overlay, default
+//! sound, other programs: what does not depend on the game) and Creator (mode
+//! editor, graphs, simulator, sessions, logs). Dialogs help players get a
+//! mode made for their game by an AI assistant, and get one fixed when it
+//! does not feel right.
 
 mod audio;
 mod creator;
 mod feedback;
 mod gamepad;
+mod games;
 mod generator;
 mod keybindings;
 mod luau;
 mod onboarding;
 mod overlay;
 mod settings;
+mod setup;
 mod play;
 mod screen;
+mod signals;
 mod theme;
 mod toys;
+mod tour;
 
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -41,15 +45,33 @@ const RECENT_RUMBLE_SECS: f64 = 5.0;
 
 #[derive(PartialEq, Clone, Copy)]
 enum Page {
-    Play,
+    Games,
     Toys,
-    Gamepad,
-    Audio,
-    Screen,
-    Keybindings,
-    Overlay,
+    Setup,
     Creator,
     Settings,
+}
+
+/// Where the Games page is.
+#[derive(PartialEq, Clone, Debug)]
+enum Route {
+    Library,
+    /// The built-in modes, to play without a game.
+    BuiltIn,
+    /// The active mode's page, without a game.
+    FreeMode,
+    Game { id: String, view: GameView },
+}
+
+#[derive(PartialEq, Clone, Copy, Debug)]
+enum GameView {
+    Modes,
+    /// The active mode's page.
+    Mode,
+    Signals,
+    /// Signals › captures and zones.
+    Screen,
+    Sessions,
 }
 
 pub struct App {
@@ -58,6 +80,8 @@ pub struct App {
     commands: UnboundedSender<Command>,
     engine: Option<JoinHandle<()>>,
     page: Page,
+    route: Route,
+    setup_tab: setup::Tab,
     /// Current step of the first-launch setup, when it is shown.
     onboarding: Option<usize>,
     /// The setup was considered for this session (shown at most once automatically).
@@ -70,8 +94,12 @@ pub struct App {
     generator: generator::State,
     feedback: feedback::State,
     screen: screen::State,
+    games: games::State,
+    signals: signals::State,
     /// The engine was told the Screen page is open.
     watching_screen: bool,
+    /// Development: screenshots of every page (`GAMEVIBER_SCREENSHOTS`).
+    tour: Option<tour::Tour>,
 }
 
 impl App {
@@ -88,7 +116,9 @@ impl App {
             logs,
             commands,
             engine: Some(engine),
-            page: Page::Play,
+            page: Page::Games,
+            route: Route::Library,
+            setup_tab: setup::Tab::default(),
             onboarding: None,
             onboarding_checked: false,
             play: play::State::default(),
@@ -99,7 +129,10 @@ impl App {
             generator: generator::State::default(),
             feedback: feedback::State::default(),
             screen: screen::State::default(),
+            games: games::State::default(),
+            signals: signals::State::default(),
             watching_screen: false,
+            tour: tour::Tour::from_env(),
         }
     }
 
@@ -122,6 +155,10 @@ impl App {
                 let id = path.to_string_lossy().into_owned();
                 self.send(Command::RefreshModes);
                 self.send(Command::SelectMode(id.clone()));
+                // A mode made from a game's page belongs to that game.
+                if let Route::Game { id: game, .. } = &self.route {
+                    self.send(Command::AddGameMode { game: game.clone(), mode: id.clone() });
+                }
                 self.page = Page::Creator;
                 Some(ModeEntry::from_id(&id))
             }
@@ -158,7 +195,8 @@ impl eframe::App for App {
                 self.onboarding = Some(0);
             }
         }
-        if let Some(step) = self.onboarding {
+        self.tour(ui.ctx(), &s);
+        if let Some(step) = self.onboarding.filter(|_| self.tour.is_none()) {
             self.onboarding_ui(ui, &s, step);
             self.generator_ui(ui.ctx(), &s);
             return;
@@ -166,29 +204,27 @@ impl eframe::App for App {
 
         self.status_bar(ui, &s);
         self.rail(ui);
+        let mode_page = self.page == Page::Games && matches!(self.route, Route::FreeMode | Route::Game { view: GameView::Mode, .. });
         // The fix page needs the room.
-        let fixing = self.page == Page::Play && self.feedback.open;
-        if matches!(self.page, Page::Play | Page::Toys) && !fixing {
+        let fixing = mode_page && self.feedback.open;
+        if (mode_page || self.page == Page::Toys) && !fixing {
             live_strip(ui, &s);
         }
-        if self.page == Page::Play && !fixing {
+        if mode_page && !fixing {
             gamepad_strip(ui, &s);
         }
         match self.page {
-            Page::Play => self.play_ui(ui, &s),
+            Page::Games => self.games_ui(ui, &s),
             Page::Toys => self.toys_ui(ui, &s),
-            Page::Gamepad => self.gamepad_ui(ui, &s),
-            Page::Audio => self.audio_ui(ui, &s),
-            Page::Screen => self.screen_ui(ui, &s),
-            Page::Keybindings => self.keybindings_ui(ui, &s),
-            Page::Overlay => self.overlay_ui(ui, &s),
+            Page::Setup => self.setup_ui(ui, &s),
             Page::Creator => self.creator_ui(ui, &s),
             Page::Settings => self.settings_ui(ui, &s),
         }
         self.generator_ui(ui.ctx(), &s);
         self.update_simulated_rumble();
-        // The overlay copies the game's image only while it is looked at.
-        let watching = self.page == Page::Screen;
+        // The overlay copies the game's image while it is looked at, even when modes do not see it.
+        let watching = self.page == Page::Games
+            && matches!(self.route, Route::Game { view: GameView::Screen | GameView::Signals, .. });
         if watching != self.watching_screen {
             self.watching_screen = watching;
             self.send(Command::WatchScreen(watching));
@@ -211,13 +247,16 @@ impl App {
             ui.horizontal(|ui| {
                 ui.label(RichText::new("〰 GameViber").size(16.0).strong().color(ACCENT));
                 ui.add_space(8.0);
+                self.game_picker(ui, s);
                 let (pad_color, pad_text) = gamepad_status(s);
                 if status_chip(ui, pad_color, "🎮", &pad_text).clicked() {
-                    self.page = Page::Gamepad;
+                    self.page = Page::Setup;
+                    self.setup_tab = setup::Tab::Gamepad;
                 }
                 let (rumble_color, rumble_text) = capture_status(s);
                 if status_chip(ui, rumble_color, "📳", &rumble_text).clicked() {
-                    self.page = Page::Gamepad;
+                    self.page = Page::Setup;
+                    self.setup_tab = setup::Tab::Gamepad;
                 }
                 let (toy_color, toy_text) = intiface_status(s);
                 if status_chip(ui, toy_color, "🔌", &toy_text).clicked() {
@@ -229,7 +268,7 @@ impl App {
                     (None, None) => None,
                 };
                 if let Some((color, icon, text)) = session {
-                    if status_chip(ui, color, icon, &text).on_hover_text("Creator → Sessions").clicked() {
+                    if status_chip(ui, color, icon, &text).on_hover_text("Creator › Sessions").clicked() {
                         self.page = Page::Creator;
                         self.creator.show_sessions();
                     }
@@ -271,19 +310,19 @@ impl App {
         egui::Panel::left("rail").frame(frame).exact_size(84.0).resizable(false).show(ui, |ui| {
             ui.vertical_centered(|ui| {
                 for (page, icon, label) in [
-                    (Page::Play, "▶", "Play"),
+                    (Page::Games, "🎮", "Games"),
                     (Page::Toys, "📳", "Toys"),
-                    (Page::Gamepad, "🎮", "Gamepad"),
-                    (Page::Audio, "🔊", "Sound"),
-                    (Page::Screen, "🎯", "Game"),
-                    (Page::Keybindings, "⌨", "Keybindings"),
-                    (Page::Overlay, "🖵", "Overlay"),
+                    (Page::Setup, "🛠", "Setup"),
                     (Page::Creator, "🔧", "Creator"),
                 ] {
                     if nav_item(ui, icon, label, self.page == page).clicked() {
-                        if page == Page::Overlay && self.page != page {
-                            // Check the installed files again.
+                        if page == Page::Setup && self.page != page {
+                            // Check the installed overlay files again.
                             self.overlay.forget_install_state();
+                        }
+                        // The Games button always leads back to the library.
+                        if page == Page::Games && self.page == Page::Games {
+                            self.route = Route::Library;
                         }
                         self.page = page;
                     }
@@ -295,6 +334,22 @@ impl App {
                 });
             });
         });
+    }
+
+    /// The game being played, to pick another.
+    fn game_picker(&mut self, ui: &mut egui::Ui, s: &Shared) {
+        let current = s.game.as_ref().map_or("No game".to_owned(), |g| g.name.clone());
+        egui::ComboBox::from_id_salt("game-picker").selected_text(RichText::new(format!("🎮 {current}")).strong()).width(200.0).show_ui(ui, |ui| {
+            for game in &s.games {
+                if ui.selectable_label(s.game.as_ref().is_some_and(|g| g.id == game.id), &game.name).clicked() {
+                    self.send(Command::SelectGame(Some(game.id.clone())));
+                }
+            }
+            if ui.selectable_label(s.game.is_none(), "No game").clicked() {
+                self.send(Command::SelectGame(None));
+            }
+        });
+        ui.add_space(4.0);
     }
 
     /// Sends the simulated rumble whenever it changes (sliders or an expiring hit).

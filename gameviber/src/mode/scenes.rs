@@ -2,7 +2,10 @@
 //! the game's sound against their sound descriptions, its image against
 //! their screen descriptions and against example images from the game's
 //! profile — fused, averaged over a few seconds, and settled on with enough
-//! hysteresis that a few ambiguous seconds do not flip the scene.
+//! hysteresis that a few ambiguous seconds do not flip the scene. A scene of
+//! the game can also be tied to a zone (its battle menu): the zone shown is a
+//! sure sign of it, ahead of the guesses. Each scene can be held a while after
+//! its last sign, for signs that come and go.
 
 use std::collections::VecDeque;
 
@@ -15,6 +18,8 @@ pub const ENTER: f64 = 0.5;
 pub const MARGIN: f64 = 0.1;
 /// Sharpness of the comparison of an image with example images.
 const EXAMPLE_SCALE: f64 = 50.0;
+/// A zone must be shown this long to be a sign of its scene (not a frame of a transition).
+const ZONE_CONFIRM: f64 = 0.5;
 
 /// A scene a mode declares: a name and how it sounds and looks.
 #[derive(Debug, Clone, PartialEq)]
@@ -22,6 +27,10 @@ pub struct SceneDecl {
     pub name: String,
     pub sound: Option<String>,
     pub screen: Option<String>,
+    /// A zone of the game whose showing is a sure sign of the scene.
+    pub zone: Option<String>,
+    /// Seconds the scene is kept after its last sign.
+    pub hold: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -78,12 +87,33 @@ pub struct SceneTracker {
     history: VecDeque<(f64, Vec<f64>)>,
     average: Vec<f64>,
     current: Option<usize>,
+    /// Per scene: its zone, how long it is held, since when its zone is shown,
+    /// and the last time something said it (its zone, or the best average).
+    zones: Vec<Option<String>>,
+    holds: Vec<f64>,
+    shown_since: Vec<Option<f64>>,
+    last_sign: Vec<f64>,
+    /// Zones are being read (the image is there): scenes tied to one are only
+    /// entered through it.
+    zones_read: bool,
 }
 
 impl SceneTracker {
-    pub fn new(names: Vec<String>, window: f64) -> Self {
-        let average = vec![0.0; names.len()];
-        Self { names, senses: Default::default(), window, history: VecDeque::new(), average, current: None }
+    pub fn new(scenes: &[SceneDecl], window: f64) -> Self {
+        let n = scenes.len();
+        Self {
+            names: scenes.iter().map(|s| s.name.clone()).collect(),
+            senses: Default::default(),
+            window,
+            history: VecDeque::new(),
+            average: vec![0.0; n],
+            current: None,
+            zones: scenes.iter().map(|s| s.zone.clone()).collect(),
+            holds: scenes.iter().map(|s| s.hold.max(0.0)).collect(),
+            shown_since: vec![None; n],
+            last_sign: vec![f64::NEG_INFINITY; n],
+            zones_read: false,
+        }
     }
 
     fn index(sense: Sense) -> usize {
@@ -107,6 +137,7 @@ impl SceneTracker {
     }
 
     /// Some sense can recognize scenes.
+    #[cfg(test)]
     pub fn ready(&self) -> bool {
         Sense::ALL.iter().any(|s| self.has(*s))
     }
@@ -140,6 +171,34 @@ impl SceneTracker {
         self.settle(time, fused)
     }
 
+    /// A zone's new state: shown (a bar on screen counts) or not.
+    pub fn zone(&mut self, time: f64, name: &str, shown: bool) -> Option<SceneChange> {
+        self.zones_read = true;
+        for i in 0..self.names.len() {
+            if self.zones[i].as_deref() == Some(name) {
+                if !shown && self.shown_since[i].is_some_and(|t| time - t >= ZONE_CONFIRM) {
+                    // The hold counts from when it went.
+                    self.last_sign[i] = time;
+                }
+                self.shown_since[i] = if shown { self.shown_since[i].or(Some(time)) } else { None };
+            }
+        }
+        self.decide(time)
+    }
+
+    /// Time passes: a zone shown long enough enters its scene, a hold runs out.
+    pub fn tick(&mut self, time: f64) -> Option<SceneChange> {
+        if self.zones.iter().all(Option::is_none) && self.holds.iter().all(|h| *h <= 0.0) {
+            return None;
+        }
+        self.decide(time)
+    }
+
+    /// A scene is tied to a zone, and zones are being read.
+    fn by_zone_only(&self, i: usize) -> bool {
+        self.zones_read && self.zones[i].is_some()
+    }
+
     fn settle(&mut self, time: f64, probabilities: Vec<f64>) -> Option<SceneChange> {
         self.history.push_back((time, probabilities));
         while self.history.front().is_some_and(|(t, _)| time - t >= self.window) {
@@ -147,21 +206,45 @@ impl SceneTracker {
         }
         let n = self.history.len() as f64;
         self.average = (0..self.names.len()).map(|i| self.history.iter().map(|(_, p)| p[i]).sum::<f64>() / n).collect();
+        self.decide(time)
+    }
 
-        let best = (0..self.names.len()).max_by(|&a, &b| self.average[a].total_cmp(&self.average[b]))?;
-        let switch = match self.current {
-            Some(current) if current == best => false,
-            Some(current) => self.average[best] >= ENTER && self.average[best] - self.average[current] >= MARGIN,
-            None => self.average[best] >= ENTER,
+    fn decide(&mut self, time: f64) -> Option<SceneChange> {
+        // Zones shown long enough are sure signs.
+        let mut by_zone = None;
+        for i in 0..self.names.len() {
+            if self.shown_since[i].is_some_and(|t| time - t >= ZONE_CONFIRM) {
+                self.last_sign[i] = time;
+                if by_zone.is_none() || self.current == Some(i) {
+                    by_zone = Some(i);
+                }
+            }
+        }
+        // Then the best guess among the scenes not tied to a zone being read.
+        let best = (0..self.names.len())
+            .filter(|&i| !self.by_zone_only(i))
+            .max_by(|&a, &b| self.average[a].total_cmp(&self.average[b]))
+            .filter(|&i| self.average[i] > 0.0);
+        if let Some(best) = best.filter(|&b| by_zone.is_none() && self.average[b] >= ENTER) {
+            self.last_sign[best] = time;
+        }
+        let held = self.current.is_some_and(|c| time - self.last_sign[c] < self.holds[c]);
+        let next = match (by_zone, self.current) {
+            (Some(z), _) => Some(z),
+            (None, Some(_)) if held => return None,
+            // The current scene's zone is gone (and its hold over): the best guess, or no scene.
+            (None, Some(c)) if self.by_zone_only(c) => best.filter(|&b| self.average[b] >= ENTER),
+            (None, Some(c)) => best.filter(|&b| b != c && self.average[b] >= ENTER && self.average[b] - self.average[c] >= MARGIN).or(Some(c)),
+            (None, None) => best.filter(|&b| self.average[b] >= ENTER),
         };
-        if !switch {
+        if next == self.current {
             return None;
         }
-        let previous = self.current.replace(best);
+        let previous = std::mem::replace(&mut self.current, next);
         Some(SceneChange {
-            scene: Some(self.names[best].clone()),
+            scene: next.map(|i| self.names[i].clone()),
             previous: previous.map(|i| self.names[i].clone()),
-            confidence: self.average[best],
+            confidence: self.confidence(),
         })
     }
 
@@ -169,6 +252,11 @@ impl SceneTracker {
     /// left, the scene is forgotten: returns the change when one was current.
     pub fn forget(&mut self, sense: Sense) -> Option<SceneChange> {
         self.senses[Self::index(sense)].latest = None;
+        if sense == Sense::Screen {
+            // The zones are read on the image.
+            self.zones_read = false;
+            self.shown_since.iter_mut().for_each(|s| *s = None);
+        }
         if self.senses.iter().any(|r| r.latest.is_some()) {
             return None;
         }
@@ -178,6 +266,9 @@ impl SceneTracker {
     pub fn reset(&mut self) -> Option<SceneChange> {
         self.history.clear();
         self.senses.iter_mut().for_each(|r| r.latest = None);
+        self.zones_read = false;
+        self.shown_since.iter_mut().for_each(|s| *s = None);
+        self.last_sign.iter_mut().for_each(|t| *t = f64::NEG_INFINITY);
         self.average.iter_mut().for_each(|p| *p = 0.0);
         let previous = self.current.take()?;
         Some(SceneChange { scene: None, previous: Some(self.names[previous].clone()), confidence: 0.0 })
@@ -187,13 +278,15 @@ impl SceneTracker {
         self.current.map(|i| self.names[i].as_str())
     }
 
-    /// Average probability of each scene, in the order of the names given.
+    /// Probability of each scene, in the order of the names given: 1 for a
+    /// scene whose zone is shown, else its average.
     pub fn averages(&self) -> impl Iterator<Item = (&str, f64)> {
-        self.names.iter().map(String::as_str).zip(self.average.iter().copied())
+        let shown = self.shown_since.iter().map(Option::is_some);
+        self.names.iter().map(String::as_str).zip(self.average.iter().zip(shown).map(|(p, shown)| if shown { 1.0 } else { *p }))
     }
 
     pub fn confidence(&self) -> f64 {
-        self.current.map_or(0.0, |i| self.average[i])
+        self.current.map_or(0.0, |i| if self.shown_since[i].is_some() { 1.0 } else { self.average[i] })
     }
 }
 
@@ -212,13 +305,17 @@ mod tests {
         vec![a / norm, b / norm, 0.0]
     }
 
-    fn names() -> Vec<String> {
-        vec!["battle".into(), "calm".into()]
+    fn decls(names: &[&str]) -> Vec<SceneDecl> {
+        names.iter().map(|n| SceneDecl { name: (*n).to_owned(), sound: None, screen: None, zone: None, hold: 0.0 }).collect()
+    }
+
+    fn names() -> Vec<SceneDecl> {
+        decls(&["battle", "calm"])
     }
 
     #[test]
     fn scenes_settle_and_change_with_hysteresis() {
-        let mut tracker = SceneTracker::new(names(), 10.0);
+        let mut tracker = SceneTracker::new(&names(), 10.0);
         assert_eq!(tracker.update(0.0, Sense::Sound, &between(0.0)), None, "no references yet");
         tracker.set_references(Sense::Sound, vec![("battle".into(), unit(0)), ("calm".into(), unit(1))]);
         let change = tracker.update(2.0, Sense::Sound, &between(0.0)).unwrap();
@@ -253,8 +350,7 @@ mod tests {
     /// The sound cannot tell two scenes apart; the image can.
     #[test]
     fn senses_are_fused() {
-        let names = vec!["battle".to_owned(), "dungeon".to_owned(), "story".to_owned()];
-        let mut tracker = SceneTracker::new(names, 4.0);
+        let mut tracker = SceneTracker::new(&decls(&["battle", "dungeon", "story"]), 4.0);
         // One sound description for both action scenes (the same music), one for story.
         tracker.set_references(Sense::Sound, vec![("dungeon".into(), unit(0)), ("story".into(), unit(1))]);
         tracker.set_references(Sense::Examples, vec![("battle".into(), unit(2)), ("dungeon".into(), unit(0))]);
@@ -275,5 +371,38 @@ mod tests {
         // The image goes away: the sound alone remains, the scene is kept.
         assert_eq!(tracker.forget(Sense::Examples), None);
         assert_eq!(tracker.current(), Some("battle"));
+    }
+
+    /// The battle menu is a sure sign of battles, held a few seconds when it
+    /// hides (an attack); the sound settles the rest.
+    #[test]
+    fn zones_are_sure_signs_held_a_while() {
+        let mut scenes = decls(&["battle", "explore"]);
+        scenes[0].zone = Some("battle_menu".into());
+        scenes[0].hold = 4.0;
+        let mut tracker = SceneTracker::new(&scenes, 4.0);
+        // Exploring music, no menu: explore.
+        tracker.set_references(Sense::Sound, vec![("battle".into(), unit(0)), ("explore".into(), unit(1))]);
+        assert_eq!(tracker.zone(0.0, "battle_menu", false), None);
+        assert_eq!(tracker.update(0.0, Sense::Sound, &between(1.0)).unwrap().scene.as_deref(), Some("explore"));
+        // The menu shows, with the same music: battle, once it stayed half a second.
+        assert_eq!(tracker.zone(1.0, "battle_menu", true), None);
+        let change = tracker.tick(1.6).unwrap();
+        assert_eq!((change.scene.as_deref(), change.confidence), (Some("battle"), 1.0));
+        // Battle music alone never enters battle while zones are read.
+        tracker.zone(2.0, "battle_menu", false);
+        for t in 0..3 {
+            tracker.update(2.0 + t as f64, Sense::Sound, &between(0.0));
+        }
+        // It hides during an attack: battle is held...
+        assert_eq!(tracker.tick(5.0), None);
+        assert_eq!(tracker.current(), Some("battle"));
+        // ...then left for the best guess, here none (battle music, but battle needs its menu).
+        let change = tracker.tick(6.5).unwrap();
+        assert_eq!((change.scene, change.previous.as_deref()), (None, Some("battle")));
+        // Without the image, the sound alone can say battle again.
+        tracker.forget(Sense::Screen);
+        let change = tracker.update(7.0, Sense::Sound, &between(0.0)).unwrap();
+        assert_eq!(change.scene.as_deref(), Some("battle"));
     }
 }

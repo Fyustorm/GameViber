@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 
 use super::Frame;
 use crate::mode::ZoneValue;
-use crate::profile::{Direction, Zone, ZoneKind};
+use crate::game::{Direction, Zone, ZoneKind};
 
 /// References are compared on a grayscale grid of this size.
 pub const REF_WIDTH: usize = 32;

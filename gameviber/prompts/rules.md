@@ -28,9 +28,11 @@
 - **Every heuristic is a parameter** with its unit in the label (`"Parry window (s)"`,
   `"Hit = vibration above"`). The rumble does not say who took a hit: "hit taken" or
   "successful parry" are guesses and must stay tunable.
-- Scenes (§6.3): 2 or 3 contrasted scenes, each described as what is only heard
-  (`sound`) and what is only seen (`screen`) there, used for the mood only (they come
-  seconds late), never to time an effect. The mode must work when `input.scene` is nil.
+- Scenes (§6.3): when the request lists the game's scenes, use those names and do not
+  declare `scenes`; otherwise declare 2 or 3 contrasted ones, each described as what is
+  only heard (`sound`) and what is only seen (`screen`) there. Use them for the mood only
+  (they come seconds late), never to time an effect. The mode must work when
+  `input.scene` is nil.
   Filter `on_impact` with a strength parameter. Prefer these high-level inputs; the raw
   ones (§6.4) only when they say something the high-level ones do not.
 - Zones and values from other programs (§6.5, in advanced requests) exist only once the player set them up:

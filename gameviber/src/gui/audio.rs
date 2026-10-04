@@ -1,13 +1,13 @@
-//! Sound page: which sound GameViber listens to, what it hears right now,
-//! and the scene model that lets modes recognize battles, calm moments...
-//! from the game's music. The scene cards are shared with the Game page.
+//! Setup › Sound: which sound GameViber listens to by default (a game can
+//! pick its own in its Signals), what it hears right now, and the sound scene
+//! model. The model and scene cards are shared with a game's Signals.
 
 use eframe::egui::{self, Margin, RichText};
 
 use super::theme::*;
 use super::App;
 use crate::config::AudioSource;
-use crate::engine::{Command, SceneView, Shared};
+use crate::engine::{Command, Shared};
 use crate::models::{Model, ModelState};
 
 /// A hit stays lit this long.
@@ -18,10 +18,11 @@ impl App {
         let frame = egui::Frame::new().fill(BG).inner_margin(Margin::symmetric(24, 20));
         egui::CentralPanel::default().frame(frame).show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
-                heading(ui, "Game sound");
+                heading(ui, "Sound, by default");
                 ui.label(muted(
-                    "Modes can react to the game's sound: impacts, loudness, and scenes such as a battle or a calm \
-                     walk, recognized from the music. The sound is analysed on your computer and never saved.",
+                    "Modes react to the game's sound: impacts, loudness, and scenes recognized from the music. This is \
+                     what GameViber listens to for games that pick nothing else in their Signals. The sound is analysed \
+                     on your computer and never saved.",
                 ));
                 ui.add_space(8.0);
                 if let Some(command) = source_picker(ui, s) {
@@ -33,8 +34,7 @@ impl App {
                 if let Some(command) = model_card(ui, Model::Sound, &s.audio.model) {
                     self.send(command);
                 }
-                ui.add_space(8.0);
-                scenes_card(ui, &s.scenes, s.mode.info.as_ref().map(|i| i.name.as_str()));
+
             });
         });
     }
@@ -179,43 +179,4 @@ pub(super) fn model_card(ui: &mut egui::Ui, model: Model, state: &ModelState) ->
         }
     });
     command
-}
-
-/// The active mode's scenes, and what each sense says.
-pub(super) fn scenes_card(ui: &mut egui::Ui, scenes: &SceneView, mode: Option<&str>) {
-    card(PANEL).inner_margin(Margin::symmetric(16, 12)).show(ui, |ui| {
-        ui.set_width(ui.available_width());
-        eyebrow(ui, "Scenes");
-        if scenes.scenes.is_empty() {
-            ui.label(muted(format!(
-                "{} does not use scenes. Modes written for a game by an AI assistant can.",
-                mode.unwrap_or("The active mode")
-            )));
-            return;
-        }
-        ui.label(RichText::new(format!("Scenes of {}", mode.unwrap_or("the mode"))).strong());
-        let mut senses = Vec::new();
-        for (name, (declared, ready)) in [("sound", scenes.sound), ("image", scenes.screen)] {
-            if declared {
-                senses.push(if ready { format!("{name}: compared") } else { format!("{name}: waiting for its model") });
-            }
-        }
-        if scenes.examples {
-            senses.push("example images: compared".to_owned());
-        }
-        ui.label(muted(senses.join(" · ")));
-        egui::Grid::new("scenes").num_columns(3).spacing([12.0, 6.0]).show(ui, |ui| {
-            for (name, p) in &scenes.scenes {
-                let current = scenes.scene.as_deref() == Some(name.as_str());
-                let label = RichText::new(name.as_str());
-                ui.label(if current { label.strong().color(ACCENT_TEXT) } else { label.color(MUTED) });
-                meter(ui, 200.0, *p, if current { ACCENT } else { GAME });
-                ui.label(muted(format!("{:.0}%", p * 100.0)));
-                ui.end_row();
-            }
-        });
-        if scenes.ready && scenes.scene.is_none() {
-            ui.label(muted("No scene recognized yet: it takes a few seconds of the game."));
-        }
-    });
 }

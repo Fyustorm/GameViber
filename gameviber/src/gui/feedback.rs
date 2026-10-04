@@ -407,7 +407,7 @@ impl App {
         }
         let mut history = entry.load_feedback();
         let earlier = history.lines();
-        let profile = s.profile.as_ref().map(|p| p.describe());
+        let profile = s.game.as_ref().map(|p| p.describe());
         let request = prompt::feel_prompt(&prompt::Templates::load(), &prompt::FeelReport {
             name: &info.name,
             game: &f.game,
@@ -437,7 +437,7 @@ impl App {
         let f = &mut self.feedback;
         if !prompt::has_script(&f.answer) {
             f.error = None;
-            f.note = Some("No mode code in this answer: set the values it suggests on the Play page.".into());
+            f.note = Some("No mode code in this answer: set the values it suggests on the mode's page.".into());
             return;
         }
         let script = prompt::extract_script(&f.answer);
@@ -479,8 +479,8 @@ impl App {
                 if let Some(copy) = self.create_mode(&format!("{}-tuned", entry.key), &script) {
                     copy.save_feedback(&history);
                 }
-                self.page = Page::Play;
-                self.play.show_mode();
+                // The mode's page, within its game.
+                self.page = Page::Games;
             }
         }
     }

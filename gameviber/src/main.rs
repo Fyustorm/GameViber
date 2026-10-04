@@ -14,7 +14,7 @@ mod logging;
 mod models;
 mod mode;
 mod overlay;
-mod profile;
+mod game;
 mod rumble;
 mod screen;
 mod session;

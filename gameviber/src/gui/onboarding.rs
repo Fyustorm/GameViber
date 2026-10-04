@@ -98,7 +98,7 @@ impl App {
 
     fn finish_setup(&mut self) {
         self.onboarding = None;
-        self.page = Page::Play;
+        self.page = Page::Games;
         self.send(Command::SetOnboarded(true));
     }
 
@@ -247,7 +247,7 @@ impl App {
             self.send(command);
         }
         ui.add_space(4.0);
-        ui.label(muted("You can switch any time on the Gamepad page."));
+        ui.label(muted("You can switch any time in Setup › Gamepad."));
     }
 
     fn setup_mode(&mut self, ui: &mut egui::Ui, s: &Shared) {

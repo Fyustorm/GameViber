@@ -11,7 +11,7 @@ use crate::mode::prompt::Template;
 
 /// Offered in the language picker; any other can be typed.
 const LANGUAGES: [&str; 10] =
-    ["English", "Français", "Español", "Deutsch", "Italiano", "Português", "Nederlands", "Polski", "日本語", "中文"];
+    ["English", "Français", "Español", "Deutsch", "Italiano", "Português", "Nederlands", "Polski", "Japanese", "Chinese"];
 
 pub struct State {
     /// Language being typed (None: show the saved one).

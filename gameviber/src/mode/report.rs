@@ -12,7 +12,7 @@ use super::rumble_events::{RumbleEvent, RumbleTracker};
 use super::scenes::Sense;
 use super::{ModeEvent, ModeRuntime, ParamValue, ZoneValue};
 use crate::models::{self, Model};
-use crate::profile::Profile;
+use crate::game::Game;
 use crate::gamepad::PadState;
 use crate::session::{Change, Player, Session};
 
@@ -100,6 +100,13 @@ pub fn simulate(
         scenes_unavailable: None,
         scene_changes: Vec::new(),
     };
+    // The game the session was played in: its scenes and captures, as they are now.
+    let played = game.as_ref().and_then(|name| Game::list().into_iter().find(|g| g.name == *name || g.runs_as(name)));
+    if let Some(played) = &played {
+        rt.set_game_scenes(&played.scene_decls());
+        rt.set_scene_references(Sense::Examples, played.example_centroids());
+    }
+    sim.has_scenes = !rt.scene_decls().is_empty();
     let mut unavailable = Vec::new();
     for (sense, model) in [(Sense::Sound, Model::Sound), (Sense::Screen, Model::Image)] {
         let descriptions = rt.scene_descriptions(sense);
@@ -115,11 +122,7 @@ pub fn simulate(
     if !unavailable.is_empty() {
         sim.scenes_unavailable = Some(unavailable.join("; "));
     }
-    // The examples of the game's profile, as they are now.
-    if let Some(game) = &game {
-        let examples = Profile::load(game).example_centroids();
-        rt.set_scene_references(Sense::Examples, examples);
-    }
+
     let mut scene = None;
     let mut vibration_start = 0.0;
     let mut step = 0;

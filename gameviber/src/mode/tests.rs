@@ -497,7 +497,7 @@ fn surge_fills_with_parries_and_spends_on_a_surge() {
 
 #[test]
 fn ai_prompt_names_the_game_and_embeds_the_api() {
-    let text = prompt::new_mode_prompt(&prompt::Templates::builtin(), "  Hades II ", "Français", prompt::Depth::Quick, None);
+    let text = prompt::new_mode_prompt(&prompt::Templates::builtin(), "  Hades II ", "Français", prompt::Depth::Quick, None, &[]);
     assert!(text.contains("**Hades II**"));
     assert!(text.contains("category = \"Hades II\""));
     assert!(text.contains("answer in Français"), "language");
@@ -517,10 +517,12 @@ fn ai_prompt_names_the_game_and_embeds_the_api() {
 
     // An advanced request: the raw inputs and the game's profile.
     let profile = "Zones of the screen (`input.zones`, `on_zone`):\n- `battle_hud`: true while shown, false otherwise\n";
-    let advanced = prompt::new_mode_prompt(&prompt::Templates::builtin(), "Hades II", "English", prompt::Depth::Advanced, Some(profile));
+    let advanced = prompt::new_mode_prompt(&prompt::Templates::builtin(), "Hades II", "English", prompt::Depth::Advanced, Some(profile), &[]);
     assert!(advanced.contains("### 6.4 ") && advanced.contains("### 6.5 ") && advanced.contains("### 7.1 "));
     assert!(advanced.contains("- `battle_hud`: true while shown"), "the profile");
-    let blank = prompt::new_mode_prompt(&prompt::Templates::builtin(), "Hades II", "English", prompt::Depth::Advanced, None);
+    let blank = prompt::new_mode_prompt(&prompt::Templates::builtin(), "Hades II", "English", prompt::Depth::Advanced, None, &[]);
+    let quick_scenes = prompt::new_mode_prompt(&prompt::Templates::builtin(), "Hades II", "English", prompt::Depth::Quick, None, &["battle".to_owned(), "hub".to_owned()]);
+    assert!(quick_scenes.contains("already recognizes this game's scenes: `battle`, `hub`"), "a quick request names the game's scenes");
     assert!(blank.contains("tell the player which zones to draw"), "no profile yet");
 }
 
@@ -532,7 +534,7 @@ fn left_out_spec_sections_exist() {
         "## 2. Architecture",
         "### 4.1 Presets",
         "### 6.4 Raw sound and image",
-        "### 6.5 The game's profile",
+        "### 6.5 The game's signals",
         "### 7.1 Advanced inputs",
         "## 11. Errors",
         "## 12. Safety",
@@ -750,7 +752,7 @@ fn scenes_are_declared_and_reported() {
     assert_eq!(info.scenes[0].name, "battle", "sorted by name");
     assert_eq!(info.scenes[0].screen, None);
     assert_eq!(info.scene_window, 4.0);
-    assert!(info.uses_sound_scenes() && info.uses_screen_scenes());
+    assert!(rt.uses_sound_scenes() && rt.uses_screen_scenes(false));
     assert_eq!(
         rt.scene_descriptions(Sense::Sound),
         [("battle".to_owned(), "intense battle music".to_owned()), ("calm".to_owned(), "calm ambient music".to_owned())]

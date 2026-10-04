@@ -1,10 +1,12 @@
-//! Game profiles (docs/spec-modes.md §6.5): what the player taught GameViber
-//! about one game, used by every mode while that game runs — captures of its
-//! scenes (images the player took, which are also the examples scenes are
-//! recognized with), zones of its screen drawn on them, and the values and
-//! events other programs send for it. One JSON file per game in `games/`,
-//! named after the game's executable, and its captures as PNG files in a
-//! directory of the same name.
+//! Games (docs/spec-modes.md §6.3, §6.5): what the player set up for one
+//! game, identified by its name, and shared by all its modes — its scenes,
+//! captures of them (images the player took, which are also the examples
+//! scenes are recognized with), zones of its screen drawn on them, the values
+//! and events other programs send for it, which sound to listen to, and its
+//! modes. A game may be linked to the executables it runs as, so that it
+//! becomes the active game by itself. One JSON file per game in `games/`,
+//! named after its id, and its captures as PNG files in a directory of the
+//! same name.
 
 use std::fs;
 use std::io::BufReader;
@@ -12,24 +14,62 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::config;
+use crate::config::{self, AudioSource};
+use crate::mode::scenes::SceneDecl;
 use crate::screen::Frame;
 
-/// A profile keeps at most this many captures per scene.
+/// A game keeps at most this many captures per scene.
 pub const MAX_CAPTURES: usize = 40;
+/// A game has at most this many scenes (as modes may declare).
+pub const MAX_SCENES: usize = 8;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct Profile {
-    /// Executable name of the game, as the in-game overlay reports it.
-    pub game: String,
+pub struct Game {
+    /// File name stem, set when loaded: it stays when the game is renamed.
+    #[serde(skip)]
+    pub id: String,
+    pub name: String,
+    /// Executables it runs as, as the in-game overlay reports them
+    /// (`METAPHOR.exe`); none: the player picks the game by hand.
+    pub executables: Vec<String>,
+    /// Its scenes (§6.3), shared by its modes.
+    pub scenes: Vec<SceneDef>,
     pub zones: Vec<Zone>,
     /// Images of the game the player captured, by scene.
     pub captures: Vec<Capture>,
     /// Values and events other programs send while this game runs (§6.5), for
     /// the requests to AI assistants.
     pub inputs: Vec<InputDecl>,
+    /// Its modes, by id (user mode files, built-in modes).
+    pub modes: Vec<String>,
+    /// Which sound to listen to while it is played; None: the default (Setup).
+    pub audio: Option<AudioSource>,
 }
+
+/// A scene of a game: a name modes read (`input.scene`), and how it sounds
+/// for the sound model; how it looks comes from its captures, and optionally
+/// a description for the image model.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SceneDef {
+    pub name: String,
+    pub sound: Option<String>,
+    pub screen: Option<String>,
+    /// A zone whose showing is a sure sign of the scene (its battle menu).
+    pub zone: Option<String>,
+    /// Seconds the scene is kept after its last sign: longer for signs that come and go.
+    pub hold: f64,
+}
+
+impl Default for SceneDef {
+    fn default() -> Self {
+        Self { name: String::new(), sound: None, screen: None, zone: None, hold: DEFAULT_HOLD }
+    }
+}
+
+/// Seconds a scene is kept after its last sign, unless set otherwise.
+pub const DEFAULT_HOLD: f64 = 3.0;
 
 /// An image of the game the player captured as an example of a scene.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -175,35 +215,72 @@ fn dir() -> PathBuf {
     config::config_dir().join("games")
 }
 
-fn stem(game: &str) -> String {
-    game.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' || c == '.' { c } else { '_' }).collect()
+/// A file name stem for a game's name: "Metaphor: ReFantazio" gives "metaphor-refantazio".
+pub fn slug(name: &str) -> String {
+    let mut out = String::new();
+    for c in name.trim().chars() {
+        if c.is_alphanumeric() {
+            out.extend(c.to_lowercase());
+        } else if !out.is_empty() && !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    let out = out.trim_end_matches('-').to_owned();
+    if out.is_empty() { "game".to_owned() } else { out }
 }
 
-fn path(game: &str) -> PathBuf {
-    dir().join(format!("{}.json", stem(game)))
+fn path(id: &str) -> PathBuf {
+    dir().join(format!("{id}.json"))
 }
 
 /// Where a game's captures are.
-fn captures_dir(game: &str) -> PathBuf {
-    dir().join(stem(game))
+fn captures_dir(id: &str) -> PathBuf {
+    dir().join(id)
 }
 
-/// Overlays before 0.1 named every Proton game after Wine's loader: the
-/// first Windows game seen afterwards takes that profile over.
-fn migrate_wine_profile(game: &str) {
-    const WINE: &str = "wine64-preloader";
-    if !game.to_lowercase().ends_with(".exe") || path(game).exists() || !path(WINE).exists() {
-        return;
-    }
-    let Ok(text) = fs::read_to_string(path(WINE)) else { return };
-    let text = text.replacen(&format!("\"game\":\"{WINE}\""), &format!("\"game\":{}", serde_json::json!(game)), 1);
-    if config::write_file(&path(game), &text).is_ok() {
-        let _ = fs::remove_file(path(WINE));
-        if captures_dir(WINE).exists() {
-            let _ = fs::rename(captures_dir(WINE), captures_dir(game));
+/// Before games had names, profiles were files named after the executable
+/// (`{"game": "METAPHOR.exe", ...}`): each becomes a game named after it.
+fn migrate_legacy() {
+    let Ok(entries) = fs::read_dir(dir()) else { return };
+    for path in entries.filter_map(Result::ok).map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "json")) {
+        let Ok(text) = fs::read_to_string(&path) else { continue };
+        let Ok(serde_json::Value::Object(mut map)) = serde_json::from_str::<serde_json::Value>(&text) else { continue };
+        if map.contains_key("name") {
+            continue;
         }
-        log::info!("the profile of {WINE} is now the profile of {game}");
+        let Some(serde_json::Value::String(exe)) = map.remove("game") else { continue };
+        let old_stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        let name = exe.strip_suffix(".exe").or_else(|| exe.strip_suffix(".EXE")).unwrap_or(&exe).to_owned();
+        let Ok(mut game) = serde_json::from_value::<Game>(serde_json::Value::Object(map)) else { continue };
+        game.name = name.clone();
+        // Overlays used to name every Proton game after Wine's loader: that names no game.
+        if !exe.starts_with("wine") {
+            game.executables = vec![exe.clone()];
+        }
+        let mut scenes: Vec<String> = game.captures.iter().filter(|c| !c.scene.is_empty()).map(|c| c.scene.clone()).collect();
+        scenes.sort();
+        scenes.dedup();
+        game.scenes = scenes.into_iter().map(|name| SceneDef { name, ..SceneDef::default() }).collect();
+        // The old file goes first: the game may take its name.
+        let _ = fs::remove_file(&path);
+        game.id = unused_id(&slug(&name));
+        if captures_dir(&old_stem).exists() && old_stem != game.id {
+            let _ = fs::rename(captures_dir(&old_stem), captures_dir(&game.id));
+        }
+        game.save();
+        log::info!("the profile of {exe} is now the game \"{name}\"");
     }
+}
+
+/// `id`, or `id-2`, `id-3`... if a game has it already.
+fn unused_id(id: &str) -> String {
+    let mut candidate = id.to_owned();
+    let mut n = 2;
+    while path(&candidate).exists() {
+        candidate = format!("{id}-{n}");
+        n += 1;
+    }
+    candidate
 }
 
 /// Saves `frame` as a PNG capture of `game`; returns its file name.
@@ -249,30 +326,85 @@ fn delete_capture(game: &str, file: &str) {
     }
 }
 
-impl Profile {
-    /// The profile of `game`, or an empty one.
-    pub fn load(game: &str) -> Self {
-        migrate_wine_profile(game);
-        let profile = fs::read_to_string(path(game)).ok().and_then(|text| match serde_json::from_str::<Profile>(&text) {
-            Ok(p) => Some(p),
+impl Game {
+    /// A new game named `name`, with an id of its own (not saved yet).
+    pub fn new(name: &str) -> Self {
+        Game { id: unused_id(&slug(name)), name: name.trim().to_owned(), ..Game::default() }
+    }
+
+    /// Every game, sorted by name.
+    pub fn list() -> Vec<Game> {
+        migrate_legacy();
+        let Ok(entries) = fs::read_dir(dir()) else { return Vec::new() };
+        let mut games: Vec<Game> = entries
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "json"))
+            .filter_map(|p| Self::load(&p.file_stem()?.to_string_lossy()))
+            .collect();
+        games.sort_by_key(|g| g.name.to_lowercase());
+        games
+    }
+
+    pub fn load(id: &str) -> Option<Self> {
+        let text = fs::read_to_string(path(id)).ok()?;
+        match serde_json::from_str::<Game>(&text) {
+            Ok(game) => Some(Game { id: id.to_owned(), ..game }),
             Err(e) => {
-                log::warn!("ignoring invalid profile of {game}: {e}");
+                log::warn!("ignoring the invalid game {id}: {e}");
                 None
             }
-        });
-        Profile { game: game.to_owned(), ..profile.unwrap_or_default() }
+        }
     }
 
     pub fn save(&self) {
-        let result = serde_json::to_string(self).map_err(std::io::Error::other).and_then(|text| config::write_file(&path(&self.game), &text));
+        let result =
+            serde_json::to_string(self).map_err(std::io::Error::other).and_then(|text| config::write_file(&path(&self.id), &text));
         if let Err(e) = result {
-            log::warn!("cannot save the profile of {}: {e}", self.game);
+            log::warn!("cannot save the game {}: {e}", self.name);
         }
+    }
+
+    /// Deletes the game and its captures (its mode files stay).
+    pub fn delete(&self) {
+        let _ = fs::remove_file(path(&self.id));
+        let _ = fs::remove_dir_all(captures_dir(&self.id));
+    }
+
+    pub fn runs_as(&self, exe: &str) -> bool {
+        self.executables.iter().any(|e| e.eq_ignore_ascii_case(exe))
+    }
+
+    /// The scenes as modes see them.
+    pub fn scene_decls(&self) -> Vec<SceneDecl> {
+        self.scenes
+            .iter()
+            .map(|s| SceneDecl {
+                name: s.name.clone(),
+                sound: s.sound.clone(),
+                screen: s.screen.clone(),
+                // Only a zone the game still has.
+                zone: s.zone.clone().filter(|z| self.zones.iter().any(|zone| zone.name == *z)),
+                hold: s.hold,
+            })
+            .collect()
+    }
+
+    /// A copy for the GUI: the capture embeddings, large and of no use there,
+    /// are left out (an analysed capture keeps a one-number placeholder).
+    pub fn for_gui(&self) -> Game {
+        let mut game = self.clone();
+        for capture in &mut game.captures {
+            if !capture.embedding.is_empty() {
+                capture.embedding = vec![1.0];
+            }
+        }
+        game
     }
 
     /// Captures `frame` as an example of `scene`; the oldest of the scene goes past `MAX_CAPTURES`.
     pub fn add_capture(&mut self, scene: &str, frame: &Frame) -> std::io::Result<()> {
-        let file = save_capture(&self.game, scene, frame)?;
+        let file = save_capture(&self.id, scene, frame)?;
         self.captures.push(Capture { file, scene: scene.to_owned(), embedding: Vec::new() });
         let of_scene: Vec<usize> = self.captures.iter().enumerate().filter(|(_, c)| c.scene == scene).map(|(i, _)| i).collect();
         if of_scene.len() > MAX_CAPTURES {
@@ -285,15 +417,18 @@ impl Profile {
     pub fn remove_capture(&mut self, file: &str) {
         if let Some(i) = self.captures.iter().position(|c| c.file == file) {
             self.captures.remove(i);
-            delete_capture(&self.game, file);
+            delete_capture(&self.id, file);
         }
     }
 
-    /// Scene names of the captures, sorted (captures to sort left out).
+    /// Names of its scenes, then of scenes only its captures name.
     pub fn scenes(&self) -> Vec<String> {
-        let mut scenes: Vec<String> = self.captures.iter().filter(|c| !c.scene.is_empty()).map(|c| c.scene.clone()).collect();
-        scenes.sort();
-        scenes.dedup();
+        let mut scenes: Vec<String> = self.scenes.iter().map(|s| s.name.clone()).collect();
+        for capture in self.captures.iter().filter(|c| !c.scene.is_empty()) {
+            if !scenes.contains(&capture.scene) {
+                scenes.push(capture.scene.clone());
+            }
+        }
         scenes
     }
 
@@ -313,9 +448,16 @@ impl Profile {
             .collect()
     }
 
-    /// How the profile reads for an AI assistant writing a mode for this game (§6.5).
+    /// How the game's signals read for an AI assistant writing a mode for it (§6.5).
     pub fn describe(&self) -> String {
         let mut out = String::new();
+        if !self.scenes.is_empty() {
+            let names: Vec<String> = self.scenes.iter().map(|s| format!("`{}`", s.name)).collect();
+            out.push_str(&format!(
+                "Scenes GameViber recognizes in this game (`input.scene`, `on_scene`; do not declare `scenes`): {}\n",
+                names.join(", ")
+            ));
+        }
         if !self.zones.is_empty() {
             out.push_str("Zones of the screen (`input.zones`, `on_zone`):\n");
             let mut seen = Vec::new();
@@ -331,17 +473,6 @@ impl Profile {
                 };
                 out.push_str(&format!("- `{}`: {what}\n", z.name));
             }
-        }
-        let scenes: Vec<String> = self
-            .scenes()
-            .iter()
-            .map(|name| format!("`{name}` ({} images)", self.captures.iter().filter(|c| c.scene == *name).count()))
-            .collect();
-        if !scenes.is_empty() {
-            out.push_str(&format!(
-                "Scenes with example images (declare them in `scenes` with these names): {}\n",
-                scenes.join(", ")
-            ));
         }
         if !self.inputs.is_empty() {
             out.push_str("Sent by another program (`input.custom`, `on_event`):\n");
@@ -370,19 +501,71 @@ mod tests {
         assert!(!valid_name(""));
     }
 
+    fn test_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("gameviber-games-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        TEST_DIR.with(|d| *d.borrow_mut() = Some(dir.clone()));
+        dir
+    }
+
+    #[test]
+    fn games_are_named_saved_and_listed() {
+        let dir = test_dir("list");
+        assert_eq!(slug(" Metaphor: ReFantazio "), "metaphor-refantazio");
+        let mut game = Game::new("Metaphor: ReFantazio");
+        assert_eq!(game.id, "metaphor-refantazio");
+        game.executables.push("METAPHOR.exe".into());
+        game.scenes.push(SceneDef { name: "combat".into(), sound: Some("battle music".into()), screen: None, ..SceneDef::default() });
+        game.save();
+        assert_eq!(Game::new("Metaphor: ReFantazio").id, "metaphor-refantazio-2", "ids stay unique");
+        let other = Game::new("Hades II");
+        other.save();
+        let games = Game::list();
+        assert_eq!(games.iter().map(|g| g.name.as_str()).collect::<Vec<_>>(), ["Hades II", "Metaphor: ReFantazio"]);
+        assert!(games[1].runs_as("metaphor.exe"));
+        assert_eq!(games[1].scene_decls()[0].sound.as_deref(), Some("battle music"));
+        assert_eq!(games[1], game);
+        other.delete();
+        assert_eq!(Game::list().len(), 1);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn legacy_profiles_become_games() {
+        let dir = test_dir("legacy");
+        fs::create_dir_all(dir.join("METAPHOR.exe")).unwrap();
+        fs::write(dir.join("METAPHOR.exe").join("combat-1.png"), b"png").unwrap();
+        fs::write(
+            dir.join("METAPHOR.exe.json"),
+            r#"{"game":"METAPHOR.exe","zones":[],"captures":[{"file":"combat-1.png","scene":"combat","embedding":[]}],"inputs":[]}"#,
+        )
+        .unwrap();
+        fs::write(dir.join("wine64-preloader.json"), r#"{"game":"wine64-preloader","zones":[],"captures":[],"inputs":[]}"#).unwrap();
+        let games = Game::list();
+        let metaphor = games.iter().find(|g| g.name == "METAPHOR").unwrap();
+        assert_eq!((metaphor.id.as_str(), &metaphor.executables[..]), ("metaphor", &["METAPHOR.exe".to_owned()][..]));
+        assert_eq!(metaphor.scenes[0].name, "combat", "scenes from the captures");
+        assert!(dir.join("metaphor").join("combat-1.png").exists(), "captures moved");
+        let wine = games.iter().find(|g| g.name == "wine64-preloader").unwrap();
+        assert!(wine.executables.is_empty(), "Wine's loader names no game");
+        assert_eq!(wine.id, "wine64-preloader", "the id the old file had");
+        assert!(!dir.join("METAPHOR.exe.json").exists());
+        let _ = fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn captures_are_saved_capped_and_described() {
-        let game = format!("test-game-{}.exe", std::process::id());
-        let dir = std::env::temp_dir().join(format!("gameviber-profile-{}", std::process::id()));
-        TEST_DIR.with(|d| *d.borrow_mut() = Some(dir.clone()));
-        let mut profile = Profile::load(&game);
+        let dir = test_dir("captures");
+        let mut profile = Game::new("Test game");
+        let game = profile.id.clone();
         let frame = |v: u8| Frame { width: 4, height: 2, source_width: 4, source_height: 2, count: 0, pixels: vec![v; 32] };
         for i in 0..MAX_CAPTURES + 2 {
             profile.add_capture("battle", &frame(i as u8)).unwrap();
         }
         profile.add_capture("story", &frame(200)).unwrap();
         assert_eq!(profile.captures.iter().filter(|c| c.scene == "battle").count(), MAX_CAPTURES);
-        assert_eq!(profile.scenes(), ["battle", "story"]);
+        profile.scenes.push(SceneDef { name: "menu".into(), ..SceneDef::default() });
+        assert_eq!(profile.scenes(), ["menu", "battle", "story"], "its scenes, then those only captures name");
         let first = &profile.captures[0];
         assert_eq!(load_capture(&game, &first.file).unwrap().pixels, vec![2; 32], "the two oldest went first");
         assert!(profile.example_centroids().is_empty(), "no embedding yet");
@@ -393,10 +576,10 @@ mod tests {
         profile.inputs.push(InputDecl { name: "kill".into(), kind: InputKind::Event, description: "an enemy died".into() });
         let text = profile.describe();
         assert!(text.contains("`hp`: how full the bar is"), "{text}");
-        assert!(text.contains("`battle` (40 images)"), "{text}");
+        assert!(text.contains("recognizes in this game (`input.scene`, `on_scene`; do not declare `scenes`): `menu`"), "{text}");
         assert!(text.contains("event `kill`: an enemy died"), "{text}");
         profile.save();
-        assert_eq!(Profile::load(&game), profile);
+        assert_eq!(Game::load(&game).unwrap(), profile);
         let story = profile.captures.last().unwrap().file.clone();
         profile.remove_capture(&story);
         assert!(load_capture(&game, &story).is_none(), "its file is deleted");

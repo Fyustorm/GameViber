@@ -13,7 +13,7 @@ impl App {
         let frame = egui::Frame::new().fill(BG).inner_margin(Margin::symmetric(24, 20));
         egui::CentralPanel::default().frame(frame).show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
-                heading(ui, "Keybindings");
+                heading(ui, "Gamepad combos");
                 ui.label(muted(
                     "Button combos GameViber reacts to while you play. Pick buttons the game does not use together.",
                 ));
@@ -37,7 +37,7 @@ impl App {
                 }
                 let target = if s.capture_scene.is_empty() { "to sort later".to_owned() } else { format!("as {}", s.capture_scene) };
                 let text = format!(
-                    "Hold {} in game to capture its image into the game's profile ({target}; change it on the Game \
+                    "Hold {} in game to capture its image into the game being played ({target}; change it on its captures \
                      page). The in-game overlay confirms. Captures teach GameViber the game's scenes, and zones are \
                      drawn on them.",
                     combo_text(capture)

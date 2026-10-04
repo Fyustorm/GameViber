@@ -136,18 +136,7 @@ pub struct ModeInfo {
     pub scene_window: f64,
 }
 
-impl ModeInfo {
-    /// Some scene has a description for the sound, or for the image.
-    pub fn uses_sound_scenes(&self) -> bool {
-        self.scenes.iter().any(|s| s.sound.is_some())
-    }
-
-    pub fn uses_screen_scenes(&self) -> bool {
-        self.scenes.iter().any(|s| s.screen.is_some())
-    }
-}
-
-/// A zone of the game's screen declared in its profile (§6.5).
+/// A zone of the game's screen, set up in its Signals (§6.5).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ZoneValue {
@@ -290,6 +279,8 @@ pub struct ModeRuntime {
     audio: Option<AudioLevels>,
     /// The game's image right now; None when it is not copied.
     screen: Option<ScreenLevels>,
+    /// The scenes recognized: the game's when it has some, else the mode's own.
+    scene_decls: Vec<SceneDecl>,
     scenes: SceneTracker,
     /// Scene change to report on the next tick (the sound or image stopped).
     pending_scene: Option<SceneChange>,
@@ -427,7 +418,8 @@ impl ModeRuntime {
 
         ctx.borrow_mut().outputs = Some(Outputs::new(info.channels.clone()));
         let tracker = RumbleTracker::new(info.rumble_threshold, info.rumble_release, 0.0);
-        let scenes = SceneTracker::new(info.scenes.iter().map(|s| s.name.clone()).collect(), info.scene_window);
+        let scenes = SceneTracker::new(&info.scenes, info.scene_window);
+        let scene_decls = info.scenes.clone();
         Ok(Self {
             lua,
             ctx,
@@ -441,6 +433,7 @@ impl ModeRuntime {
             tracker,
             audio: None,
             screen: None,
+            scene_decls,
             scenes,
             pending_scene: None,
             zones: BTreeMap::new(),
@@ -455,10 +448,47 @@ impl ModeRuntime {
         &self.param_values
     }
 
+    /// The scenes of the game being played, which replace the mode's own
+    /// (§6.3); none: the mode's own scenes.
+    pub fn set_game_scenes(&mut self, game: &[SceneDecl]) {
+        let mut wanted = if game.is_empty() { self.info.scenes.clone() } else { game.to_vec() };
+        wanted.sort_by(|a, b| a.name.cmp(&b.name));
+        wanted.truncate(MAX_SCENES);
+        if wanted == self.scene_decls {
+            return;
+        }
+        if let Some(change) = self.scenes.reset() {
+            self.pending_scene = Some(change);
+        }
+        self.scenes = SceneTracker::new(&wanted, self.info.scene_window);
+        // The zones on screen now, for the scenes tied to one.
+        let time = self.ctx.borrow().time;
+        for (name, value) in &self.zones {
+            if let Some(change) = self.scenes.zone(time, name, matches!(value, ZoneValue::Visible(true) | ZoneValue::Bar(_))) {
+                self.pending_scene = Some(change);
+            }
+        }
+        let _ = self.input.scenes.clear();
+        self.scene_decls = wanted;
+    }
+
+    /// The scenes recognized (the game's or the mode's own).
+    pub fn scene_decls(&self) -> &[SceneDecl] {
+        &self.scene_decls
+    }
+
+    pub fn uses_sound_scenes(&self) -> bool {
+        self.scene_decls.iter().any(|s| s.sound.is_some())
+    }
+
+    /// Scenes compared with the image: described for it, or with captures (`examples`).
+    pub fn uses_screen_scenes(&self, examples: bool) -> bool {
+        examples || self.scene_decls.iter().any(|s| s.screen.is_some())
+    }
+
     /// Scenes and their description for `sense` (Sound or Screen), to compute their embeddings.
     pub fn scene_descriptions(&self, sense: Sense) -> Vec<(String, String)> {
-        self.info
-            .scenes
+        self.scene_decls
             .iter()
             .filter_map(|s| {
                 let description = match sense {
@@ -477,6 +507,7 @@ impl ModeRuntime {
         self.scenes.set_references(sense, references);
     }
 
+    #[cfg(test)]
     pub fn scenes_ready(&self) -> bool {
         self.scenes.ready()
     }
@@ -611,6 +642,9 @@ impl ModeRuntime {
         if let Some(change) = self.pending_scene.take() {
             self.scene_changed(change, time)?;
         }
+        if let Some(change) = self.scenes.tick(time) {
+            self.scene_changed(change, time)?;
+        }
         for event in events {
             match event {
                 ModeEvent::Button(event) => {
@@ -673,6 +707,11 @@ impl ModeRuntime {
                         ZoneValue::Unknown => Value::Nil,
                     };
                     self.input.zones.raw_set(name.as_str(), lua_value(*value)).map_err(lua_err)?;
+                    // A zone can be a sure sign of a scene of the game.
+                    let shown = matches!(value, ZoneValue::Visible(true) | ZoneValue::Bar(_));
+                    if let Some(change) = self.scenes.zone(time, name, shown) {
+                        self.scene_changed(change, time)?;
+                    }
                     if self.callbacks.on_zone.is_some() {
                         let t = self.lua.create_table().map_err(lua_err)?;
                         t.raw_set("zone", name.as_str()).map_err(lua_err)?;
@@ -952,7 +991,7 @@ fn parse_info(declared: &Table) -> LoadResult<ModeInfo> {
             if sound.is_none() && screen.is_none() {
                 return Err(format!("mode.scenes: scene '{name}' needs a sound or a screen description"));
             }
-            scenes.push(SceneDecl { name, sound, screen });
+            scenes.push(SceneDecl { name, sound, screen, zone: None, hold: 0.0 });
         }
         scenes.sort_by(|a, b| a.name.cmp(&b.name));
         if !(2..=MAX_SCENES).contains(&scenes.len()) {

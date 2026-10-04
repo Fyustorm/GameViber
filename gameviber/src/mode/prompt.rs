@@ -43,18 +43,28 @@ pub enum Depth {
     Advanced,
 }
 
-/// What the game's profile brings to a request: its description (`Profile::describe`), if it has one.
-fn profile_text(depth: Depth, profile: Option<&str>) -> String {
+/// What the game's signals bring to a request: their description
+/// (`Game::describe`), if any; a quick request only gets the game's scenes.
+fn profile_text(depth: Depth, profile: Option<&str>, scenes: &[String]) -> String {
     match (depth, profile.map(str::trim).filter(|p| !p.is_empty())) {
+        (Depth::Quick, _) if !scenes.is_empty() => {
+            let names: Vec<String> = scenes.iter().map(|s| format!("`{s}`")).collect();
+            format!(
+                "GameViber already recognizes this game's scenes: {}. Read them with `input.scene` and \
+                 `on_scene`, and do not declare `scenes` in the mode. Otherwise use the rumble, the buttons and the \
+                 high-level inputs (impacts, intensity).",
+                names.join(", ")
+            )
+        }
         (Depth::Quick, _) => "Nothing more: use the rumble, the buttons and the high-level inputs (scenes, impacts, \
              intensity)."
             .to_owned(),
         (Depth::Advanced, Some(profile)) => format!(
-            "The player set up a profile for this game on GameViber's Game page (§6.5). Use what helps:\n\n{profile}"
+            "The player set up this game's signals in GameViber (§6.5). Use what helps:\n\n{profile}"
         ),
         (Depth::Advanced, None) => "The player has not set up anything for this game yet. If a zone of the screen \
-             would help (an interface shown only in battles, a health bar), tell the player which zones to draw on \
-             the Game page: a name, its kind (shown or not, or a bar) and where to draw it. Read them defensively: \
+             would help (an interface shown only in battles, a health bar), tell the player which zones to draw in \
+             the game's Signals: a name, its kind (shown or not, or a bar) and where to draw it. Read them defensively: \
              `input.zones.<name>` is nil until the zone exists."
             .to_owned(),
     }
@@ -165,10 +175,10 @@ impl Templates {
 
 /// The request to paste into an AI assistant to get a mode made for `game`,
 /// answered in `language`; `profile` describes the game's profile (advanced requests).
-pub fn new_mode_prompt(t: &Templates, game: &str, language: &str, depth: Depth, profile: Option<&str>) -> String {
+pub fn new_mode_prompt(t: &Templates, game: &str, language: &str, depth: Depth, profile: Option<&str>, scenes: &[String]) -> String {
     sections(&t.new_mode, true)
         .replace("{{RULES}}", t.rules.trim_end())
-        .replace("{{PROFILE}}", &profile_text(depth, profile))
+        .replace("{{PROFILE}}", &profile_text(depth, profile, scenes))
         .replace("{{SPEC}}", &spec(depth))
         .replace("{{LANGUAGE}}", language)
         .replace("{{GAME}}", game.trim())
@@ -300,7 +310,7 @@ pub fn feel_prompt(t: &Templates, r: &FeelReport) -> String {
     };
     let depth = r.depth();
     let profile = match depth {
-        Depth::Advanced => profile_text(depth, r.profile),
+        Depth::Advanced => profile_text(depth, r.profile, &[]),
         Depth::Quick => "None set up for this game.".to_owned(),
     };
     sections(&t.fix_feel, r.full)

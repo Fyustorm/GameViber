@@ -17,7 +17,7 @@ Modes are created and edited on the fly from the built-in editor, without recomp
 - Hot reload, parameters adjustable from the GUI, debug graphs, simulator.
 - What GameViber makes of the game's sound and image: scenes, impacts, intensity (§6.3);
   their raw measures (§6.4); zones of the screen, example images and values other
-  programs send, set up per game (§6.5).
+  programs send, set up per game in its Signals (§6.5).
 
 **Not in v1** (see §13): mode chaining, automatic per-game mode, linear outputs
 (strokers), multiple gamepads, block editor.
@@ -34,7 +34,7 @@ Gamepad proxy ──► event queue ──► Lua runtime (active mode) ──�
 - The **audio analysis** listens to the game's sound through PipeWire and produces levels,
   hits and scene embeddings (§6.3), on its own threads.
 - The **in-game overlay** copies small images of the game (§6.4); GameViber measures
-  them, reads the profile's zones and embeds them for scenes.
+  them, reads the game's zones and embeds them for scenes.
 - **Other programs** send values and events over a local WebSocket or a pipe (§6.5).
 - The **runtime** normalizes these events, dispatches them to the mode's callbacks, then
   calls `tick`. It runs in its own thread.
@@ -241,13 +241,20 @@ is read from `input.axes` on every tick.
 
 GameViber listens to the game's sound through PipeWire (by default the game showing the
 in-game overlay, or else everything the computer plays; the player can pick another
-source on the Sound page) and, through the in-game overlay, looks at its image. Both are
+source per game, or for all in Setup) and, through the in-game overlay, looks at its image. Both are
 analysed on the player's computer and never saved: recorded sessions keep only what is
 measured, so that a replay feeds the mode the same events. What GameViber makes of them
 comes in three high-level inputs; prefer them to the raw measures of §6.4.
 
-**Scenes**: a mode describes, in words, the scenes it wants to tell apart, as they sound
-and as they look:
+**Scenes** are phases of the game that should not feel the same (a battle, exploring, a
+dialogue). **The player defines them once per game**, in its Signals: their names, how
+they sound, and captures of how they look. Every mode of the game gets them; a request to
+an AI assistant lists their names, and the mode only reads them (`input.scene`,
+`on_scene`) without declaring anything.
+
+A mode that suits any game (a built-in one), or played with a game that has no scenes
+yet, can describe its own in words, as they sound and as they look; the game's scenes,
+when it has some, replace them:
 
 ```lua
 scenes = {
@@ -264,8 +271,8 @@ scene_window = 10,   -- seconds the probabilities are averaged over (2 to 60), d
 - 2 to 8 scenes, sorted by name. Each has a `sound` description, a `screen` description,
   or both. A sound model (CLAP) compares the last 10 s of sound with the `sound`
   descriptions every 2 s; an image model (CLIP) compares the image with the `screen`
-  descriptions every second, and with the **example images** of the game's profile (§6.5)
-  when the player added some for scenes of the same name. Each sense only speaks about
+  descriptions every second, and with the game's **captures** (§6.5) of scenes of the
+  same name. Each sense only speaks about
   the scenes it has a description or examples for; their probabilities are multiplied
   and averaged over `scene_window`.
 - A scene is entered when its average reaches 0.5 and, when another scene is current,
@@ -273,6 +280,13 @@ scene_window = 10,   -- seconds the probabilities are averaged over (2 to 60), d
   first) and `ev.confidence` (its average). When neither the sound nor the image is left,
   the scene is forgotten: `ev.scene` is nil. `input.scene`, `input.scene_confidence` and
   `input.scenes.<name>` (the average probability of each) follow it.
+- In its Signals, a game's scene can be tied to a **zone** (§6.5) shown only in it (the
+  battle menu): while the zone is shown (for half a second) the scene is certain, entered
+  at once with a confidence of 1, and while zones are read it is only entered through it.
+  Each of the game's scenes is also **kept** a few seconds (3 by default) after its last
+  sign (its zone gone, or another scene more likely), so that a sign that comes and goes
+  does not flip it. When the zone is gone and no other scene is likely, `ev.scene` is nil.
+  Modes still get scenes late and must not time effects on them.
 - **Describe what is only heard or only seen in a scene**: music style, tempo,
   instruments, voices for `sound`; the interface, framing and colors for `screen`. Two or
   three contrasted scenes work much better than many close ones. Make them contrast:
@@ -328,8 +342,8 @@ end
   The same background suits phases told apart otherwise, e.g. "the game rumbled in the
   last 10 s" for a fight (with the delay as a parameter).
 
-- Scenes need the models, downloaded once (the sound model from the Sound page, about
-  200 MB; the image model from the Game page, about 150 MB), and cost a little processor
+- Scenes need the models, downloaded once (the sound model, about 200 MB, and the image
+  model, about 150 MB, from the game's Signals or Setup › Sound), and cost a little processor
   time while the mode is active. Without them, or without sound and image,
   `input.scene` stays nil: **a mode must work without scenes**.
 
@@ -363,20 +377,20 @@ the strongest recent hits of the same band) and `ev.band` (`"low"`, `"mid"` or `
 
 **The image** (`input.screen`, §7.1): the in-game overlay copies a small image of the
 game ten times per second (only in games started with it, see the Overlay page; the
-player can turn this off on the Game page).
+player can turn this off on a game's captures page).
 
 - `brightness`: average brightness, 0..1.
 - `motion`: how much the image changed since the previous copy, 0..1 (camera moves,
   effects); `action`: motion over the last ~6 s.
 
-### 6.5 The game's profile
+### 6.5 The game's signals
 
-On the Game page the player can teach GameViber about the game being played; every mode
-gets it while that game runs. Everything here exists only once the player set it up:
+In a game's Signals the player teaches GameViber about the game; every mode of the game
+gets them while it is played. Everything here exists only once the player set it up:
 **read it defensively** (`input.zones.hp or 1`).
 
 **Captures**: images of the game the player captured per scene ("battle", "dungeon"...),
-in game with a gamepad combo or from the Game page. They are the examples scenes are
+in game with a gamepad combo or from the game's page. They are the examples scenes are
 recognized with, and zones are drawn on them.
 
 **Zones**: rectangles of the screen the player drew on a capture, and checked on all of
@@ -393,13 +407,11 @@ them.
   first). Zones are read ten times per
   second; a bar change below 0.02 is not reported.
 - Zones say exactly what scenes guess (the battle interface is on screen or not) and
-  come within 0.1 s: prefer them when the profile has them.
+  come within 0.1 s: prefer them when the game has them.
 
-**Example images**: the captures make the image recognize scenes of the same name much
-more reliably (§6.3); the mode only has to declare the scene with that name.
 
 **Values from other programs**: a game's existing mod, a script reading a game's API or
-anything else can send JSON to `ws://127.0.0.1:12350` (the port is set on the Game page;
+anything else can send JSON to `ws://127.0.0.1:12350` (the port is set in Setup;
 web pages are refused) or, one message per line, to the pipe
 `$XDG_RUNTIME_DIR/gameviber/inputs`:
 
@@ -411,7 +423,7 @@ web pages are refused) or, one message per line, to the pipe
 - `set` keeps values in `input.custom.<name>` (numbers, booleans, strings, or tables);
   `null` removes one. Names are letters, digits and `_`, starting with a letter.
 - `event` calls `on_event(ev)` with `ev.name` and `ev.data` (nil without `data`).
-- The player declares in the profile what the program sends ("hp: health, 0 to 100"), so
+- The player declares in the game's Signals what the program sends ("hp: health, 0 to 100"), so
   that an AI assistant writing a mode for the game knows it.
 
 ## 7. The `input` table (current state, read-only)

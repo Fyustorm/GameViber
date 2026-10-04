@@ -22,28 +22,34 @@ gamepad (with the choice of capture method and its live buttons) and a first
 mode, preferably one made for your game by an AI assistant. It can be run
 again from **Setup** at the bottom of the left bar. Then the GUI provides:
 
-- a status bar with the gamepad / rumble capture / Intiface state, the global
-  maximum intensity and **STOP ALL** (also: BACK + START held for 0.5 s on the
-  gamepad, configurable on the Keybindings page);
-- **Play**: your modes (or the built-in ones) as tiles, then a page for the
-  chosen mode with its explanation, its main settings, all its settings and
-  named **presets** (e.g. one per game); your own modes can be duplicated,
-  edited or deleted there. It opens on the last session's mode;
+- a status bar with **the game being played** (pick another there), the
+  gamepad / rumble capture / Intiface state, the global maximum intensity and
+  **STOP ALL** (also: BACK + START held for 0.5 s on the gamepad, configurable
+  in Setup);
+- **Games**: the library of your games, created by their name without
+  launching them, then each game by breadcrumb:
+  - **Modes**: the game's modes as a compact list (made by an AI assistant,
+    built-in or your own), each with **a page of its own**: its explanation,
+    its main settings, all its settings and named **presets**;
+  - **Signals**: what GameViber reads from the game for all its modes, as
+    guided steps: its **scenes** (named once, optionally with how they sound),
+    **captures** of each scene, **zones** of its screen, which sound to listen
+    to, and values other programs send (see below);
+  - **Sessions**: the sessions recorded while playing it;
+
+  a game linked to its executable becomes the game being played by itself;
+  built-in modes can also be played without a game;
 - **Toys**: the connection to Intiface Central (status, address), the toys it
   found, a test buzz, which mode channels each one plays, and how it renders
   them: weakest and strongest intensity and a response curve, with buttons to
   feel each;
-- **Gamepad**: gamepad and rumble capture status, the buttons and sticks
-  received right now, the capture method (standard proxy or kernel probe, which
-  needs root) with their pros and cons, gamepad hiding, troubleshooting;
-- **Sound**: which sound modes hear (automatic: the game showing the overlay,
-  else everything; everything; one application, all its streams; off), what is heard right now (loudness,
-  bass / mids / treble, hits), and the **scene model** to download (see below);
-- **Game**: what GameViber knows about the game being played (see below): its
-  image as the in-game overlay copies it, **captures** of its scenes, the
-  **zones** of its screen modes read (drawn on a capture), the image scene model
-  to download, and the values other programs send;
-- **Keybindings**: the panic stop, mark-a-moment and capture-the-screen gamepad combos;
+- **Setup**, what does not depend on the game: the **gamepad** (capture status,
+  live buttons and sticks, the capture method, standard proxy or kernel probe,
+  hiding, troubleshooting), the **gamepad combos** (panic stop, mark a moment,
+  capture the screen), the **in-game overlay**, the **sound** listened to by
+  default (automatic: the game showing the overlay, else everything; everything;
+  one application, all its streams; off) with what is heard right now and the
+  sound scene model, and **other programs** (the local port);
 - **Settings** (bottom of the left bar): the language AI assistants answer and
   write modes in, the templates of the requests sent to them (editable, with
   GameViber's version one click away), and the setup guide;
@@ -55,9 +61,9 @@ again from **Setup** at the bottom of the left bar. Then the GUI provides:
 
 ### A mode for your game
 
-The best experience is a mode written for the game you play. **Play → Make a mode
-for my game** guides you through getting one from any AI assistant (ChatGPT,
-Claude, Gemini, Le Chat...):
+The best experience is a mode written for the game you play. In a game's
+**Modes**, **New mode** (Quick or Advanced) guides you through getting one from
+any AI assistant (ChatGPT, Claude, Gemini, Le Chat...); it is added to the game:
 
 1. type the game's name;
 2. copy the request GameViber builds and paste it in a new conversation. It holds
@@ -72,7 +78,7 @@ Claude, Gemini, Le Chat...):
 The request template is [`gameviber/prompts/new-mode.md`](gameviber/prompts/new-mode.md),
 with [`rules.md`](gameviber/prompts/rules.md); both can be edited from Settings.
 
-When a mode does not feel right, **Doesn't feel right?** (Play page) asks the
+When a mode does not feel right, **Doesn't feel right?** (on its page) asks the
 mode's own questions ("Parry detection: Often missed | Good | Also on hits
 taken", declared with `ask()`, or generic ones). Many answers come with a
 **quick fix** that adjusts the matching setting in one click. Otherwise pick a
@@ -81,7 +87,7 @@ keeps in memory) and copy the request: the page lists what goes into it, and
 it can be a full one for a new conversation or a short one for the
 conversation that wrote the mode.
 
-While playing, hold **BACK + RS** (configurable on the Keybindings page) to
+While playing, hold **BACK + RS** (configurable in Setup) to
 **mark a moment** that felt wrong: the overlay confirms, and the last 2
 minutes are saved 15 s later with the marks, which the request points out. GameViber replays the session into the mode with your settings, so the
 assistant sees when the game vibrated, what you pressed and what the mode
@@ -98,12 +104,11 @@ watching a cutscene; the music and the screen usually do. GameViber listens to
 the game's sound through PipeWire (`pw-record`, no root) and looks at its image
 through the in-game overlay, and gives modes:
 
-- **scenes** each mode describes in words, as they sound and as they look
-  ("aggressive battle music", "a turn-based battle menu"), recognized by a sound
-  model (LAION's CLAP, about 200 MB, from the **Sound** page) and an image model
-  (OpenAI's CLIP, about 150 MB, from the **Game** page). Both run on the CPU,
-  only while the active mode uses them, and are downloaded into
-  `~/.local/share/gameviber/models/`;
+- **scenes**, defined once per game in its Signals (or described by a mode
+  that suits any game), recognized from how they sound by a sound model
+  (LAION's CLAP, about 200 MB) and from their captures by an image model
+  (OpenAI's CLIP, about 150 MB). Both run on the CPU, only while the active
+  mode uses them, and are downloaded into `~/.local/share/gameviber/models/`;
 - **impacts** (strong hits heard, flashes seen) and an overall **intensity**;
 - the raw measures behind them, for advanced modes.
 
@@ -111,16 +116,20 @@ Scenes come a few seconds late: modes use them for the mood of a phase, not to
 time effects. Nothing leaves the computer; the sound is never saved, and of the
 image only the captures you take.
 
-### Game profiles
+### A game's signals
 
-For a game you play a lot, the **Game** page lets you teach GameViber more,
-for every mode (saved in `~/.config/gameviber/games/`):
+A game's **Signals** teach GameViber about the game, for all its modes (saved
+in `~/.config/gameviber/games/`), step by step:
+
+- **scenes**: name the phases that should not feel the same (battle,
+  exploration, story, menu), once; describe how each sounds if the music
+  changes between them. Modes made for the game read their names;
 
 - **captures**: hold the capture combo on the gamepad (BACK + LS by default,
-  Keybindings page) while the game shows a battle, an exploration, a
-  dialogue...: the image is captured without leaving the game, so it keeps the
-  game's gamepad prompts, and the in-game overlay confirms. Captures go to the
-  scene picked on the Game page, or "to sort" and filed there later. A few
+  Setup) while the game shows a battle, an exploration, a dialogue...: the
+  image is captured without leaving the game, so it keeps the game's gamepad
+  prompts, and the in-game overlay confirms. Captures go to the scene picked on
+  the captures page, or "to sort" and filed there later. A few
   captures per scene make the image recognition much more reliable;
 - **zones**: on a capture (zoom in as needed), draw a rectangle around something
   shown only at times (the battle interface) or around a bar (health, with the
@@ -135,7 +144,7 @@ for every mode (saved in `~/.config/gameviber/games/`):
 
 When asking an AI assistant for a mode, pick **Quick** (the rumble, the buttons
 and the scenes, impacts and intensity: a couple of minutes) or **Advanced**
-(also the raw measures and the game's profile; the assistant may ask you to
+(also the raw measures and the game's signals; the assistant may ask you to
 draw zones).
 
 ### In-game overlay
@@ -143,7 +152,7 @@ draw zones).
 Like MangoHud, GameViber can draw a small panel over the game: the active mode
 and preset, the scene recognized in the game's sound, how strong the toys run (with the global cap), the mode's gauges
 and what it detects ("Parry!"), and warnings (toy lost, Intiface disconnected,
-mode error, panic stop). Install it from the **Overlay** page, then enable it
+mode error, panic stop). Install it from **Setup › In-game overlay**, then enable it
 per game with a Steam launch option (once installed, GameViber updates it when
 it starts with a newer version; restart running games to get it):
 

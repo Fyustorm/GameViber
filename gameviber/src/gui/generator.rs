@@ -1,12 +1,15 @@
-//! "A mode for my game" dialog: builds a request for an AI assistant from the
-//! game's name, copies it to the clipboard, then creates a mode from the
-//! answer pasted back (or a dropped .luau file), checking that it loads.
+//! "A mode for this game" dialog, opened from a game's modes: builds a
+//! request for an AI assistant from the game's name (and, for an advanced
+//! mode, its signals), copies it to the clipboard, then creates a mode from
+//! the answer pasted back (or a dropped .luau file), checking that it loads,
+//! and adds it to the game.
 
 use eframe::egui::{self, RichText};
 
 use super::theme::*;
-use super::{App, Page};
+use super::{App, GameView, Route};
 use crate::engine::Shared;
+use crate::game::Game;
 use crate::mode::{prompt, ModeRuntime};
 
 const ASSISTANTS: [(&str, &str); 4] = [
@@ -20,6 +23,8 @@ const ASSISTANTS: [(&str, &str); 4] = [
 pub struct State {
     pub open: bool,
     game: String,
+    /// The game the mode is for, by id; None: a game typed in the dialog.
+    game_id: Option<String>,
     depth: prompt::Depth,
     /// Game name the request was copied for.
     copied: Option<String>,
@@ -33,6 +38,11 @@ impl App {
         self.generator.open = true;
     }
 
+    /// The dialog for a mode of `game`.
+    pub(super) fn open_generator_for(&mut self, game: &Game, depth: prompt::Depth) {
+        self.generator = State { open: true, game: game.name.clone(), game_id: Some(game.id.clone()), depth, ..State::default() };
+    }
+
     pub(super) fn generator_ui(&mut self, ctx: &egui::Context, s: &Shared) {
         if !self.generator.open {
             return;
@@ -43,6 +53,7 @@ impl App {
             ui.set_width(560.0);
             let g = &mut self.generator;
             heading(ui, "A mode made for your game");
+            let for_game = g.game_id.as_ref().and_then(|id| s.games.iter().find(|game| game.id == *id));
             ui.label(muted(
                 "Built-in modes are generic. An AI assistant can write a mode tailored to your game, \
                  its controls and its mechanics in a minute. GameViber prepares the request; you paste \
@@ -51,7 +62,14 @@ impl App {
             ui.add_space(12.0);
 
             step(ui, 1, "Which game are you playing?");
-            ui.add(egui::TextEdit::singleline(&mut g.game).hint_text("e.g. Hades II").desired_width(f32::INFINITY));
+            match for_game {
+                Some(game) => {
+                    ui.label(RichText::new(&game.name).size(15.0));
+                }
+                None => {
+                    ui.add(egui::TextEdit::singleline(&mut g.game).hint_text("e.g. Hades II").desired_width(f32::INFINITY));
+                }
+            }
             ui.add_space(10.0);
 
             step(ui, 2, "Quick or advanced?");
@@ -59,17 +77,21 @@ impl App {
                 "The rumble, the buttons, and the scenes, impacts and intensity GameViber gets from the sound and image",
             );
             ui.radio_value(&mut g.depth, prompt::Depth::Advanced, "Advanced").on_hover_text(
-                "Also the raw sound and image, and the zones, example images and values from other programs set up \
-                 on the Game page for the game being played",
+                "Also the raw sound and image, and the game's zones, captures and values from other programs (its \
+                 Signals)",
             );
-            let profile = s.profile.as_ref().map(|p| (p.game.clone(), p.describe()));
-            if g.depth == prompt::Depth::Advanced {
-                let note = match &profile {
-                    Some((game, text)) if !text.is_empty() => format!("The request includes what the Game page knows about {game}."),
-                    Some((game, _)) => format!("Nothing is set up for {game} yet: the assistant may ask you to draw zones on the Game page."),
-                    None => "No game shows the in-game overlay: the assistant may ask you to draw zones on the Game page once it does.".to_owned(),
-                };
-                ui.label(muted(note).size(12.0));
+            let profile = for_game.map(|game| (game.name.clone(), game.describe()));
+            match (&profile, g.depth) {
+                (Some((game, text)), prompt::Depth::Advanced) if !text.is_empty() => {
+                    ui.label(muted(format!("The request includes the signals of {game}.")).size(12.0));
+                }
+                (_, prompt::Depth::Advanced) => {
+                    ui.label(muted("No signals set up yet: the assistant may ask you to draw zones in the game's Signals.").size(12.0));
+                }
+                (Some((_, text)), prompt::Depth::Quick) if text.contains("input.scene") => {
+                    ui.label(muted("The request names the game's scenes.").size(12.0));
+                }
+                _ => {}
             }
             ui.add_space(10.0);
 
@@ -78,7 +100,8 @@ impl App {
                 let game = g.game.trim().to_owned();
                 if ui.add_enabled(!game.is_empty(), primary("📋 Copy the request")).clicked() {
                     let profile = profile.as_ref().map(|(_, text)| text.as_str());
-                    let request = prompt::new_mode_prompt(&prompt::Templates::load(), &game, &s.settings.language, g.depth, profile);
+                    let scenes: Vec<String> = for_game.iter().flat_map(|g| g.scenes.iter().map(|s| s.name.clone())).collect();
+                    let request = prompt::new_mode_prompt(&prompt::Templates::load(), &game, &s.settings.language, g.depth, profile, &scenes);
                     ui.ctx().copy_text(request);
                     g.copied = Some(game.clone());
                 }
@@ -149,10 +172,17 @@ impl App {
             stem if stem.is_empty() => "my-game".to_owned(),
             stem => stem,
         };
+        let game = g.game_id.clone();
         *g = State::default();
+        // Created from the game's page, the mode is added to the game.
+        if let Some(id) = &game {
+            self.route = Route::Game { id: id.clone(), view: GameView::Modes };
+        }
         self.create_mode(&stem, &script);
-        self.page = Page::Play;
-        self.play.show_mode();
+        self.page = super::Page::Games;
+        if let Some(id) = game {
+            self.route = Route::Game { id, view: GameView::Mode };
+        }
     }
 
     /// Loads a .luau file dropped on the window into the answer field.

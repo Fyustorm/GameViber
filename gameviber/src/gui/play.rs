@@ -1,15 +1,13 @@
-//! Play page: tiles of the player's modes (or the built-in ones), then a page
-//! for the chosen mode with its explanation and settings. It opens on the
-//! mode of the last session.
+//! A mode's page (Games › game › Modes › mode): its explanation, presets and
+//! settings; and tiles of modes, for the built-in modes and the setup guide.
 
 use std::collections::BTreeMap;
 
 use eframe::egui::{self, Margin, RichText, Vec2};
 
 use super::theme::*;
-use super::{mode_icon, App, Page};
+use super::{mode_icon, App, GameView, Page, Route};
 use crate::models::Model;
-use crate::config::NEW_MODE_TEMPLATE;
 use crate::engine::{Command, ModeView, Shared};
 use crate::gamepad::BUTTONS;
 use crate::mode::{ModeInfo, ParamDef, ParamKind, ParamValue};
@@ -21,10 +19,6 @@ const TWO_COLUMNS_WIDTH: f32 = 720.0;
 
 #[derive(Default)]
 pub struct State {
-    /// The list shows the built-in modes instead of the player's.
-    builtin: bool,
-    /// The list of modes is shown instead of the active mode's page.
-    list: bool,
     new_preset_name: String,
     /// Preset whose deletion waits for confirmation.
     confirm_delete: Option<String>,
@@ -32,107 +26,16 @@ pub struct State {
     confirm_delete_mode: Option<String>,
 }
 
-impl State {
-    /// Shows the active mode's page.
-    pub fn show_mode(&mut self) {
-        self.list = false;
-    }
-}
-
 impl App {
-    pub(super) fn play_ui(&mut self, ui: &mut egui::Ui, s: &Shared) {
-        let frame = egui::Frame::new().fill(BG).inner_margin(Margin::symmetric(24, 20));
-        egui::CentralPanel::default().frame(frame).show(ui, |ui| {
-            if self.feedback.open {
-                self.feedback_page(ui, s);
-            } else if self.play.list || s.mode.id.is_empty() {
-                self.mode_list(ui, s);
-            } else {
-                egui::ScrollArea::vertical().show(ui, |ui| self.mode_page(ui, s));
-            }
-        });
-    }
-
-    fn mode_list(&mut self, ui: &mut egui::Ui, s: &Shared) {
-        ui.horizontal(|ui| {
-            ui.vertical(|ui| {
-                heading(ui, "What are you playing?");
-                ui.label(muted("Pick a mode to see how it works and tune it."));
-            });
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.selectable_value(&mut self.play.builtin, true, "Built-in");
-                ui.selectable_value(&mut self.play.builtin, false, "My modes");
-            });
-        });
-        ui.add_space(8.0);
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            if self.play.builtin {
-                card(RAISED).inner_margin(Margin::same(12)).show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    ui.horizontal(|ui| {
-                        ui.label(muted(
-                            "Built-in modes suit a whole genre but know nothing about your game: use them to try \
-                             GameViber quickly.",
-                        ));
-                        if ui.link("Make one for your game instead").clicked() {
-                            self.open_generator();
-                        }
-                    });
-                });
-                ui.add_space(8.0);
-            } else {
-                self.generator_banner(ui);
-                ui.add_space(8.0);
-            }
-            if let Some(id) = mode_tiles(ui, s, !self.play.builtin) {
-                if id != s.mode.id {
-                    self.send(Command::SelectMode(id));
-                }
-                self.play.list = false;
-            }
-            if !self.play.builtin {
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    if ui.button("➕ New mode").clicked() {
-                        self.create_mode("my-mode", &NEW_MODE_TEMPLATE.replace("NAME", "My mode"));
-                    }
-                    ui.label(muted("Modes are small Lua scripts, edited in Creator."));
-                });
-            }
-        });
-    }
-
-    /// Puts per-game modes forward: the built-in ones are fallbacks.
-    fn generator_banner(&mut self, ui: &mut egui::Ui) {
-        card(SELECTED_BG).stroke(egui::Stroke::new(1.0, ACCENT)).inner_margin(Margin::same(14)).show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.horizontal(|ui| {
-                ui.vertical(|ui| {
-                    ui.label(RichText::new("✨ Get a mode made for your game").size(15.0).strong());
-                    ui.label(muted(
-                        "An AI assistant (ChatGPT, Claude...) writes one tailored to your game's controls and \
-                         mechanics in a minute.",
-                    ));
-                });
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.add(primary("Make a mode for my game")).clicked() {
-                        self.open_generator();
-                    }
-                });
-            });
-        });
-    }
-
     /// The active mode: what it does, its presets and settings, what to do when it feels wrong.
-    fn mode_page(&mut self, ui: &mut egui::Ui, s: &Shared) {
+    pub(super) fn mode_page(&mut self, ui: &mut egui::Ui, s: &Shared) {
         let mode = &s.mode;
         let entry = s.modes.iter().find(|e| e.id == mode.id);
+        if mode.id.is_empty() {
+            ui.label(muted("No mode is active."));
+            return;
+        }
         ui.horizontal(|ui| {
-            if ui.button("⏴ All modes").clicked() {
-                self.play.list = true;
-                self.play.builtin = entry.is_some_and(|e| e.builtin);
-            }
-            ui.add_space(8.0);
             let icon = entry.map(mode_icon).unwrap_or("🎮");
             egui::Frame::new().fill(RAISED).corner_radius(9).inner_margin(Margin::same(8)).show(ui, |ui| {
                 ui.label(RichText::new(icon).size(18.0).color(ACCENT));
@@ -162,8 +65,10 @@ impl App {
                     if ui.add(delete).clicked() {
                         self.send(Command::DeleteMode(mode.id.clone()));
                         self.play.confirm_delete_mode = None;
-                        self.play.list = true;
-                        self.play.builtin = false;
+                        self.route = match &s.game {
+                            Some(game) => Route::Game { id: game.id.clone(), view: GameView::Modes },
+                            None => Route::Library,
+                        };
                     }
                     ui.label(RichText::new("Delete this mode, its settings and presets?").color(DANGER_TEXT));
                     return;
@@ -204,16 +109,18 @@ impl App {
             return;
         };
         let missing = [
-            (info.uses_sound_scenes() && !Model::Sound.ready(), "music", "Get it on the Sound page", Page::Audio),
-            (info.uses_screen_scenes() && !Model::Image.ready(), "image", "Get it on the Game page", Page::Screen),
+            (s.scenes.sound.0 && !Model::Sound.ready(), "music"),
+            (s.scenes.screen.0 && !Model::Image.ready(), "image"),
         ];
-        for (_, what, button, page) in missing.into_iter().filter(|m| m.0) {
+        for (_, what) in missing.into_iter().filter(|m| m.0) {
             card(RAISED).inner_margin(Margin::same(12)).show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.horizontal_wrapped(|ui| {
-                    ui.label(format!("This mode recognizes scenes from the game's {what}. It needs a scene model:"));
-                    if ui.button(button).clicked() {
-                        self.page = page;
+                    ui.label(format!("Scenes are recognized from the game's {what}. It needs a scene model:"));
+                    if let Some(game) = &s.game {
+                        if ui.button("Get it in the game's Signals").clicked() {
+                            self.route = Route::Game { id: game.id.clone(), view: GameView::Signals };
+                        }
                     }
                 });
             });
