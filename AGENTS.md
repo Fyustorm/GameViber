@@ -50,6 +50,7 @@ script) → **safety layer** → **Intiface output**.
 | `gameviber-overlay/` | in-game overlay: panel layout with epaint (`hud.rs`); `linux/`: implicit Vulkan layer (`layer.rs`, `render.rs`), OpenGL swap hooks when preloaded (`gl/`), socket client, copies of the game's image (`capture.rs`, `render.rs`, `gl/capture.rs`) |
 | `gameviber/src/overlay/` | the games' overlays and their frame memory; `linux/`: the Unix socket and sealed memfds, `linux/install.rs`: layer and launcher installation |
 | `docs/spec-modes.md` | mode API specification (source of truth for the script API) |
+| `README.md`, `docs/user-guide.md`, `CONTRIBUTING.md` | for players: install and first steps (keep it short), then the full guide; for developers: build, architecture, packaging and releases |
 | `packaging/linux/` | files a package installs under `/usr` (Vulkan layer manifests, OpenGL launcher, udev rule, polkit action, desktop entry), `stage.sh` laying them out with the built binaries, `postinstall.sh`; tests check they match what the code expects. `package.sh` makes the release files (deb, rpm, Arch with `nfpm.yaml`, an archive for systems without packages) |
 | `.github/workflows/` | `ci.yml`: tests and the Windows check; `packages.yml`: packages built on Ubuntu 24.04 (glibc 2.39, the oldest the prebuilt ONNX Runtime links with), attached to a draft release on a `v*` tag |
 | `prototype/` | original Python prototype (reference only) |
@@ -74,8 +75,8 @@ Run `cargo test` after any change to the runtime or to a mode.
   number bumped if the change is incompatible.
 - **Built-in modes**: a new built-in mode goes in `gameviber/modes/<name>.luau`, is
   registered in `BUILTIN_MODES` (`gameviber/src/config.rs`), added to the load test and
-  given a behaviour test in `gameviber/src/mode/tests.rs`, and listed in the README
-  table and in `docs/spec-modes.md` §14.3. Follow the style of the existing modes: a
+  given a behaviour test in `gameviber/src/mode/tests.rs`, and listed in the table of
+  `docs/user-guide.md` and in `docs/spec-modes.md` §14.3. Follow the style of the existing modes: a
   header comment, `author = "GameViber"`, a `category`, a plain-language `help` and
   1 to 3 `main_params` for players, parameters with units in their labels,
   `plot()` for the internal state worth tuning, `hud()` / `hud_event()` for what
