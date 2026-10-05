@@ -27,7 +27,7 @@ script) → **safety layer** → **Intiface output**.
 
 | Path | Contents |
 |---|---|
-| `gameviber/src/platform/` | what differs between operating systems for the rest of the code (paths, local time, stop signals, the GUI window system dialogs open over); `linux/`: XDG paths, the privileged helper (`helper/`, `gameviber helper`, started through pkexec) and the device hider |
+| `gameviber/src/platform/` | what differs between operating systems for the rest of the code (paths, local time, stop signals, the GUI window system dialogs open over, file dialogs); `linux/`: XDG paths, the privileged helper (`helper/`, `gameviber helper`, started through pkexec), the device hider, the desktop's portals (`portal.rs`; file chooser: `files.rs`) |
 | `gameviber/src/source/` | interception sources, OS backends started through `Sources`: `linux/proxy` (uinput virtual gamepad) and `linux/ebpf` |
 | `gameviber/src/audio/` | the game's sound: `capture` (what to listen to; `linux`: PipeWire `pw-record` / `pw-dump`), `features` (levels, hits), `clap` (sound scene model: mel spectrogram, encoder) |
 | `gameviber/src/models.rs` | scene models downloaded on demand (CLAP, CLIP): download, ONNX sessions, text embeddings |
@@ -36,6 +36,7 @@ script) → **safety layer** → **Intiface output**.
 | `gameviber/src/mode/` | Luau runtime: `library.rs` (script API), `outputs.rs` (channels, pulses, patterns), `rumble_events.rs`, `scenes.rs` (scenes fused from the sound, the image and the game's captures; the game's scenes replace the mode's own), `prompt.rs` (AI requests: a per-game mode, a fix for a mode that feels wrong), `report.rs` (a session replayed offline into a mode, for the fix request), `tests.rs` |
 | `gameviber/src/screen/` | the game's image: frames copied by the overlay, measures (brightness, motion, flashes), `clip` (image scene model: PIL-exact preprocessing, encoder thread), `zones` (shown-or-not and bar zones) |
 | `gameviber/src/game.rs` | games (`~/.config/gameviber/games/<id>.json`, captures as PNG in `games/<id>/`), identified by name: linked executables (optional), scenes, captures per scene (also the scene examples), zones drawn on them, declared inputs, sound source, modes; migration of the older exe-keyed profiles |
+| `gameviber/src/sharing.rs` | a mode shared with its game: `.gameviber` files (zip: `gameviber.json` with the game, `mode.luau`, `captures/`), exported from a mode's page, imported from the library (merged by name into the game of the same name); `gui/sharing.rs` |
 | `gameviber/src/shortcuts/` | keyboard shortcuts for the combos' actions; `linux`: the desktop's global shortcuts portal (needs a desktop entry for the app id, written on first use) |
 | `gameviber/src/update/` | new versions from the GitHub releases, installed according to how GameViber was installed (the `distribution` file of `packaging/linux/`): package through pkexec, archive in place, only announced for stores and source builds; `gui/updates.rs`: banner and Settings card |
 | `gameviber/src/inputs/` | values and events other programs send: local WebSocket (browsers refused) and, `linux`, a named pipe |

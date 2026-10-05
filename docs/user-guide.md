@@ -56,6 +56,19 @@ game vibrated, what you pressed and what the mode did. Pasting the answer back
 updates your mode (the previous version is kept as `.luau.bak`), or creates a
 tuned copy of a built-in one.
 
+### Sharing a mode
+
+A mode written for a game reads that game's scenes and zones, so it is shared
+with them. **Export** on a mode's page saves it in a `.gameviber` file with the
+game's signals: its scenes, zones, captures (filed under a scene; captures to
+sort stay home), values from other programs and executables. Captures are
+images of your screen: look at them before sharing the file.
+
+**Import a mode** in the library adds the mode to the game of the same name,
+with the signals it lacks (what you set up is kept), or adds the game. Captures
+are analysed again once the game is played. Modes run in a sandbox: they can
+only drive your toys, never reach your files or the network.
+
 ## A game's signals
 
 The rumble and the buttons do not say whether you are fighting, exploring or

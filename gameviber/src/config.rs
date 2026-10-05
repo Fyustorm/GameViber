@@ -449,7 +449,11 @@ pub fn list_modes() -> Vec<ModeEntry> {
 
 /// First free `<stem>.luau`, `<stem>-2.luau`... in the modes directory.
 pub fn unused_mode_path(stem: &str) -> PathBuf {
-    let dir = modes_dir();
+    unused_mode_path_in(&modes_dir(), stem)
+}
+
+/// First free `<stem>.luau`, `<stem>-2.luau`... in `dir`.
+pub fn unused_mode_path_in(dir: &Path, stem: &str) -> PathBuf {
     let mut n = 1;
     loop {
         let name = if n == 1 { format!("{stem}.{MODE_EXTENSION}") } else { format!("{stem}-{n}.{MODE_EXTENSION}") };

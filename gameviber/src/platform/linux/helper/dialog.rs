@@ -72,6 +72,16 @@ pub fn set_window(window: &(impl HasWindowHandle + HasDisplayHandle)) {
     update(|gui| gui.window = Some(window));
 }
 
+/// The GUI window as the desktop's portals name the window their dialogs
+/// belong to: "x11:<id>" on X11, "" on Wayland (it would have to be exported)
+/// or without a window.
+pub fn portal_parent() -> String {
+    match GUI.lock().unwrap().window {
+        Some(Window::X11(id)) => format!("x11:{id:x}"),
+        _ => String::new(),
+    }
+}
+
 /// Called every frame: activation tokens are only granted to the focused window.
 pub fn set_focused(focused: bool) {
     let mut gui = GUI.lock().unwrap();

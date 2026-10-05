@@ -8,14 +8,13 @@ use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
-use anyhow::{bail, Context};
+use anyhow::Context;
 use zbus::blocking::{Connection, Proxy};
 use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
 
 use super::{Action, Status, APP_ID};
+use crate::platform::linux::portal::{PORTAL, PORTAL_PATH};
 
-const PORTAL: &str = "org.freedesktop.portal.Desktop";
-const PORTAL_PATH: &str = "/org/freedesktop/portal/desktop";
 const SHORTCUTS: &str = "org.freedesktop.portal.GlobalShortcuts";
 pub struct Shortcuts {
     actions: Receiver<Action>,
@@ -64,25 +63,12 @@ impl Shortcuts {
     }
 }
 
-/// A portal request: calls `method` (whose options carry `token` as their
-/// handle token), and waits for its response.
+/// A request to the shortcuts portal; refusing it is an error.
 fn request<B>(conn: &Connection, method: &str, token: &str, body: &B) -> anyhow::Result<HashMap<String, OwnedValue>>
 where
     B: serde::Serialize + zbus::zvariant::DynamicType,
 {
-    let sender = conn.unique_name().context("no bus name")?.trim_start_matches(':').replace('.', "_");
-    let path = format!("{PORTAL_PATH}/request/{sender}/{token}");
-    let request = Proxy::new(conn, PORTAL, path, "org.freedesktop.portal.Request")?;
-    // Listening before calling, not to miss a quick response.
-    let mut responses = request.receive_signal("Response")?;
-    conn.call_method(Some(PORTAL), PORTAL_PATH, Some(SHORTCUTS), method, body).with_context(|| method.to_owned())?;
-    let message = responses.next().context("no response")?;
-    let (code, results): (u32, HashMap<String, OwnedValue>) = message.body().deserialize()?;
-    match code {
-        0 => Ok(results),
-        1 => bail!("{method}: refused"),
-        _ => bail!("{method}: failed"),
-    }
+    crate::platform::linux::portal::request(conn, SHORTCUTS, method, token, body)?.with_context(|| format!("{method}: refused"))
 }
 
 type Bound = Vec<(String, HashMap<String, OwnedValue>)>;

@@ -20,6 +20,7 @@ mod game;
 mod rumble;
 mod screen;
 mod session;
+mod sharing;
 mod shortcuts;
 mod source;
 mod update;

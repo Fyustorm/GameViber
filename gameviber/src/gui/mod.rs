@@ -7,7 +7,7 @@
 //! sound, other programs: what does not depend on the game) and Creator (mode
 //! editor, graphs, simulator, sessions, logs). Dialogs help players get a
 //! mode made for their game by an AI assistant, and get one fixed when it
-//! does not feel right.
+//! does not feel right; modes are shared with their game as files.
 
 mod audio;
 mod creator;
@@ -22,6 +22,7 @@ mod onboarding;
 mod overlay;
 mod settings;
 mod setup;
+mod sharing;
 mod play;
 mod screen;
 mod signals;
@@ -99,6 +100,7 @@ pub struct App {
     screen: screen::State,
     games: games::State,
     signals: signals::State,
+    sharing: sharing::State,
     /// The engine was told the Screen page is open.
     watching_screen: bool,
     /// Development: screenshots of every page (`GAMEVIBER_SCREENSHOTS`).
@@ -138,6 +140,7 @@ impl App {
             screen: screen::State::default(),
             games: games::State::default(),
             signals: signals::State::default(),
+            sharing: sharing::State::default(),
             watching_screen: false,
             tour: tour::Tour::from_env(),
             updater: None,

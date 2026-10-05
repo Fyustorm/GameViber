@@ -66,6 +66,11 @@ specification. Built-in modes are in [`gameviber/modes/`](gameviber/modes/);
 user modes in `~/.config/gameviber/modes/`. The **Creator** page edits them
 with hot reload, graphs, a simulator and session replay. The requests sent to
 AI assistants are built from [`gameviber/prompts/`](gameviber/prompts/).
+A mode is shared with its game as a `.gameviber` file (`sharing.rs`): a zip
+archive of `gameviber.json` (format version, the game without its modes and
+capture embeddings), `mode.luau` and `captures/*.png`. Importing checks the
+limits, the file names and that the mode loads, then merges by name into the
+game of the same name.
 
 ### Interception sources
 

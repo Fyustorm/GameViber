@@ -216,7 +216,7 @@ pub fn valid_name(name: &str) -> bool {
 #[cfg(test)]
 thread_local! {
     /// Tests keep their profiles out of the player's.
-    static TEST_DIR: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+    pub(crate) static TEST_DIR: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
 }
 
 fn dir() -> PathBuf {
@@ -248,6 +248,11 @@ fn path(id: &str) -> PathBuf {
 /// Where a game's captures are.
 fn captures_dir(id: &str) -> PathBuf {
     dir().join(id)
+}
+
+/// Where a capture of `game` is (its PNG file).
+pub fn capture_path(game: &str, file: &str) -> PathBuf {
+    captures_dir(game).join(file)
 }
 
 /// Before games had names, profiles were files named after the executable

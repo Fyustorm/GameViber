@@ -33,6 +33,8 @@ tokio = { version = "1", features = ["full"] }
 tokio-tungstenite = "0.30"
 toml = "1"
 ureq = "3"
+# Modes shared with their game (`sharing.rs`).
+zip = { version = "8", default-features = false, features = ["deflate-flate2"] }
 
 # Linux only: everything that uses them lives in `linux` modules (AGENTS.md, Platforms).
 [target.'cfg(target_os = "linux")'.dependencies]

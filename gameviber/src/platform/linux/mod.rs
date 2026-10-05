@@ -1,8 +1,13 @@
 //! Linux: XDG directories (of the sudo caller when run through sudo), the
-//! privileged helper started through pkexec, and the device hider it uses.
+//! privileged helper started through pkexec, and the device hider it uses,
+//! the desktop's portals and its file dialogs.
 
+mod files;
 pub mod helper;
 pub mod hider;
+pub mod portal;
+
+pub use files::{open_file, save_file};
 
 use std::ffi::CStr;
 use std::path::{Path, PathBuf};

@@ -133,6 +133,8 @@ pub enum Command {
     SelectGame(Option<String>),
     /// The executable now runs as this game (and no other).
     LinkExecutable { game: String, executable: String },
+    /// A mode and its game were imported (`sharing`): the modes and games are read again.
+    Imported { game: String },
     /// Adds a mode to a game's modes, or takes it out.
     AddGameMode { game: String, mode: String },
     RemoveGameMode { game: String, mode: String },
@@ -815,6 +817,13 @@ impl Engine {
                 self.unlink(&executable);
                 self.edit_game_by_id(&game, |g| g.executables.push(executable.clone()));
                 self.select_game(Some(game));
+            }
+            Command::Imported { game } => {
+                self.refresh_modes();
+                self.games = Game::list();
+                if self.game.as_ref().is_some_and(|g| g.id == game) {
+                    self.set_game(Game::load(&game));
+                }
             }
             Command::AddGameMode { game, mode } => self.edit_game_by_id(&game, |g| {
                 if !g.modes.contains(&mode) {

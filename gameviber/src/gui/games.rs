@@ -35,6 +35,11 @@ impl State {
     pub(super) fn close_dialog(&mut self) {
         self.adding = None;
     }
+
+    /// Opens the game named `name` once the engine lists it.
+    pub(super) fn open_when_listed(&mut self, name: &str, view: GameView) {
+        self.pending = Some((name.to_owned(), view));
+    }
 }
 
 impl App {
@@ -43,6 +48,7 @@ impl App {
         let mode_page = matches!(self.route, Route::FreeMode | Route::Game { view: GameView::Mode, .. });
         let frame = egui::Frame::new().fill(BG).inner_margin(Margin::symmetric(24, 18));
         egui::CentralPanel::default().frame(frame).show(ui, |ui| {
+            self.sharing_ui(ui);
             if mode_page && self.feedback.open {
                 self.feedback_page(ui, s);
                 return;
@@ -121,6 +127,12 @@ impl App {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.add(primary("+ Add a game")).clicked() {
                     self.games.adding = Some((String::new(), s.unlinked_executable.is_some()));
+                }
+                let import = ui
+                    .add_enabled(!self.sharing.busy(), egui::Button::new("Import a mode"))
+                    .on_hover_text("A .gameviber file someone shared: a mode with its game's signals");
+                if import.clicked() {
+                    self.import_mode();
                 }
             });
         });
@@ -305,6 +317,7 @@ impl App {
         }
         let mut open = None;
         let mut remove = None;
+        let mut export = None;
         card(PANEL).inner_margin(Margin::same(0)).show(ui, |ui| {
             ui.set_width(ui.available_width());
             for id in &game.modes {
@@ -334,6 +347,14 @@ impl App {
                             if entry.is_some() && ui.button("Settings ›").clicked() {
                                 open = Some(id.clone());
                             }
+                            if entry.is_some_and(|e| !e.builtin) {
+                                let button = ui
+                                    .add_enabled(!self.sharing.busy(), egui::Button::new("Export"))
+                                    .on_hover_text("Save it in a file to share, with this game's signals");
+                                if button.clicked() {
+                                    export = Some(id.clone());
+                                }
+                            }
                             if active {
                                 pill(ui, "Playing", ON_ACCENT, ACCENT);
                             } else if entry.is_some() && ui.button("Play").clicked() {
@@ -356,6 +377,9 @@ impl App {
                 self.send(Command::SelectMode(id));
             }
             self.route = Route::Game { id: game.id.clone(), view: GameView::Mode };
+        }
+        if let Some(mode) = export {
+            self.export_mode(game, &mode);
         }
         if let Some(mode) = remove {
             self.send(Command::RemoveGameMode { game: game.id.clone(), mode });

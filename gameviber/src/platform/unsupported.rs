@@ -1,5 +1,5 @@
 //! Systems without a backend yet: plain directories, UTC time, Ctrl+C, and
-//! no privileged helper.
+//! no privileged helper nor file dialogs.
 
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -19,6 +19,14 @@ pub fn data_dir() -> PathBuf {
 }
 
 pub fn chown_to_caller(_path: &Path) {}
+
+pub fn open_file(_title: &str, _kind: &str, _extension: &str) -> anyhow::Result<Option<PathBuf>> {
+    anyhow::bail!("file dialogs are not available on this system yet")
+}
+
+pub fn save_file(_title: &str, _kind: &str, _extension: &str, _name: &str) -> anyhow::Result<Option<PathBuf>> {
+    anyhow::bail!("file dialogs are not available on this system yet")
+}
 
 /// "2026-10-03 21:14:05", in UTC: the local time zone needs the OS.
 pub fn local_time() -> String {
