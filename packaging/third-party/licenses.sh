@@ -11,6 +11,9 @@ here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
 out=$1
 cd "$root"
+# Every crate of Cargo.lock, those of other systems included: cargo-about reads
+# them all (cargo metadata), a Linux build only downloads its own.
+cargo fetch --locked --quiet
 
 # The ONNX Runtime notices in this directory are those of the version ort
 # downloads: refresh them when it changes.
@@ -38,7 +41,7 @@ the versions of these libraries it uses, are at
 https://github.com/Fyustorm/GameViber (Cargo.lock lists the exact versions).
 
 HEAD
-    cargo about generate --frozen -c "$here/about.toml" --workspace "$here/about.hbs"
+    cargo about generate --locked -c "$here/about.toml" --workspace "$here/about.hbs"
     printf '\n================================================================================\n'
     printf 'Luau %s (https://github.com/luau-lang/luau), via luau0-src\n' "${luau_version#*+luau}"
     printf -- '--------------------------------------------------------------------------------\n'
