@@ -161,7 +161,9 @@ recorded session replayed into the mode. Scripts never see the answers.
 
 ## 5. Callbacks
 
-All callbacks are optional, except `tick`.
+All callbacks are optional, except `tick`. They are global functions defined after
+`mode { }` (`function tick(dt, input) ... end`); functions of the same names in the
+`mode { }` table are accepted too.
 
 | Callback | Called when |
 |---|---|
@@ -433,6 +435,9 @@ web pages are refused) or, one message per line, to the pipe
   that an AI assistant writing a mode for the game knows it.
 
 ## 7. The `input` table (current state, read-only)
+
+`input` is also a global: event callbacks read it as the previous tick left it, except
+`input.time`, already the current tick's.
 
 ```lua
 input.time               -- s since the mode was activated

@@ -19,6 +19,8 @@
 
 # Rules for the script
 
+- Structure: `mode { ... }` holds the declaration only; callbacks are global functions
+  defined after it (`function tick(dt, input)`, `function on_impact(ev)`).
 - Only the API in the specification below. Luau sandbox: no `io`, `os`, `require`, files
   or network. English only, readable code, short comments where the intent is not
   obvious.

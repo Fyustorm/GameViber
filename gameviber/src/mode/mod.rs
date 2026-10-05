@@ -367,8 +367,13 @@ impl ModeRuntime {
             param_values.insert(def.name.clone(), value);
         }
 
+        // Callbacks are global functions, or fields of the `mode { }` table.
         let get = |name: &str| -> LoadResult<Option<Function>> {
-            match globals.get::<Value>(name).map_err(lua_err)? {
+            let value = match globals.get::<Value>(name).map_err(lua_err)? {
+                Value::Nil => declared.get::<Value>(name).map_err(lua_err)?,
+                value => value,
+            };
+            match value {
                 Value::Function(f) => Ok(Some(f)),
                 Value::Nil => Ok(None),
                 _ => Err(format!("'{name}' must be a function")),
@@ -415,6 +420,9 @@ impl ModeRuntime {
         ] {
             input.root.raw_set(name, table).map_err(lua_err)?;
         }
+        // Event callbacks read it too (the state of the previous tick, at the current time).
+        input.root.raw_set("time", 0.0).map_err(lua_err)?;
+        globals.set("input", &input.root).map_err(lua_err)?;
 
         ctx.borrow_mut().outputs = Some(Outputs::new(info.channels.clone()));
         let tracker = RumbleTracker::new(info.rumble_threshold, info.rumble_release, 0.0);
@@ -637,6 +645,7 @@ impl ModeRuntime {
             ctx.time += dt;
             ctx.time
         };
+        self.input.root.raw_set("time", time).map_err(lua_err)?;
         self.run_timers(time)?;
 
         if let Some(change) = self.pending_scene.take() {

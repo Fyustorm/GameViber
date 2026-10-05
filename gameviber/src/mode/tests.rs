@@ -843,3 +843,17 @@ fn zones_and_external_inputs_reach_the_mode() {
     let out = step(&mut rt, rumble(0.0, 0.0));
     assert_eq!((plot_value(&out, "hud"), plot_value(&out, "hp")), (0.0, -1.0));
 }
+
+#[test]
+fn callbacks_may_be_fields_of_the_mode_table_and_read_input() {
+    // How AI assistants sometimes write modes: callbacks in `mode { }`, `input` read outside `tick`.
+    let src = "mode { api = 1, name = 'T',
+          on_button = function(ev) persist.pressed_at = input.time end,
+          tick = function(dt, input) set(0.5); plot('pressed_at', persist.pressed_at or -1) end,
+        }";
+    let mut rt = load(src);
+    assert_eq!(main_out(&mut rt, rumble(0.0, 0.0)), 0.5, "tick from the mode table");
+    let out = press(&mut rt, "A");
+    assert!((plot_value(&out, "pressed_at") - 2.0 * DT).abs() < 1e-9, "input.time is the current tick's");
+    assert!(load_err("mode { api = 1, name = 'T', tick = 3 }").contains("'tick' must be a function"));
+}
