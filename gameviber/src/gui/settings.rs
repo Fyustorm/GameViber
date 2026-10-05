@@ -55,19 +55,21 @@ impl App {
                     self.templates_editor(ui);
                 });
                 ui.add_space(8.0);
-                card(PANEL).inner_margin(Margin::same(16)).show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new("Setup guide").strong().size(15.0));
-                        ui.label(muted("Intiface Central, toys, gamepad and a first mode, step by step."));
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.button("Run it again").clicked() {
-                                self.onboarding = Some(0);
-                            }
+                if super::ONBOARDING {
+                    card(PANEL).inner_margin(Margin::same(16)).show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("Setup guide").strong().size(15.0));
+                            ui.label(muted("Intiface Central, toys, gamepad and a first mode, step by step."));
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if ui.button("Run it again").clicked() {
+                                    self.onboarding = Some(0);
+                                }
+                            });
                         });
                     });
-                });
-                ui.add_space(8.0);
+                    ui.add_space(8.0);
+                }
                 card(PANEL).inner_margin(Margin::same(16)).show(ui, about);
             });
         });

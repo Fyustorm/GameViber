@@ -5,9 +5,6 @@ goes through the rest.
 
 ## The app
 
-At first launch, a setup guide walks through Intiface Central, the toys, the
-gamepad and a first mode. Run it again from **Settings**.
-
 The top bar shows **the game being played** (pick another there), the state of
 the gamepad, of the rumble capture and of Intiface, the global maximum
 intensity and **STOP ALL**.
@@ -18,7 +15,7 @@ intensity and **STOP ALL**.
 | **Live** | What happens while you play, to keep on a second screen: the mode and its main settings, what goes to the toys, the scene, the sound, the gamepad. |
 | **Toys** | The connection to Intiface Central, the toys it found, a test buzz, and how each toy plays: which mode channels, weakest and strongest intensity, response curve. |
 | **Setup** | What does not depend on the game: the gamepad and how it is captured, the shortcuts (panic stop, mark a moment, capture the screen) on the gamepad or the keyboard, the in-game overlay, the sound listened to by default, other programs. |
-| **Settings** | The language AI assistants answer in, the requests sent to them (editable), the setup guide. |
+| **Settings** | The language AI assistants answer in, the requests sent to them (editable). |
 | **Creator** | Writing modes by hand: hot reload, graphs, a simulator, replay of recorded sessions, the log. |
 
 A mode's own page shows its explanation, its main settings, all its settings

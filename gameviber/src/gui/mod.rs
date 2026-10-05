@@ -43,6 +43,9 @@ use crate::logging::LogBuffer;
 use theme::*;
 
 const REPAINT: Duration = Duration::from_millis(33);
+/// The first-launch setup guide is off while the app changes too much for it
+/// to stay up to date; it comes back once the app is stabilized.
+const ONBOARDING: bool = false;
 /// Rumble newer than this counts as "the game is vibrating right now".
 const RECENT_RUMBLE_SECS: f64 = 5.0;
 
@@ -203,7 +206,7 @@ impl eframe::App for App {
         // The settings are only known after the engine's first tick.
         if !self.onboarding_checked && s.time > 0.0 {
             self.onboarding_checked = true;
-            if !s.settings.onboarded {
+            if ONBOARDING && !s.settings.onboarded {
                 self.onboarding = Some(0);
             }
         }

@@ -31,7 +31,7 @@ toys, and PipeWire for the game's sound (the default on recent systems).
 1. Start Intiface Central and click **Start Server**.
 2. Start **GameViber** (from your applications menu, or `gameviber`). Do not use
    `sudo`: GameViber asks for your password itself when it needs it.
-3. Follow the setup guide: your toys, your gamepad, then a mode.
+3. Check that your toys show up in **Toys**, and your gamepad in **Setup**.
 4. Get a mode made for your game: in **Games**, add your game, then
    **New mode**. GameViber prepares a request to paste into any AI assistant
    (ChatGPT, Claude, Gemini, Le Chat...), and you paste its answer back.
