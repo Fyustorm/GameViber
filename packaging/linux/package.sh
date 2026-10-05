@@ -41,5 +41,12 @@ printf 'archive\n' > "$out/$name/distribution"
 tar -C "$out" -czf "$out/$name.tar.gz" "$name"
 rm -rf "$out/root" "$out/$name"
 
+# GitHub replaces the ~ of deb and rpm prerelease versions with a dot in the
+# names of release files: they get those names here, so SHA256SUMS lists them.
+for file in "$out"/*~*; do
+    [ -e "$file" ] || continue
+    name=$(basename "$file")
+    mv "$file" "$out/$(printf '%s' "$name" | tr '~' '.')"
+done
 (cd "$out" && sha256sum -- * > SHA256SUMS)
 ls -l "$out"

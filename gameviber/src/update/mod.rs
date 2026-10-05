@@ -353,10 +353,12 @@ fn download(asset: &Asset, dir: &Path, progress: impl Fn(u64)) -> anyhow::Result
 }
 
 /// The SHA-256 of `name` in a `sha256sum` listing.
+/// GitHub replaces the `~` of file names (deb and rpm prerelease versions)
+/// with a dot: SHA256SUMS of the first releases still has the `~`.
 fn expected_sum(sums: &str, name: &str) -> Option<String> {
     sums.lines().find_map(|line| {
         let (sum, file) = line.split_once(char::is_whitespace)?;
-        (file.trim_start().trim_start_matches('*') == name).then(|| sum.to_lowercase())
+        (file.trim_start().trim_start_matches('*').replace('~', ".") == name.replace('~', ".")).then(|| sum.to_lowercase())
     })
 }
 
@@ -416,6 +418,7 @@ mod tests {
         let sums = "ab12  gameviber_0.1.0~alpha.1-1_amd64.deb\nCD34 *gameviber-0.1.0~alpha.1-1.x86_64.rpm\n";
         assert_eq!(expected_sum(sums, "gameviber_0.1.0~alpha.1-1_amd64.deb").as_deref(), Some("ab12"));
         assert_eq!(expected_sum(sums, "gameviber-0.1.0~alpha.1-1.x86_64.rpm").as_deref(), Some("cd34"));
+        assert_eq!(expected_sum(sums, "gameviber-0.1.0.alpha.1-1.x86_64.rpm").as_deref(), Some("cd34"), "GitHub's name for it");
         assert_eq!(expected_sum(sums, "other.deb"), None);
         assert_eq!(hex(&Sha256::digest(b"abc")), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
     }
