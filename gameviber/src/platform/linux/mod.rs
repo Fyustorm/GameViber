@@ -7,7 +7,7 @@ pub mod helper;
 pub mod hider;
 pub mod portal;
 
-pub use files::{open_file, save_file};
+pub use files::{open_file, open_files, save_file};
 
 use std::ffi::CStr;
 use std::path::{Path, PathBuf};

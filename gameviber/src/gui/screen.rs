@@ -10,7 +10,7 @@
 //! for another saves its changes; Save does it in place.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
 
 use eframe::egui::{self, Color32, CornerRadius, Margin, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Vec2};
 
@@ -61,6 +61,10 @@ pub struct State {
     editor_below: f32,
     below_image_top: f32,
     pub(super) port: Option<String>,
+    /// Images being imported from files (their dialog open, or being read),
+    /// and what the last import did (true: it went well); None: cancelled.
+    import: Option<mpsc::Receiver<Option<(bool, String)>>>,
+    import_message: Option<(bool, String)>,
 }
 
 impl Default for State {
@@ -82,6 +86,8 @@ impl Default for State {
             editor_below: 0.0,
             below_image_top: 0.0,
             port: None,
+            import: None,
+            import_message: None,
         }
     }
 }
@@ -190,6 +196,10 @@ impl State {
                         None => base.color,
                     };
                 }
+                match d.look.as_ref().filter(|l| d.by_look && l.fits(rect, zone.direction)) {
+                    Some(look) => (zone.full_look, zone.empty_look) = (look.full.clone(), look.empty.clone()),
+                    None => (zone.full_look, zone.empty_look) = (Vec::new(), Vec::new()),
+                }
                 if let Some(frame) = drawn {
                     zone.length = zones::bar_length(&zone, frame);
                 }
@@ -225,6 +235,8 @@ impl State {
             Some("Draw it on the image.")
         } else if d.kind == ZoneKind::Visible && d.editing.is_none() && d.rect().is_some() && d.drawn_on.is_none() {
             Some("Draw the rectangle on a capture that shows the element.")
+        } else if d.kind == ZoneKind::Bar && d.by_look && placing && !d.rect().is_some_and(|r| d.look.as_ref().is_some_and(|l| l.fits(r, d.direction))) {
+            Some("Take the bar's look full, on a capture where it is full.")
         } else if !valid_name(&d.name) {
             Some("Name: letters, digits and _, starting with a letter.")
         } else if game.zones.iter().any(|z| z.name == d.name && Some(&z.name) != d.zone.as_ref()) {
@@ -368,8 +380,32 @@ struct Draft {
     /// full color: taken from the capture.
     full: Vec<[u8; 3]>,
     empty: Vec<[u8; 3]>,
+    /// The bar read by its look rather than its colors...
+    by_look: bool,
+    /// ...taken on captures.
+    look: Option<Look>,
     /// The draft as it was opened, to tell whether it changed.
     opened: Option<Box<Draft>>,
+}
+
+/// A bar's look (`Zone::full_look`, `empty_look`), and the rectangle and
+/// axis it was taken with: once they change, it must be taken again.
+#[derive(Clone, PartialEq)]
+struct Look {
+    rect: [f32; 4],
+    horizontal: bool,
+    full: Vec<[u8; 3]>,
+    empty: Vec<Option<[u8; 3]>>,
+}
+
+impl Look {
+    fn fits(&self, rect: [f32; 4], direction: Direction) -> bool {
+        self.horizontal == horizontal(direction) && self.rect.iter().zip(rect).all(|(a, b)| (a - b).abs() < 1e-5)
+    }
+}
+
+fn horizontal(direction: Direction) -> bool {
+    matches!(direction, Direction::Right | Direction::Left)
 }
 
 impl Default for Draft {
@@ -391,6 +427,8 @@ impl Default for Draft {
             picking: None,
             full: Vec::new(),
             empty: Vec::new(),
+            by_look: false,
+            look: None,
             opened: None,
         }
     }
@@ -411,6 +449,8 @@ impl Draft {
             || self.tolerance != o.tolerance
             || self.full != o.full
             || self.empty != o.empty
+            || self.by_look != o.by_look
+            || self.look != o.look
             || self.threshold != o.threshold
             || self.start != o.start
             || self.end != o.end
@@ -446,9 +486,17 @@ impl Draft {
         self.end = Some(Pos2::new(x + w, y + h));
         self.grab = None;
         self.picking = None;
+        self.by_look = zones::has_look(zone);
+        self.look = self.by_look.then(|| Look {
+            rect: zone.rect,
+            horizontal: horizontal(zone.direction),
+            full: zone.full_look.clone(),
+            empty: zone.empty_look.clone(),
+        });
         // The place as it is saved is where its changes count from.
         if let Some(o) = &mut self.opened {
             (o.editing, o.start, o.end, o.threshold, o.drawn_on) = (self.editing, self.start, self.end, self.threshold, None);
+            (o.by_look, o.look) = (self.by_look, self.look.clone());
         }
     }
 
@@ -528,6 +576,16 @@ fn remember_height(ui: &egui::Ui, height: &mut f32, top: f32) {
         *height = used;
         ui.ctx().request_repaint();
     }
+}
+
+/// A step of a guide: its number, or a tick once done.
+fn step(ui: &mut egui::Ui, n: usize, done: bool, contents: impl FnOnce(&mut egui::Ui)) {
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        let mark = if done { RichText::new("✔").color(OK) } else { RichText::new(format!("{n}.")).color(ACCENT_TEXT) };
+        ui.label(mark.strong());
+        contents(ui);
+    });
 }
 
 /// A color swatch to click.
@@ -761,10 +819,12 @@ impl App {
         }
     }
 
-    /// How captures are taken: in game with the combo, or from here, into a scene.
+    /// How captures are taken: in game with the combo, or from here, into a
+    /// scene; or images imported from files.
     fn add_captures(&mut self, ui: &mut egui::Ui, s: &Shared, game: &Game) {
         let view = &s.screen;
         let playing = s.game.as_ref().is_some_and(|g| g.id == game.id);
+        self.poll_import();
         egui::Frame::new().fill(BG).corner_radius(CornerRadius::same(10)).inner_margin(Margin::same(12)).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
@@ -776,31 +836,29 @@ impl App {
                     });
                 }
             });
-            if !playing {
-                ui.label(muted(format!("Captures go to the game being played: play {} to capture it.", game.name)).size(12.5));
-                if ui.add(primary("Play this game")).clicked() {
-                    self.send(Command::SelectGame(Some(game.id.clone())));
+            if playing {
+                ui.label(muted(format!("Hold {} in game, or from here:", crate::gamepad::combo_text(&s.settings.capture_combo))).size(12.5))
+                    .on_hover_text("Captured in game, the image keeps the game's gamepad prompts");
+                if view.frame.is_none() {
+                    let hint = if s.overlay_unavailable {
+                        "Another GameViber holds the in-game overlay."
+                    } else if s.overlay_clients.is_empty() {
+                        "Start the game with the in-game overlay (Setup › In-game overlay)."
+                    } else {
+                        "Waiting for the game's image..."
+                    };
+                    ui.label(RichText::new(hint).color(WARN).size(12.0));
                 }
-                return;
+            } else {
+                ui.label(muted(format!("Images of the game from your computer (screenshots), or play {} to capture it.", game.name)).size(12.5));
             }
             let scenes = game.scenes();
             let current = s.capture_scene.clone();
             let label = |scene: &str| if scene.is_empty() { "to sort later".to_owned() } else { scene.to_owned() };
-            ui.label(muted(format!("Hold {} in game, or from here:", crate::gamepad::combo_text(&s.settings.capture_combo))).size(12.5))
-                .on_hover_text("Captured in game, the image keeps the game's gamepad prompts");
-            if view.frame.is_none() {
-                let hint = if s.overlay_unavailable {
-                    "Another GameViber holds the in-game overlay."
-                } else if s.overlay_clients.is_empty() {
-                    "Start the game with the in-game overlay (Setup › In-game overlay)."
-                } else {
-                    "Waiting for the game's image..."
-                };
-                ui.label(RichText::new(hint).color(WARN).size(12.0));
-            }
             let mut target = None;
             let mut capture = false;
-            ui.horizontal(|ui| {
+            let mut import = false;
+            ui.horizontal_wrapped(|ui| {
                 ui.label("Into");
                 egui::ComboBox::from_id_salt("capture-scene").selected_text(label(&current)).width(110.0).show_ui(ui, |ui| {
                     for scene in std::iter::once(String::new()).chain(scenes.iter().cloned()) {
@@ -809,19 +867,86 @@ impl App {
                         }
                     }
                 });
-                capture = ui.add_enabled(view.frame.is_some(), egui::Button::new("📸 Capture")).clicked();
+                if playing {
+                    capture = ui.add_enabled(view.frame.is_some(), egui::Button::new("📸 Capture")).clicked();
+                }
+                let busy = self.screen.import.is_some();
+                import = ui
+                    .add_enabled(!busy, egui::Button::new(if busy { "Importing..." } else { "🖼 From files..." }))
+                    .on_hover_text("Add images from your computer: screenshots of the game (PNG, JPEG, WebP, BMP)")
+                    .clicked();
             });
-            let mut on = s.settings.screen;
-            if ui.checkbox(&mut on, "Modes see the game's image").on_hover_text("Scenes from the image, zones, flashes and motion").changed() {
-                self.send(Command::SetScreen(on));
+            if let Some((ok, message)) = &self.screen.import_message {
+                ui.label(RichText::new(message).color(if *ok { OK } else { WARN }).size(12.0));
+            }
+            if playing {
+                let mut on = s.settings.screen;
+                if ui.checkbox(&mut on, "Modes see the game's image").on_hover_text("Scenes from the image, zones, flashes and motion").changed() {
+                    self.send(Command::SetScreen(on));
+                }
+            } else if ui.button("Play this game").on_hover_text("To capture it in game").clicked() {
+                self.send(Command::SelectGame(Some(game.id.clone())));
             }
             if let Some(scene) = target {
                 self.send(Command::SetCaptureScene(scene));
             }
             if capture {
-                self.send(Command::CaptureScene(current));
+                self.send(Command::CaptureScene(current.clone()));
+            }
+            if import {
+                self.import_captures(ui.ctx(), game, current);
             }
         });
+    }
+
+    /// Asks for image files, and adds them to `game`'s captures under `scene`.
+    fn import_captures(&mut self, ctx: &egui::Context, game: &Game, scene: String) {
+        let (tx, rx) = mpsc::channel();
+        let (commands, game, ctx) = (self.commands.clone(), game.id.clone(), ctx.clone());
+        self.screen.import = Some(rx);
+        self.screen.import_message = None;
+        std::thread::spawn(move || {
+            let outcome = match crate::platform::open_files("Add captures", "Images", &game::IMAGE_EXTENSIONS) {
+                Ok(paths) if paths.is_empty() => None,
+                Ok(paths) => {
+                    let mut frames = Vec::new();
+                    let mut failed = Vec::new();
+                    for path in &paths {
+                        match game::read_image(path) {
+                            Ok(frame) => frames.push(frame),
+                            Err(e) => {
+                                log::warn!("cannot read the image {}: {e:#}", path.display());
+                                failed.push(path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned()));
+                            }
+                        }
+                    }
+                    let added = frames.len();
+                    if added > 0 {
+                        let _ = commands.send(Command::AddCaptures { game, scene, frames });
+                    }
+                    Some(match (added, failed.is_empty()) {
+                        (_, true) => (true, format!("{added} image{} added.", if added == 1 { "" } else { "s" })),
+                        (_, false) => (false, format!("{added} added; cannot read {}.", failed.join(", "))),
+                    })
+                }
+                Err(e) => Some((false, format!("Cannot open images: {e:#}"))),
+            };
+            let _ = tx.send(outcome);
+            ctx.request_repaint();
+        });
+    }
+
+    /// The import's outcome, once its dialog closed.
+    fn poll_import(&mut self) {
+        let Some(rx) = &self.screen.import else { return };
+        match rx.try_recv() {
+            Ok(outcome) => {
+                self.screen.import = None;
+                self.screen.import_message = outcome;
+            }
+            Err(mpsc::TryRecvError::Disconnected) => self.screen.import = None,
+            Err(mpsc::TryRecvError::Empty) => {}
+        }
     }
 
     /// The right column: the zone editor, once there is a capture to draw on.
@@ -1103,7 +1228,7 @@ impl App {
                     let label = if draft.name.is_empty() { text } else { format!("{} · {text}", draft.name) };
                     tag(ui, r.left_top() - Vec2::new(0.0, 6.0), egui::Align2::LEFT_BOTTOM, label, color);
                     // The bar as found: its full part green, its empty part red, along the zone.
-                    if zone.kind == ZoneKind::Bar && zone.empty_color.is_some() {
+                    if zone.kind == ZoneKind::Bar && (zone.empty_color.is_some() || zones::has_look(zone)) {
                         let ((a, b), (c, d)) = zones::bar_extent(zone, frame);
                         let horizontal = matches!(zone.direction, Direction::Right | Direction::Left);
                         let segment = |from: f32, to: f32| {
@@ -1209,6 +1334,93 @@ impl App {
                 }
             });
             if draft.kind == ZoneKind::Bar {
+                ui.horizontal(|ui| {
+                    ui.label("Read by");
+                    ui.selectable_value(&mut draft.by_look, false, "Colors");
+                    ui.selectable_value(&mut draft.by_look, true, "Look");
+                });
+                let why = if draft.by_look {
+                    "Look: for bars a color does not describe — a gradient (red to green), segments, hearts, stripes. \
+                     GameViber learns how the bar looks full and empty along its length, from captures; the bar must stay in place."
+                } else {
+                    "Colors: for a bar of one color over an empty part of another. It may move inside the zone. \
+                     For a gradient, segments, hearts or stripes, choose Look."
+                };
+                ui.label(muted(why).size(12.0));
+            }
+            if draft.kind == ZoneKind::Bar && draft.by_look {
+                let rect = draft.rect();
+                let fits = |draft: &Draft| rect.is_some_and(|r| draft.look.as_ref().is_some_and(|l| l.fits(r, draft.direction)));
+                let moved = rect.is_some() && draft.look.is_some() && !fits(draft);
+                let seen = draft.look.as_ref().filter(|_| fits(draft)).map_or(0.0, |l| zones::empty_seen(&Zone { empty_look: l.empty.clone(), ..Zone::default() }));
+                // 1. The rectangle.
+                step(ui, 1, rect.is_some(), |ui| {
+                    ui.label("Draw the rectangle exactly on the bar's track, from its empty end to its full end, and set which way it fills. \
+                              Leave out its icon (a heart before the bar) and its frame.");
+                });
+                // 2. The bar full.
+                step(ui, 2, fits(draft), |ui| {
+                    ui.label("Open a capture where the bar is");
+                    ui.label(RichText::new("full").strong());
+                    ui.label("(left column), then");
+                    if ui.add_enabled(rect.is_some(), egui::Button::new("Use it as the full bar")).clicked() {
+                        if let Some(rect) = rect {
+                            // Empty parts already seen stay when the rectangle did not change.
+                            let empty = draft.look.as_ref().filter(|_| fits(draft)).map(|l| l.empty.clone()).unwrap_or_default();
+                            let full = zones::look(frame, rect, draft.direction);
+                            draft.look = Some(Look { rect, horizontal: horizontal(draft.direction), full, empty });
+                        }
+                    }
+                    if moved {
+                        ui.label(RichText::new("The rectangle moved or turned since: do it again.").color(WARN));
+                    }
+                });
+                // 3. The bar empty.
+                step(ui, 3, seen >= 0.95, |ui| {
+                    ui.label("Open captures where the bar is");
+                    ui.label(RichText::new("low or empty").strong());
+                    ui.label(", then");
+                    let help = "The part of the bar past its end on this capture is how it looks empty. Add captures at \
+                                different levels until all of it is seen.";
+                    if ui.add_enabled(fits(draft), egui::Button::new("Add its empty part")).on_hover_text(help).clicked() {
+                        if let (Some(rect), Some(look)) = (rect, draft.look.as_mut()) {
+                            let zone = Zone {
+                                kind: ZoneKind::Bar,
+                                rect,
+                                direction: draft.direction,
+                                tolerance: draft.tolerance,
+                                full_look: look.full.clone(),
+                                empty_look: look.empty.clone(),
+                                ..Zone::default()
+                            };
+                            look.empty = zones::add_empty_look(&zone, frame);
+                        }
+                    }
+                    ui.label(muted(format!("{:.0}% of the bar seen empty", seen * 100.0)));
+                    if seen > 0.0 && ui.small_button("Clear").on_hover_text("Forget how it looks empty").clicked() {
+                        if let Some(look) = draft.look.as_mut() {
+                            look.empty.clear();
+                        }
+                    }
+                });
+                if fits(draft) && seen < 0.95 {
+                    ui.label(
+                        muted("Recommended: until all of it is seen empty, the reading is rougher, and a bar gone from the screen \
+                               (a menu) reads empty instead of unknown (nil).")
+                        .size(12.0),
+                    );
+                }
+                // 4. Checking it.
+                step(ui, 4, false, |ui| {
+                    ui.label("Check it: under the rectangle, green is the part read as full, red as empty; each capture on the left shows its reading.");
+                });
+                ui.horizontal(|ui| {
+                    ui.add(egui::Slider::new(&mut draft.tolerance, 10.0..=150.0).text("tolerance")).on_hover_text(
+                        "How different from its looks the bar may be. Raise it when the bar shines or blinks, lower it when \
+                         its empty part reads full.",
+                    );
+                });
+            } else if draft.kind == ZoneKind::Bar {
                 ui.horizontal_wrapped(|ui| {
                     let mut remove = None;
                     for (pick, label) in [(Pick::Full, "Full"), (Pick::Empty, "Empty")] {

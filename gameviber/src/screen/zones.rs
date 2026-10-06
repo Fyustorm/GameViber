@@ -2,7 +2,9 @@
 //! whether an element is shown (its look compared with a reference taken when
 //! the zone was drawn) and how full a bar is (the share of it in the bar's
 //! full color rather than its empty one; with both colors known, the bar is
-//! the longest run of them in the zone, wherever it is).
+//! the longest run of them in the zone, wherever it is). A bar whose colors
+//! do not tell (gradients, segments, hearts) is read by its look instead: the
+//! bar full, and empty, along its length, taken from captures.
 
 use std::collections::BTreeMap;
 
@@ -23,6 +25,14 @@ const FOUND_SHARE: f32 = 0.6;
 const FOUND_MAX: f32 = 1.5;
 /// ...for this many copies in a row (0.3 s), so that a flash does not hide it.
 const UNKNOWN_FRAMES: u32 = 3;
+/// A bar's look is a grid of this many cells along it, by this many across.
+pub const LOOK_LENGTH: usize = 96;
+pub const LOOK_ACROSS: usize = 4;
+/// A bar read by its look is not on screen when its columns are further from
+/// the look they were given than this share of the tolerance, on average.
+const LOOK_FOUND: f32 = 0.5;
+/// Pixels a bar read by its look may have moved, each way.
+const LOOK_SHIFT: i32 = 2;
 
 /// Pixel bounds of a zone in `frame`, at least 2 x 2.
 fn bounds(frame: &Frame, rect: [f32; 4]) -> (usize, usize, usize, usize) {
@@ -143,6 +153,10 @@ pub fn measure(zone: &Zone, frame: &Frame) -> Option<f32> {
 /// How full a bar is, and how much of its drawn length was found (1 without
 /// the empty color); None when too little was found.
 fn bar_reading(zone: &Zone, frame: &Frame) -> Option<(f32, f32)> {
+    if has_look(zone) {
+        let (fill, cost, _) = look_fill(zone, frame);
+        return (cost <= zone.tolerance * LOOK_FOUND).then_some((fill, 1.0 - cost / zone.tolerance));
+    }
     let bar = bar(zone, frame);
     let expected = if zone.length > 0.0 { zone.length } else { 0.1 };
     let found = if zone.empty_color.is_some() { bar.length() / expected } else { 1.0 };
@@ -214,6 +228,9 @@ enum Part {
 /// than to its empty color. With both colors, the bar is the longest run of
 /// full and empty columns in the zone; with the full color only, the whole zone.
 fn bar(zone: &Zone, frame: &Frame) -> Bar {
+    if has_look(zone) {
+        return Bar { fill: look_fill(zone, frame).0, start: 0.0, end: 1.0 };
+    }
     let parts = columns(zone, frame);
     let len = parts.len().max(1) as f32;
     // Which end the bar fills from: its full part is read from there.
@@ -298,6 +315,133 @@ fn columns(zone: &Zone, frame: &Frame) -> Vec<Part> {
         parts.reverse();
     }
     parts
+}
+
+/// The zone read by its look (its full look taken).
+pub fn has_look(zone: &Zone) -> bool {
+    zone.full_look.len() == LOOK_LENGTH * LOOK_ACROSS
+}
+
+fn horizontal(direction: Direction) -> bool {
+    matches!(direction, Direction::Right | Direction::Left)
+}
+
+/// The zone's colors on the look grid: `LOOK_ACROSS` cells for each step
+/// along it (left to right, or top to bottom), each the average of its pixels.
+fn look_cells(frame: &Frame, rect: [f32; 4], horizontal: bool) -> Vec<[f32; 3]> {
+    let (x0, y0, x1, y1) = bounds(frame, rect);
+    let (length, across) = if horizontal { (x1 - x0, y1 - y0) } else { (y1 - y0, x1 - x0) };
+    // The pixels of cell `k` of `cells` over `n` pixels: at least one.
+    let span = |k: usize, cells: usize, n: usize| {
+        let start = (k * n / cells).min(n - 1);
+        start..((k + 1) * n / cells).max(start + 1)
+    };
+    let mut out = Vec::with_capacity(LOOK_LENGTH * LOOK_ACROSS);
+    for i in 0..LOOK_LENGTH {
+        for j in 0..LOOK_ACROSS {
+            let mut sum = [0f32; 3];
+            let mut count = 0.0;
+            for a in span(i, LOOK_LENGTH, length) {
+                for b in span(j, LOOK_ACROSS, across) {
+                    let p = if horizontal { pixel(frame, x0 + a, y0 + b) } else { pixel(frame, x0 + b, y0 + a) };
+                    (0..3).for_each(|c| sum[c] += p[c] as f32);
+                    count += 1.0;
+                }
+            }
+            out.push(sum.map(|s| s / count));
+        }
+    }
+    out
+}
+
+/// The zone's look on `frame` (taken on a capture where the bar is full).
+pub fn look(frame: &Frame, rect: [f32; 4], direction: Direction) -> Vec<[u8; 3]> {
+    look_cells(frame, rect, horizontal(direction)).iter().map(|c| c.map(|v| v.round() as u8)).collect()
+}
+
+/// The zone's empty look with what `frame` shows of the bar empty added: the
+/// cells past its full part (the column at the boundary left out).
+pub fn add_empty_look(zone: &Zone, frame: &Frame) -> Vec<Option<[u8; 3]>> {
+    let mut empty = zone.empty_look.clone();
+    empty.resize(LOOK_LENGTH * LOOK_ACROSS, None);
+    if !has_look(zone) {
+        return empty;
+    }
+    let (fill, _, rect) = look_fill(zone, frame);
+    let cells = look(frame, rect, zone.direction);
+    let full = (fill * LOOK_LENGTH as f32).round() as usize;
+    let reversed = matches!(zone.direction, Direction::Left | Direction::Up);
+    for k in (if full > 0 { full + 1 } else { 0 })..LOOK_LENGTH {
+        let i = if reversed { LOOK_LENGTH - 1 - k } else { k };
+        for j in 0..LOOK_ACROSS {
+            empty[i * LOOK_ACROSS + j] = Some(cells[i * LOOK_ACROSS + j]);
+        }
+    }
+    empty
+}
+
+/// Share of the bar's columns its empty look covers.
+pub fn empty_seen(zone: &Zone) -> f32 {
+    zone.empty_look.iter().step_by(LOOK_ACROSS).filter(|c| c.is_some()).count() as f32 / LOOK_LENGTH as f32
+}
+
+/// A bar read by its look: its full part ends where the columns before
+/// look most like the bar full and those after like the bar empty, so that
+/// columns alike either way (the gaps between segments, an icon) do not
+/// move it, nor a few columns hidden by an effect. A column not seen empty
+/// yet counts as empty when further than the tolerance from full. Also
+/// returns how far the columns are, on average, from the look they were
+/// given (those not seen empty left out): too far (`LOOK_FOUND`), the bar
+/// is not on screen.
+fn look_fill(zone: &Zone, frame: &Frame) -> (f32, f32, [f32; 4]) {
+    // The bar may have moved a pixel or two since its look was taken: read where it fits best (also returned).
+    let (w, h) = (frame.width.max(1) as f32, frame.height.max(1) as f32);
+    let [x, y, width, height] = zone.rect;
+    let shifts = (-LOOK_SHIFT..=LOOK_SHIFT).flat_map(|dx| (-LOOK_SHIFT..=LOOK_SHIFT).map(move |dy| (dx, dy)));
+    shifts
+        .map(|(dx, dy)| {
+            let rect = [x + dx as f32 / w, y + dy as f32 / h, width, height];
+            (look_fill_at(zone, frame, rect), rect)
+        })
+        .min_by(|a, b| a.0 .2.total_cmp(&b.0 .2))
+        .map(|((fill, far, _), rect)| (fill, far, rect))
+        .unwrap_or((0.0, f32::INFINITY, zone.rect))
+}
+
+/// `look_fill` in `rect`, and what the boundary found costs (to compare places).
+fn look_fill_at(zone: &Zone, frame: &Frame, rect: [f32; 4]) -> (f32, f32, f32) {
+    let cells = look_cells(frame, rect, horizontal(zone.direction));
+    let cap = 2.0 * zone.tolerance;
+    let distance = |p: [f32; 3], c: [u8; 3]| (0..3).map(|k| (p[k] - c[k] as f32).powi(2)).sum::<f32>().sqrt();
+    let mut costs: Vec<(f32, Option<f32>)> = (0..LOOK_LENGTH)
+        .map(|i| {
+            let column = i * LOOK_ACROSS..(i + 1) * LOOK_ACROSS;
+            let mean = |look: &dyn Fn(usize) -> Option<[u8; 3]>| -> Option<f32> {
+                let sum = column.clone().map(|k| look(k).map(|c| distance(cells[k], c))).sum::<Option<f32>>()?;
+                Some((sum / LOOK_ACROSS as f32).min(cap))
+            };
+            (mean(&|k| zone.full_look.get(k).copied()).unwrap_or(cap), mean(&|k| zone.empty_look.get(k).copied().flatten()))
+        })
+        .collect();
+    if matches!(zone.direction, Direction::Left | Direction::Up) {
+        costs.reverse();
+    }
+    // Full up to `k`, empty after: the `k` that costs least.
+    let empty = |c: Option<f32>| c.unwrap_or(zone.tolerance);
+    let mut before = 0.0;
+    let mut after: f32 = costs.iter().map(|c| empty(c.1)).sum();
+    let (mut best, mut full) = (after, 0);
+    for (k, &(f, e)) in costs.iter().enumerate() {
+        before += f;
+        after -= empty(e);
+        if before + after < best - 1e-3 {
+            best = before + after;
+            full = k + 1;
+        }
+    }
+    let known: Vec<f32> = costs[..full].iter().map(|c| c.0).chain(costs[full..].iter().filter_map(|c| c.1)).collect();
+    let far = known.iter().sum::<f32>() / known.len().max(1) as f32;
+    (full as f32 / LOOK_LENGTH as f32, far, best)
 }
 
 /// Reads a profile's zones frame after frame and tells which changed.
@@ -551,6 +695,90 @@ mod tests {
         let zones = [battle, field];
         let first = reader.update(&zones, &bar_at(60, 0.25));
         assert!(matches!(first[..], [(ref n, ZoneValue::Bar(v))] if n == "hp" && (v - 0.25).abs() < 0.04), "one value for both places: {first:?}");
+    }
+
+    /// A bar in `rect` filled up to `level` from its left end (its right end: `from_right`).
+    fn look_bar(
+        rect: [f32; 4],
+        from_right: bool,
+        full: impl Fn(u32, u32) -> [u8; 3] + Copy,
+        empty: impl Fn(u32, u32) -> [u8; 3] + Copy,
+    ) -> impl Fn(f32) -> Frame {
+        move |level| {
+            frame(move |x, y| {
+                let (x0, y0) = ((rect[0] * 160.0).round() as u32, (rect[1] * 90.0).round() as u32);
+                let (x1, y1) = (x0 + (rect[2] * 160.0).round() as u32, y0 + (rect[3] * 90.0).round() as u32);
+                if (x0..x1).contains(&x) && (y0..y1).contains(&y) {
+                    let along = if from_right { x1 - 1 - x } else { x - x0 };
+                    if (along as f32) < level * (x1 - x0) as f32 { full(x, y) } else { empty(x, y) }
+                } else {
+                    [25, 25, 35]
+                }
+            })
+        }
+    }
+
+    /// A bar from red to green along its length, in segments with gaps the
+    /// color of the background: no color tells its full part.
+    #[test]
+    fn gradient_bars_in_segments_are_read_by_their_look() {
+        let rect = [16.0 / 160.0, 10.0 / 90.0, 96.0 / 160.0, 6.0 / 90.0];
+        let gap = |x: u32| x % 8 >= 6;
+        let full = move |x: u32, _| if gap(x) { [25, 25, 35] } else { [(220 - (x - 16) * 2) as u8, (40 + (x - 16) * 2) as u8, 40] };
+        let empty = move |x: u32, _| if gap(x) { [25, 25, 35] } else { [30, 40, 90] };
+        let bar = look_bar(rect, false, full, empty);
+        let mut zone = Zone { name: "hp".into(), kind: ZoneKind::Bar, rect, full_look: look(&bar(1.0), rect, Direction::Right), ..Zone::default() };
+        assert!(has_look(&zone));
+        for level in [1.0, 0.75, 0.5, 0.25, 0.0] {
+            let got = measure(&zone, &bar(level)).unwrap();
+            assert!((got - level).abs() < 0.04, "full look only, {level}: {got}");
+        }
+        // Without the empty look a bar gone reads empty; with it, unknown.
+        let menu = frame(|_, _| [25, 25, 35]);
+        assert_eq!(measure(&zone, &menu), Some(0.0));
+        zone.empty_look = add_empty_look(&zone, &bar(0.5));
+        assert!((empty_seen(&zone) - 0.5).abs() < 0.03, "{}", empty_seen(&zone));
+        zone.empty_look = add_empty_look(&zone, &bar(0.0));
+        assert_eq!(empty_seen(&zone), 1.0);
+        for level in [1.0, 0.6, 0.3, 0.0] {
+            let got = measure(&zone, &bar(level)).unwrap();
+            assert!((got - level).abs() < 0.04, "with the empty look, {level}: {got}");
+        }
+        assert_eq!(measure(&zone, &menu), None);
+        // A few columns hidden by an effect do not move it.
+        let lit = bar(0.75);
+        let flash = frame(|x, y| if (40..46).contains(&x) { [255, 255, 255] } else { pixel(&lit, x as usize, y as usize) });
+        assert!((measure(&zone, &flash).unwrap() - 0.75).abs() < 0.04);
+    }
+
+    /// Hearts: full ones red, empty ones a dark outline, a half heart at the boundary.
+    #[test]
+    fn hearts_are_read_by_their_look() {
+        let rect = [10.0 / 160.0, 20.0 / 90.0, 100.0 / 160.0, 10.0 / 90.0];
+        // Ten hearts of 10 x 10 px: a diamond inside each.
+        let inside = |x: u32, y: u32| {
+            let (dx, dy) = ((x - 10) % 10, y - 20);
+            (dx as i32 - 5).abs() + (dy as i32 - 5).abs() < 5
+        };
+        let full = move |x, y| if inside(x, y) { [220, 30, 40] } else { [25, 25, 35] };
+        let empty = move |x, y| if inside(x, y) { [50, 50, 50] } else { [25, 25, 35] };
+        let bar = look_bar(rect, false, full, empty);
+        let mut zone = Zone { name: "hp".into(), kind: ZoneKind::Bar, rect, full_look: look(&bar(1.0), rect, Direction::Right), ..Zone::default() };
+        // Without the empty look, the edges of an empty heart (mostly
+        // background) look full too: the reading is within a heart.
+        for level in [1.0, 0.75, 0.45, 0.1] {
+            let got = measure(&zone, &bar(level)).unwrap();
+            assert!((got - level).abs() < 0.1, "full look only, {level}: {got}");
+        }
+        zone.empty_look = add_empty_look(&zone, &bar(0.0));
+        for level in [1.0, 0.75, 0.45, 0.1] {
+            let got = measure(&zone, &bar(level)).unwrap();
+            assert!((got - level).abs() < 0.04, "{level}: {got}");
+        }
+        // Filling to the left: the same hearts read from the other end.
+        let left = Zone { direction: Direction::Left, ..zone.clone() };
+        let got = measure(&left, &look_bar(rect, true, full, empty)(0.3)).unwrap();
+        assert!((got - 0.3).abs() < 0.04, "{got}");
     }
 
     #[test]

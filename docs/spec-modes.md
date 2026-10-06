@@ -407,7 +407,8 @@ them.
 - A zone that is **shown or not** (the battle interface, a warning) reads `true` while
   the screen there looks like when it was drawn, `false` otherwise.
 - A **bar** (health, stamina) reads how full it is, 0..1, measured with the colors of
-  its full and empty parts, or **nil while it is not on screen** (a menu, a cutscene):
+  its full and empty parts (or with how it looks full and empty along its length:
+  gradients, segments, hearts), or **nil while it is not on screen** (a menu, a cutscene):
   not knowing is not 0 health. Keep the last known value when the mode needs one. A bar that moves (Metaphor shifts a character's health bar
   with its stance) is found in a wider zone as the longest run of its two colors.
 - `input.zones.<name>` holds the value; `on_zone(ev)` is called when it changes, with

@@ -155,6 +155,14 @@ pub struct Zone {
     /// Bar: share of the zone's length it covered when drawn. Much less of its
     /// colors found means it is not on screen (menus): its value is unknown.
     pub length: f32,
+    /// Bar read by its look rather than its colors (gradients, segments,
+    /// hearts): the place full, a grid of colors along it taken from a
+    /// capture (`screen::zones`, left to right and top to bottom)...
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub full_look: Vec<[u8; 3]>,
+    /// ...and empty, as far as captures showed it so (None: not seen empty yet).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub empty_look: Vec<Option<[u8; 3]>>,
     /// The scene of the capture it was drawn on (shown there, for a visible zone)...
     pub scene: Option<String>,
     /// ...and that capture's file, to show it again when the place is edited.
@@ -178,6 +186,8 @@ impl Default for Zone {
             more_colors: Vec::new(),
             more_empty: Vec::new(),
             length: 0.0,
+            full_look: Vec::new(),
+            empty_look: Vec::new(),
             scene: None,
             capture: None,
             direction: Direction::Right,
@@ -320,6 +330,22 @@ pub fn save_capture(game: &str, scene: &str, frame: &Frame) -> std::io::Result<S
     writer.write_image_data(&frame.pixels).map_err(std::io::Error::other)?;
     writer.finish().map_err(std::io::Error::other)?;
     Ok(file)
+}
+
+/// Image files `read_image` reads.
+pub const IMAGE_EXTENSIONS: [&str; 5] = ["png", "jpg", "jpeg", "webp", "bmp"];
+
+/// An image file (a screenshot, an image found online) as a frame to add as
+/// a capture: no wider or higher than the overlay's copies can be.
+pub fn read_image(path: &std::path::Path) -> anyhow::Result<Frame> {
+    use gameviber_common::overlay::frames::{MAX_HEIGHT, MAX_WIDTH};
+    let mut image = image::ImageReader::open(path)?.with_guessed_format()?.decode()?;
+    if image.width() > MAX_WIDTH || image.height() > MAX_HEIGHT {
+        image = image.resize(MAX_WIDTH, MAX_HEIGHT, image::imageops::FilterType::Triangle);
+    }
+    let rgba = image.into_rgba8();
+    let (width, height) = rgba.dimensions();
+    Ok(Frame { width, height, source_width: width, source_height: height, count: 0, pixels: rgba.into_raw() })
 }
 
 /// A capture of `game`, as a frame.

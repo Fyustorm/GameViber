@@ -81,10 +81,15 @@ teach GameViber about the game, for all its modes, step by step:
 - **Captures**: while the game shows a battle, a dialogue..., hold **BACK + LS**
   on the gamepad (or press the capture key, Ctrl + Alt + C suggested). The image
   is captured without leaving the game. A few captures per scene make the
-  recognition much more reliable. Needs the in-game overlay.
+  recognition much more reliable. Needs the in-game overlay. Screenshots on
+  your computer can be added too (**From files...** under the captures).
 - **Zones**: on a capture, draw a rectangle around something shown only at
   times (the battle interface) or around a bar (health). Modes read whether it
-  is shown, or how full the bar is, ten times a second.
+  is shown, or how full the bar is, ten times a second. A bar of one color is
+  read by its colors (pick its full and empty parts); a bar in a gradient, in
+  segments or made of hearts by its look: draw the rectangle exactly on it
+  (not its icon), take its look on a capture where it is full, then add its
+  empty look from captures where it is low.
 - **Sound**: which application to listen to (by default, the game showing the
   overlay, otherwise everything the computer plays).
 - **Values from other programs**: a mod of the game, or a script reading its

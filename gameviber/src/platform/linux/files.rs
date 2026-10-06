@@ -21,23 +21,32 @@ const FILE_CHOOSER: &str = "org.freedesktop.portal.FileChooser";
 /// Asks for a file to open, among the files named `*.<extension>` (`kind`
 /// names them in the dialog). None: cancelled.
 pub fn open_file(title: &str, kind: &str, extension: &str) -> anyhow::Result<Option<PathBuf>> {
-    ask("OpenFile", title, kind, extension, None)
+    Ok(ask("OpenFile", title, kind, &[extension], None, false)?.into_iter().next())
+}
+
+/// Asks for files to open, among those named after one of `extensions`
+/// (any case). Empty: cancelled.
+pub fn open_files(title: &str, kind: &str, extensions: &[&str]) -> anyhow::Result<Vec<PathBuf>> {
+    ask("OpenFile", title, kind, extensions, None, true)
 }
 
 /// Asks where to save a file, suggesting `name`. None: cancelled.
 pub fn save_file(title: &str, kind: &str, extension: &str, name: &str) -> anyhow::Result<Option<PathBuf>> {
-    ask("SaveFile", title, kind, extension, Some(name))
+    Ok(ask("SaveFile", title, kind, &[extension], Some(name), false)?.into_iter().next())
 }
 
-fn ask(method: &str, title: &str, kind: &str, extension: &str, name: Option<&str>) -> anyhow::Result<Option<PathBuf>> {
+fn ask(method: &str, title: &str, kind: &str, extensions: &[&str], name: Option<&str>, multiple: bool) -> anyhow::Result<Vec<PathBuf>> {
     // Each request has a handle of its own.
     static REQUESTS: AtomicU32 = AtomicU32::new(0);
     let token = format!("gameviber_file_{}", REQUESTS.fetch_add(1, Ordering::Relaxed));
     let conn = Connection::session().context("no session bus")?;
-    let filter = (kind, vec![(0u32, format!("*.{extension}"))]);
+    // Glob patterns are case-sensitive: "*.png" and "*.PNG".
+    let patterns = extensions.iter().flat_map(|e| [e.to_lowercase(), e.to_uppercase()]).map(|e| (0u32, format!("*.{e}"))).collect::<Vec<_>>();
+    let filter = (kind, patterns);
     let mut options = HashMap::from([
         ("handle_token", Value::from(token.as_str())),
         ("modal", Value::from(true)),
+        ("multiple", Value::from(multiple)),
         ("filters", Value::from(vec![filter.clone()])),
         ("current_filter", Value::from(filter)),
     ]);
@@ -46,10 +55,9 @@ fn ask(method: &str, title: &str, kind: &str, extension: &str, name: Option<&str
     }
     let results = portal::request(&conn, FILE_CHOOSER, method, &token, &(portal_parent(), title, options))
         .context("the desktop has no file dialog (xdg-desktop-portal)")?;
-    let Some(results) = results else { return Ok(None) };
+    let Some(results) = results else { return Ok(Vec::new()) };
     let uris: Vec<String> = results.get("uris").and_then(|v| v.try_clone().ok()).and_then(|v| v.try_into().ok()).unwrap_or_default();
-    let Some(uri) = uris.first() else { return Ok(None) };
-    file_path(uri).map(Some)
+    uris.iter().map(|uri| file_path(uri)).collect()
 }
 
 /// The path of a `file://` URI.

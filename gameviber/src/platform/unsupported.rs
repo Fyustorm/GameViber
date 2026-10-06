@@ -24,6 +24,10 @@ pub fn open_file(_title: &str, _kind: &str, _extension: &str) -> anyhow::Result<
     anyhow::bail!("file dialogs are not available on this system yet")
 }
 
+pub fn open_files(_title: &str, _kind: &str, _extensions: &[&str]) -> anyhow::Result<Vec<PathBuf>> {
+    anyhow::bail!("file dialogs are not available on this system yet")
+}
+
 pub fn save_file(_title: &str, _kind: &str, _extension: &str, _name: &str) -> anyhow::Result<Option<PathBuf>> {
     anyhow::bail!("file dialogs are not available on this system yet")
 }

@@ -27,7 +27,7 @@ use crate::platform;
 use crate::game::Game;
 use crate::screen::zones::ZoneReader;
 use crate::shortcuts::{Action, Shortcuts};
-use crate::screen::{self, ImageScenes, ScreenLevels, ScreenView};
+use crate::screen::{self, Frame, ImageScenes, ScreenLevels, ScreenView};
 use crate::rumble::RumbleState;
 use crate::session::{self, Player, Recorder, RecordingInfo, Senses};
 pub use crate::source::SourceHealth;
@@ -143,6 +143,8 @@ pub enum Command {
     CaptureScene(String),
     /// The scene the capture combo files images under ("" to sort them later).
     SetCaptureScene(String),
+    /// Adds images (from files) to a game's captures, under a scene ("" to sort them later).
+    AddCaptures { game: String, scene: String, frames: Vec<Frame> },
     /// Deletes a capture of a game (by file name).
     DeleteCapture { game: String, file: String },
     /// Files a capture under another scene.
@@ -832,6 +834,13 @@ impl Engine {
             }),
             Command::RemoveGameMode { game, mode } => self.edit_game_by_id(&game, |g| g.modes.retain(|m| *m != mode)),
             Command::CaptureScene(scene) => self.capture(scene, self.time()),
+            Command::AddCaptures { game, scene, frames } => self.edit_game_by_id(&game, |g| {
+                for frame in &frames {
+                    if let Err(e) = g.add_capture(&scene, frame) {
+                        log::error!("cannot save the capture: {e}");
+                    }
+                }
+            }),
             Command::DeleteCapture { game, file } => self.edit_game_by_id(&game, |p| p.remove_capture(&file)),
             Command::MoveCapture { game, file, scene } => self.edit_game_by_id(&game, |p| {
                 if let Some(capture) = p.captures.iter_mut().find(|c| c.file == file) {
