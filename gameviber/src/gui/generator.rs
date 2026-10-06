@@ -81,7 +81,7 @@ impl App {
                  Inputs)",
             );
             // The inputs of the active mode, when it is one of the game's: the new mode starts with them.
-            let inputs = for_game.filter(|game| game.modes.contains(&s.mode.id)).and(s.mode_inputs.as_ref());
+            let inputs = for_game.filter(|game| game.modes.contains(&super::main_of(&s.mode.id))).and(s.mode_inputs.as_ref());
             let described = for_game.zip(inputs).map(|(game, inputs)| (game.name.clone(), inputs.describe()));
             match (&described, g.depth) {
                 (Some((game, text)), prompt::Depth::Advanced) if !text.is_empty() => {

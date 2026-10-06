@@ -1,5 +1,6 @@
 //! Mode packages: a user mode is a directory of `modes/`, holding its script
-//! (`mode.luau`), the inputs the player set up for it (`mode.json`, docs/spec-modes.md
+//! (`mode.luau`), its variants (other scripts reading the same inputs,
+//! `variants/<variant>.luau`), the inputs the player set up for it (`mode.json`, docs/spec-modes.md
 //! §6.3, §6.5) — its phases, captures of them (images the player took, which
 //! are also the examples phases are recognized with, in `captures/`), indicators
 //! of the game's screen drawn on them, the values and events other programs send —

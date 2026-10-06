@@ -91,7 +91,7 @@ impl App {
     /// package; otherwise says why there are none to set up.
     pub(super) fn inputs_of<'a>(&mut self, ui: &mut egui::Ui, s: &'a Shared, game: &Game) -> Option<&'a Inputs> {
         let name = s.mode.info.as_ref().map_or_else(|| s.mode.id.clone(), |i| i.name.clone());
-        let why = if !game.modes.contains(&s.mode.id) {
+        let why = if !game.modes.contains(&super::main_of(&s.mode.id)) {
             "Inputs belong to a mode: open one of this game's modes to set up what it reads."
         } else if s.mode_inputs.is_none() {
             "Built-in modes read no inputs set up for a game: duplicate it to set some up for this game."

@@ -19,6 +19,8 @@ pub const BUILTIN_PREFIX: &str = "builtin:";
 pub const MODE_EXTENSION: &str = "luau";
 /// A user mode's script in its package (`modes/<name>/mode.luau`, `package.rs`).
 pub const MODE_FILE: &str = "mode.luau";
+/// Its variants, other scripts reading the same inputs (`variants/<variant>.luau`).
+pub const VARIANTS_DIR: &str = "variants";
 
 const BUILTIN_MODES: [(&str, &str); 10] = [
     ("simple", include_str!("../modes/simple.luau")),
@@ -350,20 +352,34 @@ impl FeedbackHistory {
 pub struct ModeEntry {
     /// "builtin:<name>" or the absolute path of a user mode file.
     pub id: String,
-    /// Built-in name, package name, or file stem; also the key of the saved parameters.
+    /// Built-in name, package name (`<package>.<variant>` for a variant), or
+    /// file stem; also the key of the saved parameters.
     pub key: String,
     pub builtin: bool,
+    /// The variant's name, for a variant of a package.
+    pub variant: Option<String>,
 }
 
 impl ModeEntry {
     pub fn from_id(id: &str) -> Self {
         match id.strip_prefix(BUILTIN_PREFIX) {
-            Some(name) => Self { id: id.to_owned(), key: name.to_owned(), builtin: true },
+            Some(name) => Self { id: id.to_owned(), key: name.to_owned(), builtin: true, variant: None },
             None => {
                 let path = Path::new(id);
-                let name = if path.file_name().is_some_and(|f| f == MODE_FILE) { path.parent().and_then(Path::file_name) } else { path.file_stem() };
-                let key = name.map_or_else(|| id.to_owned(), |s| s.to_string_lossy().into_owned());
-                Self { id: id.to_owned(), key, builtin: false }
+                let text = |name: Option<&std::ffi::OsStr>| name.map(|s| s.to_string_lossy().into_owned());
+                let parent = path.parent();
+                if path.file_name().is_some_and(|f| f == MODE_FILE) {
+                    let key = text(parent.and_then(Path::file_name)).unwrap_or_else(|| id.to_owned());
+                    return Self { id: id.to_owned(), key, builtin: false, variant: None };
+                }
+                let package = parent.filter(|p| p.file_name().is_some_and(|f| f == VARIANTS_DIR)).and_then(Path::parent);
+                match (text(package.and_then(Path::file_name)), text(path.file_stem())) {
+                    (Some(package), Some(variant)) => {
+                        Self { id: id.to_owned(), key: format!("{package}.{variant}"), builtin: false, variant: Some(variant) }
+                    }
+                    (None, stem) => Self { id: id.to_owned(), key: stem.unwrap_or_else(|| id.to_owned()), builtin: false, variant: None },
+                    (Some(_), None) => Self { id: id.to_owned(), key: id.to_owned(), builtin: false, variant: None },
+                }
             }
         }
     }
@@ -372,10 +388,38 @@ impl ModeEntry {
         (!self.builtin).then(|| PathBuf::from(&self.id))
     }
 
-    /// The mode's package (`package.rs`): None for a built-in mode, or a file run from elsewhere.
+    /// The mode's package (`package.rs`), its variant's too: None for a
+    /// built-in mode, or a file run from elsewhere.
     pub fn dir(&self) -> Option<PathBuf> {
         let path = self.path()?;
-        path.file_name().is_some_and(|f| f == MODE_FILE).then(|| path.parent().map(Path::to_path_buf)).flatten()
+        let parent = path.parent()?;
+        match &self.variant {
+            Some(_) => parent.parent().map(Path::to_path_buf),
+            None => path.file_name().is_some_and(|f| f == MODE_FILE).then(|| parent.to_path_buf()),
+        }
+    }
+
+    /// The id of the mode a variant belongs to (its own for a mode).
+    pub fn main_id(&self) -> String {
+        match (&self.variant, self.dir()) {
+            (Some(_), Some(dir)) => dir.join(MODE_FILE).to_string_lossy().into_owned(),
+            _ => self.id.clone(),
+        }
+    }
+
+    /// The variants of the mode's package, sorted by name.
+    pub fn variants(&self) -> Vec<ModeEntry> {
+        let Some(dir) = self.dir() else { return Vec::new() };
+        let mut variants: Vec<ModeEntry> = fs::read_dir(dir.join(VARIANTS_DIR))
+            .into_iter()
+            .flatten()
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|e| e == MODE_EXTENSION))
+            .map(|p| ModeEntry::from_id(&p.to_string_lossy()))
+            .collect();
+        variants.sort_by(|a, b| a.key.cmp(&b.key));
+        variants
     }
 
     pub fn chunk_name(&self) -> String {
@@ -441,8 +485,8 @@ impl ModeEntry {
             return Err(io::Error::new(io::ErrorKind::PermissionDenied, "built-in modes cannot be deleted"));
         };
         match self.dir() {
-            Some(dir) => fs::remove_dir_all(&dir)?,
-            None => fs::remove_file(&path)?,
+            Some(dir) if self.variant.is_none() => fs::remove_dir_all(&dir)?,
+            _ => fs::remove_file(&path)?,
         }
         for file in [path.with_extension("luau.bak"), self.params_path(), self.presets_path(), self.feedback_path()] {
             if let Err(e) = fs::remove_file(&file) {
@@ -467,13 +511,30 @@ pub fn list_modes() -> Vec<ModeEntry> {
         .map(|p| ModeEntry::from_id(&p.to_string_lossy()))
         .collect();
     user.sort_by(|a, b| a.key.cmp(&b.key));
-    modes.extend(user);
+    for mode in user {
+        let variants = mode.variants();
+        modes.push(mode);
+        modes.extend(variants);
+    }
     modes
 }
 
 /// The script of the first free package `<stem>/`, `<stem>-2/`... in the modes directory.
 pub fn unused_mode_path(stem: &str) -> PathBuf {
     unused_mode_path_in(&modes_dir(), stem)
+}
+
+/// The first free variant `<stem>`, `<stem>-2`... of the package `dir`.
+pub fn unused_variant_path(dir: &Path, stem: &str) -> PathBuf {
+    let mut n = 1;
+    loop {
+        let name = if n == 1 { stem.to_owned() } else { format!("{stem}-{n}") };
+        let path = dir.join(VARIANTS_DIR).join(format!("{name}.{MODE_EXTENSION}"));
+        if !path.exists() {
+            return path;
+        }
+        n += 1;
+    }
 }
 
 /// The script of the first free package `<stem>/`, `<stem>-2/`... in `dir`.
@@ -525,6 +586,10 @@ mod tests {
         let e = ModeEntry::from_id("/x/modes/combo/mode.luau");
         assert_eq!((e.key.as_str(), e.builtin, e.chunk_name().as_str()), ("combo", false, "combo.luau"));
         assert_eq!(e.dir(), Some(PathBuf::from("/x/modes/combo")));
+        let e = ModeEntry::from_id("/x/modes/combo/variants/boss.luau");
+        assert_eq!((e.key.as_str(), e.variant.as_deref(), e.chunk_name().as_str()), ("combo.boss", Some("boss"), "combo.boss.luau"));
+        assert_eq!(e.dir(), Some(PathBuf::from("/x/modes/combo")), "the package's inputs");
+        assert_eq!(e.main_id(), "/x/modes/combo/mode.luau");
         let e = ModeEntry::from_id("/elsewhere/combo.luau");
         assert_eq!((e.key.as_str(), e.dir()), ("combo", None), "a file run from elsewhere has no package");
         assert_eq!(ModeEntry::from_id("builtin:combo").dir(), None);

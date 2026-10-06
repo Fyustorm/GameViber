@@ -668,7 +668,10 @@ impl Engine {
             }
             Command::DeleteMode(id) => {
                 if self.mode.as_ref().is_some_and(|m| m.entry.id == id) {
-                    self.select_mode(config::DEFAULT_MODE);
+                    // A variant gives way to its mode.
+                    let entry = ModeEntry::from_id(&id);
+                    let next = if entry.variant.is_some() { entry.main_id() } else { config::DEFAULT_MODE.to_owned() };
+                    self.select_mode(&next);
                 }
                 match ModeEntry::from_id(&id).delete() {
                     Ok(()) => log::info!("mode {id} deleted"),

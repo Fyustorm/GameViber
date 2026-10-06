@@ -7,6 +7,7 @@ use eframe::egui::{self, Margin, RichText, Vec2};
 
 use super::theme::*;
 use super::{mode_icon, App, GameView, Page, Route};
+use crate::config::ModeEntry;
 use crate::models::Model;
 use crate::engine::{Command, ModeView, Shared};
 use crate::gamepad::BUTTONS;
@@ -24,6 +25,8 @@ pub struct State {
     confirm_delete: Option<String>,
     /// Mode whose deletion waits for confirmation.
     confirm_delete_mode: Option<String>,
+    /// The name of a new variant being typed.
+    new_variant: Option<String>,
 }
 
 impl App {
@@ -65,12 +68,16 @@ impl App {
                     if ui.add(delete).clicked() {
                         self.send(Command::DeleteMode(mode.id.clone()));
                         self.play.confirm_delete_mode = None;
-                        self.route = match &s.game {
-                            Some(game) => Route::Game { id: game.id.clone(), view: GameView::Modes },
-                            None => Route::Library,
-                        };
+                        // A variant gives way to its mode, on this page.
+                        if entry.is_none_or(|e| e.variant.is_none()) {
+                            self.route = match &s.game {
+                                Some(game) => Route::Game { id: game.id.clone(), view: GameView::Modes },
+                                None => Route::Library,
+                            };
+                        }
                     }
-                    ui.label(RichText::new("Delete this mode, its settings and presets?").color(DANGER_TEXT));
+                    let what = if entry.is_some_and(|e| e.variant.is_some()) { "this variant" } else { "this mode, its variants" };
+                    ui.label(RichText::new(format!("Delete {what}, its settings and presets?")).color(DANGER_TEXT));
                     return;
                 } else {
                     if ui.button("🗑 Delete").on_hover_text("Delete this mode, its settings and presets").clicked() {
@@ -102,6 +109,10 @@ impl App {
             });
         });
         ui.add_space(12.0);
+        if let Some(entry) = entry.filter(|e| e.dir().is_some()) {
+            self.variants_row(ui, s, entry);
+            ui.add_space(8.0);
+        }
         if let Some(error) = &mode.error {
             card(PANEL).stroke(egui::Stroke::new(1.0, DANGER)).show(ui, |ui| {
                 ui.set_width(ui.available_width());
@@ -193,6 +204,47 @@ impl App {
             left(self, ui);
             ui.add_space(12.0);
             right(self, ui);
+        }
+    }
+
+    /// The mode and its variants (other scripts reading the same inputs), the
+    /// one played selected, and making a new one from it.
+    fn variants_row(&mut self, ui: &mut egui::Ui, s: &Shared, entry: &ModeEntry) {
+        let main = ModeEntry::from_id(&entry.main_id());
+        let variants: Vec<&ModeEntry> = s.modes.iter().filter(|e| e.variant.is_some() && e.main_id() == main.id).collect();
+        let mut create = None;
+        ui.horizontal_wrapped(|ui| {
+            ui.label(muted("Variants")).on_hover_text("Other scripts of this mode, reading the same inputs, each with its own settings and presets");
+            for e in std::iter::once(&main).chain(variants.iter().copied()) {
+                let label = e.variant.clone().unwrap_or_else(|| "Main".to_owned());
+                if ui.selectable_label(e.id == s.mode.id, label).clicked() && e.id != s.mode.id {
+                    self.send(Command::SelectMode(e.id.clone()));
+                }
+            }
+            let mut close = false;
+            match &mut self.play.new_variant {
+                Some(name) => {
+                    ui.add(egui::TextEdit::singleline(name).hint_text("boss-only").desired_width(120.0));
+                    let create_it = ui
+                        .add_enabled(!name.trim().is_empty(), egui::Button::new("Create"))
+                        .on_hover_text("A copy of the script played now, to change in Creator");
+                    if create_it.clicked() {
+                        create = Some(name.clone());
+                    }
+                    close = create.is_some() || ui.button("Cancel").clicked();
+                }
+                None => {
+                    if ui.small_button("+ Variant").on_hover_text("Another script for this mode, from the one played now").clicked() {
+                        self.play.new_variant = Some(String::new());
+                    }
+                }
+            }
+            if close {
+                self.play.new_variant = None;
+            }
+        });
+        if let Some(name) = create {
+            self.create_variant(&s.mode.id, &name);
         }
     }
 

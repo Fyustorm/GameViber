@@ -6,7 +6,7 @@
 use eframe::egui::{self, Margin, RichText};
 
 use super::theme::*;
-use super::{App, GameView, Route};
+use super::{main_of, App, GameView, Route};
 use crate::engine::{Command, Shared};
 use crate::game::Game;
 use crate::mode::prompt::Depth;
@@ -331,7 +331,8 @@ impl App {
                     (Some(_), Some(Ok(i))) if !i.author.is_empty() => format!("by {}", i.author),
                     _ => "Custom".to_owned(),
                 };
-                let active = playing_game && s.mode.id == *id;
+                // Its variant playing counts.
+                let active = playing_game && main_of(&s.mode.id) == *id;
                 egui::Frame::new().fill(if active { SELECTED_BG } else { PANEL }).inner_margin(Margin::symmetric(14, 10)).show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     ui.horizontal(|ui| {
@@ -373,7 +374,7 @@ impl App {
             if !playing_game {
                 self.send(Command::SelectGame(Some(game.id.clone())));
             }
-            if s.mode.id != id {
+            if main_of(&s.mode.id) != id {
                 self.send(Command::SelectMode(id));
             }
             self.route = Route::Game { id: game.id.clone(), view: GameView::Mode };

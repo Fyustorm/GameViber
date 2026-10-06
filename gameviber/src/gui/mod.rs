@@ -173,7 +173,7 @@ impl App {
                 let from = copy_of.map(str::to_owned).or_else(|| {
                     let Route::Game { id: game, .. } = &self.route else { return None };
                     let s = self.shared.lock().unwrap();
-                    s.games.iter().find(|g| g.id == *game).filter(|g| g.modes.contains(&s.mode.id)).map(|_| s.mode.id.clone())
+                    s.games.iter().find(|g| g.id == *game).filter(|g| g.modes.contains(&main_of(&s.mode.id))).map(|_| s.mode.id.clone())
                 });
                 let inputs = from.map(|from| crate::package::Inputs::of(&ModeEntry::from_id(&from))).filter(|i| !i.is_empty());
                 if let (Some(inputs), Some(dir)) = (inputs, ModeEntry::from_id(&id).dir()) {
@@ -192,6 +192,25 @@ impl App {
                 log::error!("cannot create {}: {e}", path.display());
                 None
             }
+        }
+    }
+
+    /// Makes a variant of the user mode `id` named after `name`, starting from
+    /// its script, and plays it.
+    fn create_variant(&mut self, id: &str, name: &str) {
+        let entry = ModeEntry::from_id(id);
+        let (Some(dir), Ok(source)) = (entry.dir(), entry.source()) else {
+            return log::error!("cannot make a variant of {id}");
+        };
+        let stem: String = name.trim().chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
+        let path = config::unused_variant_path(&dir, if stem.is_empty() { "variant" } else { &stem });
+        match config::write_file(&path, &source) {
+            Ok(()) => {
+                log::info!("created the variant {}", path.display());
+                self.send(Command::RefreshModes);
+                self.send(Command::SelectMode(path.to_string_lossy().into_owned()));
+            }
+            Err(e) => log::error!("cannot create {}: {e}", path.display()),
         }
     }
 
@@ -530,6 +549,11 @@ fn intiface_status(s: &Shared) -> (egui::Color32, String) {
 }
 
 /// Icon of a mode tile.
+/// The mode `id` is a variant of (`id` for a mode).
+pub(super) fn main_of(id: &str) -> String {
+    ModeEntry::from_id(id).main_id()
+}
+
 fn mode_icon(entry: &ModeEntry) -> &'static str {
     if !entry.builtin {
         return "📝";

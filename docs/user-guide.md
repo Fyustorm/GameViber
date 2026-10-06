@@ -19,7 +19,10 @@ intensity and **STOP ALL**.
 | **Creator** | Writing modes by hand: hot reload, graphs, a simulator, replay of recorded sessions, the log. |
 
 A mode's own page shows its explanation, its main settings, all its settings
-and named **presets**.
+and named **presets**, and its **variants**: other scripts of the same mode
+(a "boss only" version, a calmer one), reading the same inputs, each with its
+own settings and presets. **+ Variant** copies the script played now, to change
+in Creator; a variant is shared with its mode.
 
 ## A mode for your game
 

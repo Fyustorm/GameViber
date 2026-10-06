@@ -1,8 +1,9 @@
 //! Modes shared with their game, as `.gameviber` files: a zip archive of
 //! `gameviber.json` (the game — its name and the executables it runs as — and
 //! the inputs the mode reads: its phases, indicators, captures, values from other
-//! programs), the mode's script (`mode.luau`) and the captures
-//! (`captures/*.png`): a mode's package (`package.rs`), with its game.
+//! programs), the mode's script (`mode.luau`), its variants
+//! (`variants/*.luau`) and the captures (`captures/*.png`): a mode's package
+//! (`package.rs`), with its game.
 //!
 //! Importing one makes a package of the mode, joined to the game of the same
 //! name (or a new game). Files of the first format (0.1.0-alpha.2) held the
@@ -26,9 +27,12 @@ const FORMAT: u32 = 2;
 const MANIFEST: &str = "gameviber.json";
 const MODE: &str = "mode.luau";
 const CAPTURES: &str = "captures/";
+const VARIANTS: &str = "variants/";
+/// A shared mode has at most this many variants.
+const MAX_VARIANTS: usize = 16;
 const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
 /// What an imported file may hold: files in it, bytes per file, bytes in all.
-const MAX_ENTRIES: usize = 2 + MAX_PHASES * MAX_CAPTURES;
+const MAX_ENTRIES: usize = 2 + MAX_VARIANTS + MAX_PHASES * MAX_CAPTURES;
 const MAX_ENTRY_SIZE: u64 = 8 << 20;
 const MAX_TOTAL_SIZE: u64 = 128 << 20;
 
@@ -62,17 +66,23 @@ pub struct Imported {
 
 /// A file name for a mode of a game: "metaphor-refantazio-battles.gameviber".
 pub fn file_name(game: &Game, mode: &str) -> String {
-    format!("{}-{}.{EXTENSION}", game::slug(&game.name), ModeEntry::from_id(mode).key)
+    format!("{}-{}.{EXTENSION}", game::slug(&game.name), ModeEntry::from_id(&ModeEntry::from_id(mode).main_id()).key)
 }
 
-/// Writes `mode` with the game `game` (by id) to `path`.
+/// Writes `mode` (or the mode it is a variant of, with all its variants) with
+/// the game `game` (by id) to `path`.
 pub fn export(game: &str, mode: &str, path: &Path) -> anyhow::Result<()> {
     let game = Game::load(game).context("this game is gone")?;
-    let entry = ModeEntry::from_id(mode);
+    let entry = ModeEntry::from_id(&ModeEntry::from_id(mode).main_id());
     if entry.builtin {
         bail!("built-in modes come with every GameViber: there is no need to share them");
     }
     let source = entry.source().with_context(|| format!("cannot read {}", entry.id))?;
+    let mut variants = Vec::new();
+    for variant in entry.variants() {
+        let text = variant.source().with_context(|| format!("cannot read {}", variant.id))?;
+        variants.push((variant.variant.unwrap_or_default(), text));
+    }
     let mut inputs = Inputs::of(&entry);
     // Captures to sort are examples of no phase yet.
     inputs.captures.retain(|c| !c.phase.is_empty());
@@ -97,7 +107,7 @@ pub fn export(game: &str, mode: &str, path: &Path) -> anyhow::Result<()> {
 
     // Written beside the file, then renamed: a failure leaves no half file.
     let partial = path.with_extension(format!("{EXTENSION}.part"));
-    let written = write_archive(fs::File::create(&partial)?, &manifest, &source, &images);
+    let written = write_archive(fs::File::create(&partial)?, &manifest, &source, &variants, &images);
     match written.and_then(|()| Ok(fs::rename(&partial, path)?)) {
         Ok(()) => {
             log::info!("{} for {} exported to {}", entry.key, game.name, path.display());
@@ -110,7 +120,7 @@ pub fn export(game: &str, mode: &str, path: &Path) -> anyhow::Result<()> {
     }
 }
 
-fn write_archive(file: fs::File, manifest: &Manifest, source: &str, images: &[(String, Vec<u8>)]) -> anyhow::Result<()> {
+fn write_archive(file: fs::File, manifest: &Manifest, source: &str, variants: &[(String, String)], images: &[(String, Vec<u8>)]) -> anyhow::Result<()> {
     let mut zip = zip::ZipWriter::new(std::io::BufWriter::new(file));
     let text = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
     // PNG files are compressed already.
@@ -119,6 +129,10 @@ fn write_archive(file: fs::File, manifest: &Manifest, source: &str, images: &[(S
     zip.write_all(serde_json::to_string_pretty(manifest)?.as_bytes())?;
     zip.start_file(MODE, text)?;
     zip.write_all(source.as_bytes())?;
+    for (name, source) in variants {
+        zip.start_file(format!("{VARIANTS}{name}.{MODE_EXTENSION}"), text)?;
+        zip.write_all(source.as_bytes())?;
+    }
     for (file, bytes) in images {
         zip.start_file(format!("{CAPTURES}{file}"), stored)?;
         zip.write_all(bytes)?;
@@ -153,6 +167,17 @@ fn import_into(path: &Path, modes_dir: &Path) -> anyhow::Result<Imported> {
     // A mode that does not load would only show an error once imported.
     crate::mode::ModeRuntime::load(&format!("{}.{MODE_EXTENSION}", manifest.mode), &source, &Default::default(), None)
         .map_err(|e| anyhow::anyhow!("its mode does not load in this GameViber: {e}"))?;
+    let mut variants = Vec::new();
+    for file in archive.names().into_iter().filter_map(|n| n.strip_prefix(VARIANTS).map(str::to_owned)) {
+        let Some(name) = file.strip_suffix(&format!(".{MODE_EXTENSION}")).filter(|n| safe_file_name(n) && !n.contains('.')) else { continue };
+        if variants.len() >= MAX_VARIANTS {
+            break;
+        }
+        let text = String::from_utf8(archive.read(&format!("{VARIANTS}{file}"))?).with_context(|| format!("the variant {name} is not text"))?;
+        crate::mode::ModeRuntime::load(&format!("{}.{name}.{MODE_EXTENSION}", manifest.mode), &text, &Default::default(), None)
+            .map_err(|e| anyhow::anyhow!("its variant {name} does not load in this GameViber: {e}"))?;
+        variants.push((name.to_owned(), text));
+    }
     let mut images = Vec::new();
     for capture in inputs.captures.iter().filter(|c| safe_file_name(&c.file)) {
         match archive.read(&format!("{CAPTURES}{}", capture.file)) {
@@ -164,7 +189,7 @@ fn import_into(path: &Path, modes_dir: &Path) -> anyhow::Result<Imported> {
 
     let (mode, mode_existed) = match same_mode(modes_dir, &source) {
         Some(mode) => (mode, true),
-        None => (install_mode(modes_dir, &manifest.mode, &source, inputs, images)?, false),
+        None => (install_mode(modes_dir, &manifest.mode, &source, &variants, inputs, images)?, false),
     };
     let games = Game::list();
     let existing = games.iter().find(|g| g.name.trim().eq_ignore_ascii_case(shared.name.trim())).cloned();
@@ -197,11 +222,22 @@ fn same_mode(dir: &Path, source: &str) -> Option<String> {
 
 /// Makes a package of the mode in `dir`, with its inputs and the captures
 /// `images` holds (those it lacks are left out); returns its id.
-fn install_mode(dir: &Path, stem: &str, source: &str, mut inputs: Inputs, images: Vec<(package::Capture, Vec<u8>)>) -> anyhow::Result<String> {
+fn install_mode(
+    dir: &Path,
+    stem: &str,
+    source: &str,
+    variants: &[(String, String)],
+    mut inputs: Inputs,
+    images: Vec<(package::Capture, Vec<u8>)>,
+) -> anyhow::Result<String> {
     let stem: String = stem.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').take(64).collect();
     let path = config::unused_mode_path_in(dir, if stem.is_empty() { "shared-mode" } else { &stem });
     config::write_file(&path, source).with_context(|| format!("cannot write {}", path.display()))?;
     inputs.dir = ModeEntry::from_id(&path.to_string_lossy()).dir().context("no package for the mode")?;
+    for (name, text) in variants {
+        let file = inputs.dir.join(config::VARIANTS_DIR).join(format!("{name}.{MODE_EXTENSION}"));
+        config::write_file(&file, text).with_context(|| format!("cannot write {}", file.display()))?;
+    }
     inputs.phases.truncate(MAX_PHASES);
     inputs.captures.clear();
     for (capture, bytes) in images {
@@ -249,6 +285,11 @@ impl<R: Read + Seek> Archive<R> {
         Ok(Self { zip, read: 0 })
     }
 
+    /// The names of the files it holds.
+    fn names(&self) -> Vec<String> {
+        self.zip.file_names().map(str::to_owned).collect()
+    }
+
     fn read(&mut self, name: &str) -> anyhow::Result<Vec<u8>> {
         let entry = self.zip.by_name(name).with_context(|| format!("{name} is missing"))?;
         // The sizes an archive states may lie: what is read counts.
@@ -289,6 +330,9 @@ mod tests {
         let (root, modes) = test_dirs("round-trip");
         let mode_path = config::unused_mode_path_in(&modes, "battles");
         config::write_file(&mode_path, MODE_SOURCE).unwrap();
+        let boss = MODE_SOURCE.replace("Battles", "Boss");
+        let variant = config::unused_variant_path(mode_path.parent().unwrap(), "boss");
+        config::write_file(&variant, &boss).unwrap();
         let mode = mode_path.to_string_lossy().into_owned();
 
         let mut inputs = Inputs::of(&ModeEntry::from_id(&mode));
@@ -307,7 +351,7 @@ mod tests {
         game.save();
         let file = root.join(file_name(&game, &mode));
         assert!(file.ends_with("metaphor-refantazio-battles.gameviber"));
-        export(&game.id, &mode, &file).unwrap();
+        export(&game.id, &variant.to_string_lossy(), &file).unwrap();
         assert!(export(&game.id, "builtin:simple", &root.join("x.gameviber")).is_err(), "built-in modes are not shared");
 
         // Another player, without the game nor the mode.
@@ -326,6 +370,7 @@ mod tests {
         assert_eq!(package::load_capture(&got.dir, &drawn_on).unwrap().pixels, vec![1; 32]);
         assert_eq!(got.zones[0].capture.as_deref(), Some(drawn_on.as_str()));
         assert_eq!(fs::read_to_string(&mode_path).unwrap(), MODE_SOURCE);
+        assert_eq!(fs::read_to_string(&variant).unwrap(), boss, "exported from its variant, the mode comes with all of them");
 
         // Imported again: nothing doubles.
         let again = import_into(&file, &modes).unwrap();

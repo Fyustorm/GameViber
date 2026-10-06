@@ -24,7 +24,8 @@ image, the mode's indicators) and **external inputs** (other programs) → **mod
 (Luau script) → **safety layer** → **Intiface output**.
 
 Terms players, modes and the code use: a game has **modes**; a mode has
-**presets** (named settings) and its **Inputs**: what GameViber reads by itself
+**variants** (other scripts of it, `variants/` in its package), **presets**
+(named settings, per script) and its **Inputs**: what GameViber reads by itself
 (rumble, gamepad, sound, image) and what the player sets up for the mode —
 **phases** (parts of the game that should not feel the same), **captures**,
 **indicators** (parts of the game's interface read as visibility or a gauge, in
@@ -47,8 +48,8 @@ accepted; nothing else of them is left.
 | `gameviber/src/mode/` | Luau runtime: `library.rs` (script API), `outputs.rs` (channels, pulses, patterns), `rumble_events.rs`, `phases.rs` (phases fused from the sound, the image and the mode's captures; the phases set up for the mode replace its own), `prompt.rs` (AI requests: a per-game mode, a fix for a mode that feels wrong), `report.rs` (a session replayed offline into a mode, for the fix request), `tests.rs` |
 | `gameviber/src/screen/` | the game's image: frames copied by the overlay, measures (brightness, motion, flashes), `clip` (image phase model: PIL-exact preprocessing, encoder thread), `indicators` (indicators read in their zones: visibility and gauges) |
 | `gameviber/src/game.rs` | games (`~/.config/gameviber/games/<id>.json`), identified by name: linked executables (optional), sound source, modes; migration of the older exe-keyed profiles |
-| `gameviber/src/package.rs` | mode packages (`~/.config/gameviber/modes/<name>/`): the script (`mode.luau`) and the inputs the player set up for the mode (`mode.json`: phases, captures per phase, also the phase examples, as PNG in `captures/`, indicators drawn on them, declared external inputs); migration of the older mode files and game-held inputs |
-| `gameviber/src/sharing.rs` | a mode shared with its game: `.gameviber` files (zip: `gameviber.json` with the game and the mode's inputs, `mode.luau`, `captures/`), exported from a mode's page, imported from the library (joined to the game of the same name); `gui/sharing.rs` |
+| `gameviber/src/package.rs` | mode packages (`~/.config/gameviber/modes/<name>/`): the script (`mode.luau`), its variants (`variants/<variant>.luau`, `ModeEntry::variant`) and the inputs the player set up for the mode (`mode.json`: phases, captures per phase, also the phase examples, as PNG in `captures/`, indicators drawn on them, declared external inputs); migration of the older mode files and game-held inputs |
+| `gameviber/src/sharing.rs` | a mode shared with its game: `.gameviber` files (zip: `gameviber.json` with the game and the mode's inputs, `mode.luau`, `variants/`, `captures/`), exported from a mode's page, imported from the library (joined to the game of the same name); `gui/sharing.rs` |
 | `gameviber/src/shortcuts/` | keyboard shortcuts for the combos' actions; `linux`: the desktop's global shortcuts portal (needs a desktop entry for the app id, written on first use) |
 | `gameviber/src/update/` | new versions from the GitHub releases, installed according to how GameViber was installed (the `distribution` file of `packaging/linux/`): package through pkexec, archive in place, only announced for stores and source builds; `gui/updates.rs`: banner and Settings card |
 | `gameviber/src/external/` | external inputs: values and events other programs send: local WebSocket (browsers refused) and, `linux`, a named pipe |
