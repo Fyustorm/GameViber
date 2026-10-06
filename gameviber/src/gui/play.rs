@@ -89,14 +89,6 @@ impl App {
                     if ui.button("Duplicate").clicked() {
                         self.duplicate_mode(&mode.id);
                     }
-                    if let Some(game) = &s.game {
-                        let export = ui
-                            .add_enabled(!self.sharing.busy(), egui::Button::new("Export"))
-                            .on_hover_text(format!("Save it in a file to share, with its inputs and {}", game.name));
-                        if export.clicked() {
-                            self.export_mode(game, &mode.id);
-                        }
-                    }
                 }
                 if mode.info.is_some()
                     && ui

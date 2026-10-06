@@ -31,7 +31,7 @@ enum Stop {
     IndicatorEdit,
 }
 
-const STOPS: [(&str, Stop); 19] = [
+const STOPS: [(&str, Stop); 21] = [
     ("games", Stop::Games(|_| Some(Route::Library))),
     ("add-game", Stop::AddGame),
     ("builtin-modes", Stop::Games(|_| Some(Route::BuiltIn))),
@@ -40,8 +40,10 @@ const STOPS: [(&str, Stop); 19] = [
     ("mode", Stop::Games(|s| game(s, GameView::Mode))),
     ("inputs", Stop::Games(|s| game(s, GameView::Inputs))),
     ("captures-indicators", Stop::Games(|s| game(s, GameView::Screen))),
-    ("zone-edit", Stop::IndicatorEdit),
+    ("indicator-edit", Stop::IndicatorEdit),
+    ("mode-sharing", Stop::Games(|s| game(s, GameView::Sharing))),
     ("sessions", Stop::Games(|s| game(s, GameView::Sessions))),
+    ("community", Stop::Page(Page::Community)),
     ("live", Stop::Page(Page::Live)),
     ("toys", Stop::Page(Page::Toys)),
     ("setup-gamepad", Stop::Setup(setup::Tab::Gamepad)),

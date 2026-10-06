@@ -200,33 +200,51 @@ impl App {
 
     fn game_page(&mut self, ui: &mut egui::Ui, s: &Shared, game: &Game, view: GameView) {
         let at = |view| Some(Route::Game { id: game.id.clone(), view });
-        match view {
-            GameView::Mode => {
-                let name = s.mode.info.as_ref().map_or("Mode".to_owned(), |i| i.name.clone());
-                self.breadcrumb(ui, &[("Games", Some(Route::Library)), (&game.name, at(GameView::Modes)), ("Modes", at(GameView::Modes)), (&name, None)]);
-                self.mode_page(ui, s);
-                return;
-            }
-            GameView::Screen => {
-                self.breadcrumb(
-                    ui,
-                    &[("Games", Some(Route::Library)), (&game.name, at(GameView::Modes)), ("Inputs", at(GameView::Inputs)), ("Captures and indicators", None)],
-                );
-                self.screen_page(ui, s, game);
-                return;
-            }
-            _ => {}
+        if matches!(view, GameView::Mode | GameView::Inputs | GameView::Sharing | GameView::Screen) {
+            self.mode_tabs(ui, s, game, view);
+            return;
         }
-        let tab = match view {
-            GameView::Inputs => "Inputs",
-            GameView::Sessions => "Sessions",
-            _ => "Modes",
-        };
+        let tab = if view == GameView::Sessions { "Sessions" } else { "Modes" };
         self.breadcrumb(ui, &[("Games", Some(Route::Library)), (&game.name, at(GameView::Modes)), (tab, None)]);
         self.game_header(ui, s, game);
         ui.add_space(6.0);
         ui.horizontal(|ui| {
-            for (v, label) in [(GameView::Modes, format!("Modes · {}", game.modes.len())), (GameView::Inputs, "Inputs".to_owned()), (GameView::Sessions, "Sessions".to_owned())] {
+            for (v, label) in [(GameView::Modes, format!("Modes · {}", game.modes.len())), (GameView::Sessions, "Sessions".to_owned())] {
+                if ui.selectable_label(view == v, RichText::new(label).size(15.0)).clicked() {
+                    self.route = Route::Game { id: game.id.clone(), view: v };
+                }
+            }
+        });
+        ui.separator();
+        ui.add_space(6.0);
+        match view {
+            GameView::Sessions => self.game_sessions(ui, s, game),
+            _ => self.game_modes(ui, s, game),
+        }
+    }
+
+    /// The active mode's page, in tabs: Overview (what it does, its variants,
+    /// presets and settings), Inputs (with its captures and indicators) and Sharing.
+    fn mode_tabs(&mut self, ui: &mut egui::Ui, s: &Shared, game: &Game, view: GameView) {
+        let at = |view| Some(Route::Game { id: game.id.clone(), view });
+        let name = s.mode.info.as_ref().map_or("Mode".to_owned(), |i| i.name.clone());
+        let mut path = vec![("Games", Some(Route::Library)), (game.name.as_str(), at(GameView::Modes)), (name.as_str(), at(GameView::Mode))];
+        match view {
+            GameView::Inputs => path.push(("Inputs", None)),
+            GameView::Sharing => path.push(("Sharing", None)),
+            GameView::Screen => path.extend([("Inputs", at(GameView::Inputs)), ("Captures and indicators", None)]),
+            _ => {}
+        }
+        if let Some(last) = path.last_mut().filter(|_| view == GameView::Mode) {
+            last.1 = None;
+        }
+        self.breadcrumb(ui, &path);
+        if view == GameView::Screen {
+            self.screen_page(ui, s, game);
+            return;
+        }
+        ui.horizontal(|ui| {
+            for (v, label) in [(GameView::Mode, "Overview"), (GameView::Inputs, "Inputs"), (GameView::Sharing, "Sharing")] {
                 if ui.selectable_label(view == v, RichText::new(label).size(15.0)).clicked() {
                     self.route = Route::Game { id: game.id.clone(), view: v };
                 }
@@ -236,8 +254,8 @@ impl App {
         ui.add_space(6.0);
         match view {
             GameView::Inputs => self.inputs_page(ui, s, game),
-            GameView::Sessions => self.game_sessions(ui, s, game),
-            _ => self.game_modes(ui, s, game),
+            GameView::Sharing => self.mode_sharing(ui, s, game),
+            _ => self.mode_page(ui, s),
         }
     }
 
@@ -348,7 +366,7 @@ impl App {
                             if ui.small_button("Remove").on_hover_text("Take it out of this game (its file stays)").clicked() {
                                 remove = Some(id.clone());
                             }
-                            if entry.is_some() && ui.button("Settings ›").clicked() {
+                            if entry.is_some() && ui.button("Open ›").on_hover_text("Its page: settings, variants, inputs, sharing").clicked() {
                                 open = Some(id.clone());
                             }
                             if entry.is_some_and(|e| !e.builtin) {
@@ -388,6 +406,14 @@ impl App {
         if let Some(mode) = remove {
             self.send(Command::RemoveGameMode { game: game.id.clone(), mode });
         }
+        ui.add_space(8.0);
+        card(RAISED).inner_margin(Margin::symmetric(14, 10)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new("From the community").strong());
+                ui.label(muted(format!("Coming soon: the modes other players made for {}, ranked by who kept playing them.", game.name)));
+            });
+        });
         ui.add_space(12.0);
         ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new("New mode").strong());

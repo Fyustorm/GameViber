@@ -10,7 +10,8 @@ use eframe::egui::{self, Margin, RichText};
 
 use super::theme::*;
 use super::{App, GameView};
-use crate::engine::Command;
+use crate::config::ModeEntry;
+use crate::engine::{Command, Shared};
 use crate::game::Game;
 use crate::sharing::{self, Imported, EXTENSION};
 
@@ -53,6 +54,36 @@ impl App {
             }
             Ok(None) => Outcome::Cancelled,
             Err(e) => Outcome::Failed(format!("Cannot export the mode: {e:#}")),
+        });
+    }
+
+    /// The active mode's Sharing tab: as a file now, in the community later.
+    pub(super) fn mode_sharing(&mut self, ui: &mut egui::Ui, s: &Shared, game: &Game) {
+        if ModeEntry::from_id(&s.mode.id).builtin {
+            ui.label(muted("Built-in modes come with every GameViber: there is no need to share them."));
+            return;
+        }
+        card(PANEL).inner_margin(Margin::symmetric(18, 14)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(RichText::new("As a file").strong().size(16.0));
+            ui.label(format!(
+                "A .gameviber file holds the mode, its variants, its inputs (phases, indicators, captures, external inputs) \
+                 and {} to join it to. Captures are images of your screen: look at them before sending the file.",
+                game.name
+            ));
+            ui.add_space(6.0);
+            if ui.add_enabled(!self.sharing.busy(), primary("Export")).clicked() {
+                self.export_mode(game, &s.mode.id);
+            }
+        });
+        ui.add_space(10.0);
+        card(RAISED).inner_margin(Margin::symmetric(18, 14)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(RichText::new("In the community").strong().size(16.0));
+            ui.label(muted(format!(
+                "Coming soon: publish it for every player of {}, or first for a few testers with a code.",
+                game.name
+            )));
         });
     }
 

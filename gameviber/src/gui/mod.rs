@@ -13,6 +13,7 @@ mod audio;
 mod creator;
 mod feedback;
 mod gamepad;
+mod community;
 mod games;
 mod generator;
 mod keybindings;
@@ -52,6 +53,7 @@ const RECENT_RUMBLE_SECS: f64 = 5.0;
 #[derive(PartialEq, Clone, Copy)]
 enum Page {
     Games,
+    Community,
     Live,
     Toys,
     Setup,
@@ -72,13 +74,15 @@ enum Route {
 
 #[derive(PartialEq, Clone, Copy, Debug)]
 enum GameView {
+    /// The game's modes and sessions.
     Modes,
-    /// The active mode's page.
+    Sessions,
+    /// The active mode's tabs: what it does and its settings, its inputs, sharing it.
     Mode,
     Inputs,
+    Sharing,
     /// Inputs › captures and indicators.
     Screen,
-    Sessions,
 }
 
 pub struct App {
@@ -262,6 +266,7 @@ impl eframe::App for App {
         }
         match self.page {
             Page::Games => self.games_ui(ui, &s),
+            Page::Community => self.community_ui(ui),
             Page::Live => self.live_ui(ui, &s),
             Page::Toys => self.toys_ui(ui, &s),
             Page::Setup => self.setup_ui(ui, &s),
@@ -359,6 +364,7 @@ impl App {
             ui.vertical_centered(|ui| {
                 for (page, icon, label) in [
                     (Page::Games, "🎮", "Games"),
+                    (Page::Community, "🌐", "Community"),
                     (Page::Live, "📺", "Live"),
                     (Page::Toys, "📳", "Toys"),
                     (Page::Setup, "🛠", "Setup"),

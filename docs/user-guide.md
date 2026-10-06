@@ -11,15 +11,16 @@ intensity and **STOP ALL**.
 
 | Page | What it is for |
 |---|---|
-| **Games** | Your games, added by name. Each game has its **Modes**, the **Inputs** of the mode being played (what GameViber reads from the game for it, see below) and its recorded **Sessions**. A game linked to its executable becomes the game being played by itself, and so does a game Steam starts once GameViber saw its Steam app id. |
+| **Games** | Your games, added by name. Each game has its **Modes** and its recorded **Sessions**; each mode has its page, in tabs: **Overview** (what it does, its variants, presets and settings), **Inputs** (what GameViber reads from the game for it, see below) and **Sharing**. A game linked to its executable becomes the game being played by itself, and so does a game Steam starts once GameViber saw its Steam app id. |
+| **Community** | Coming: modes other players made for your games, and publishing yours. Meanwhile, import a shared `.gameviber` file there. |
 | **Live** | What happens while you play, to keep on a second screen: the mode and its main settings, what goes to the toys, the phase, the sound, the gamepad. |
 | **Toys** | The connection to Intiface Central, the toys it found, a test buzz, and how each toy plays: which mode channels, weakest and strongest intensity, response curve. |
 | **Setup** | What does not depend on the game: the gamepad and how it is captured, the shortcuts (panic stop, mark a moment, capture the screen) on the gamepad or the keyboard, the in-game overlay, the sound listened to by default, other programs. |
 | **Settings** | The language AI assistants answer in, the requests sent to them (editable). |
 | **Creator** | Writing modes by hand: hot reload, graphs, a simulator, replay of recorded sessions, the log. |
 
-A mode's own page shows its explanation, its main settings, all its settings
-and named **presets**, and its **variants**: other scripts of the same mode
+A mode's own page (its **Overview** tab) shows its explanation, its main
+settings, all its settings and named **presets**, and its **variants**: other scripts of the same mode
 (a "boss only" version, a calmer one), reading the same inputs, each with its
 own settings and presets. **+ Variant** copies the script played now, to change
 in Creator; a variant is shared with its mode.
@@ -59,12 +60,12 @@ tuned copy of a built-in one.
 ### Sharing a mode
 
 A mode written for a game reads the phases and indicators set up for it, so it
-is shared with them. **Export** on a mode's page saves it in a `.gameviber` file
+is shared with them. **Export**, in a mode's **Sharing** tab, saves it in a `.gameviber` file
 with its inputs (phases, indicators, captures filed under a phase, captures to
 sort stay home; external inputs) and the game's name and executables. Captures
 are images of your screen: look at them before sharing the file.
 
-**Import a mode** in the library adds the mode, with its inputs, to the game of
+**Import a mode** in the library (or **Import a file** in Community) adds the mode, with its inputs, to the game of
 the same name, or adds the game. Captures are analysed again once the mode is
 played. Modes run in a sandbox: they can
 only drive your toys, never reach your files or the network.

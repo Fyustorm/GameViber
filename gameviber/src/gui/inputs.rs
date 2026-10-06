@@ -439,7 +439,7 @@ impl App {
         let mut advanced = false;
         card(PANEL).inner_margin(Margin::symmetric(16, 14)).show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.label(RichText::new("What your modes know right now").strong().size(15.0));
+            ui.label(RichText::new("What the mode knows right now").strong().size(15.0));
             if !playing {
                 ui.label(muted(format!("Live while {} is the game being played.", game.name)));
             } else {
@@ -457,7 +457,7 @@ impl App {
                         Some(IndicatorValue::Gauge(v)) => format!("{name}: {:.0}%", v * 100.0),
                         Some(IndicatorValue::Unknown) | None => format!("{name}: unknown"),
                     };
-                    known(ui, &text, "zone", TEXT);
+                    known(ui, &text, "indicator", TEXT);
                 }
                 let busy: Vec<f64> = [s.audio.levels.map(|l| l.intensity), s.screen.levels.map(|l| l.action as f64)].into_iter().flatten().collect();
                 if !busy.is_empty() {
