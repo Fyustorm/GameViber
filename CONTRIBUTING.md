@@ -63,14 +63,18 @@ zero on source loss) → **Intiface** (Buttplug protocol).
 
 Modes are Luau scripts: [`docs/spec-modes.md`](docs/spec-modes.md) is the API
 specification. Built-in modes are in [`gameviber/modes/`](gameviber/modes/);
-user modes in `~/.config/gameviber/modes/`. The **Creator** page edits them
+user modes are packages in `~/.config/gameviber/modes/<name>/` (`package.rs`:
+the script `mode.luau`, its variants in `variants/`, and `mode.json` with the
+inputs the player set up for it, its captures in `captures/`). The **Creator**
+page edits them
 with hot reload, graphs, a simulator and session replay. The requests sent to
 AI assistants are built from [`gameviber/prompts/`](gameviber/prompts/).
 A mode is shared with its game as a `.gameviber` file (`sharing.rs`): a zip
-archive of `gameviber.json` (format version, the game without its modes and
-capture embeddings), `mode.luau` and `captures/*.png`. Importing checks the
-limits, the file names and that the mode loads, then merges by name into the
-game of the same name.
+archive of `gameviber.json` (format version, the game's name, executables and
+Steam app id, the mode's inputs without capture embeddings), `mode.luau`,
+`variants/*.luau` and `captures/*.png`. Importing checks the limits, the file
+names and that every script loads, then makes a package of the mode, joined to
+the same game (same Steam app id, or same name).
 
 ### Interception sources
 
@@ -107,7 +111,7 @@ prints its errors on the game's stderr.
 
 ### Sound and image
 
-The sound comes from PipeWire (`pw-record`, `pw-dump`, `pw-link`). Scenes are
+The sound comes from PipeWire (`pw-record`, `pw-dump`, `pw-link`). Phases are
 recognized by CLAP (sound) and CLIP (image) running on ONNX Runtime on the CPU;
 the models are downloaded on demand into `~/.local/share/gameviber/models/`.
 
