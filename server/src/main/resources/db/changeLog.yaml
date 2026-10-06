@@ -1,0 +1,4 @@
+databaseChangeLog:
+  - include:
+      file: changelog/001_catalog.sql
+      relativeToChangelogFile: true

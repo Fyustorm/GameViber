@@ -121,6 +121,20 @@ Linux only for now, but every OS-specific piece lives in `linux` modules with
 fallbacks for other systems, so that Windows can be added later. See
 AGENTS.md, Platforms.
 
+## Community server
+
+`server/` is the service players publish modes to: Quarkus, one SQLite file,
+built as a native binary. See [`server/README.md`](server/README.md) for its
+API, dev mode and deployment. A package it accepts must stay one the app
+imports: when the `.gameviber` format changes (`sharing.rs`), change
+`SharedPackage` too.
+
+```sh
+cd server
+./mvnw test          # the API, against a database of its own
+./mvnw quarkus:dev   # http://localhost:8080, back-office token "dev"
+```
+
 ## Packaging and releases
 
 [`packaging/linux/`](packaging/linux/) holds the files a package installs under

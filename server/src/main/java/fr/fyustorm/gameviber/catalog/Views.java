@@ -1,0 +1,68 @@
+package fr.fyustorm.gameviber.catalog;
+
+import java.time.Instant;
+import java.util.List;
+
+import fr.fyustorm.gameviber.auth.Author;
+
+/** What the API answers with. */
+public final class Views {
+    private Views() {}
+
+    public record GameView(long id, String name, Long steamAppId, long modes) {}
+
+    public record VersionView(int number, String changelog, int api, long size, String sha256, Instant createdAt) {
+        static VersionView of(ModeVersion v) {
+            return new VersionView(v.number, v.changelog, v.api, v.size, v.sha256, v.createdAt);
+        }
+    }
+
+    public record ModeSummary(String id, String name, String description, String author, long downloads, int version, Instant updatedAt) {}
+
+    /** `visibility` and `shareCode` only for its author (and administrators). */
+    public record ModeDetail(
+            String id,
+            String name,
+            String description,
+            GameView game,
+            String author,
+            long downloads,
+            List<VersionView> versions,
+            Instant createdAt,
+            Instant updatedAt,
+            String visibility,
+            String shareCode,
+            Instant withdrawnAt,
+            String withdrawnReason) {}
+
+    static GameView game(Game game) {
+        long modes = Mode.count("gameId = ?1 and visibility = ?2 and withdrawnAt is null", game.id, Mode.PUBLIC);
+        return new GameView(game.id, game.name, game.steamAppId, modes);
+    }
+
+    static ModeSummary summary(Mode mode) {
+        Author author = Author.findById(mode.authorId);
+        int version = ModeVersion.latest(mode).map(v -> v.number).orElse(0);
+        return new ModeSummary(mode.publicId, mode.name, mode.description, author.pseudo, mode.downloads, version, mode.updatedAt);
+    }
+
+    static ModeDetail detail(Mode mode, boolean owner) {
+        Author author = Author.findById(mode.authorId);
+        Game game = Game.findById(mode.gameId);
+        List<VersionView> versions = ModeVersion.of(mode).stream().map(VersionView::of).toList();
+        return new ModeDetail(
+                mode.publicId,
+                mode.name,
+                mode.description,
+                game(game),
+                author.pseudo,
+                mode.downloads,
+                versions,
+                mode.createdAt,
+                mode.updatedAt,
+                owner ? mode.visibility : null,
+                owner ? mode.shareCode : null,
+                mode.withdrawnAt,
+                mode.withdrawnReason);
+    }
+}

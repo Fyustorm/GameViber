@@ -70,6 +70,7 @@ accepted; nothing else of them is left.
 | `packaging/third-party/` | `licenses.sh` writing `THIRD-PARTY-LICENSES.txt` for the packages: cargo-about (`about.toml`: accepted licenses), Luau, ONNX Runtime's notices |
 | `LICENSE`, `LICENSE-MIT` | GPL-3.0-or-later for GameViber; MIT for the built-in modes, the mode spec and the prompts; MIT or GPL-2.0-or-later for the eBPF probe and `gameviber-common` |
 | `.github/workflows/` | `ci.yml`: tests and the Windows check; `packages.yml`: packages built on Ubuntu 24.04 (glibc 2.39, the oldest the prebuilt ONNX Runtime links with), attached to a draft release on a `v*` tag |
+| `server/` | the community server (Java, Quarkus, SQLite; `server/README.md`): games, authors (pseudo and password), modes and their versions published as `.gameviber` files (checked like the app's import, `SharedPackage`), share codes for private modes, downloads, reports, the back-office at `/admin/`; one native binary on a VPS |
 | `prototype/` | original Python prototype (reference only) |
 | `tools/` | test helpers: fake gamepad, SDL rumble game, `check-windows.sh` (Platforms) |
 

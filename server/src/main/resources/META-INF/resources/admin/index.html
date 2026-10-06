@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GameViber back-office</title>
+<style>
+:root { --bg: #121419; --panel: #1a1d24; --raised: #22262f; --line: #2b303c; --text: #e7e9ee; --muted: #a3aab8; --accent: #f06d94; --on-accent: #2a0a14; --ok: #46c08a; --danger: #ff7a7f; }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, sans-serif; }
+main { max-width: 1100px; margin: 0 auto; padding: 24px 16px; }
+h1 { font-size: 22px; margin: 0 0 16px; }
+nav { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
+button, input, select { font: inherit; color: var(--text); background: var(--raised); border: 1px solid var(--line); border-radius: 8px; min-height: 36px; padding: 0 12px; }
+button { cursor: pointer; }
+button.on, button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
+button.danger { color: var(--danger); background: transparent; }
+table { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+th, td { text-align: left; padding: 8px 10px; border-top: 1px solid var(--line); vertical-align: top; }
+th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; border-top: none; }
+.muted { color: var(--muted); }
+.box { overflow-x: auto; }
+#error { color: var(--danger); min-height: 20px; }
+form { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+</style>
+</head>
+<body>
+<main>
+<h1>GameViber back-office</h1>
+<div id="error" role="alert"></div>
+<form id="login" hidden>
+  <label for="token">Operations token</label>
+  <input id="token" type="password" autocomplete="current-password">
+  <button class="primary" type="submit">Sign in</button>
+</form>
+<div id="app" hidden>
+  <nav aria-label="Sections">
+    <button type="button" data-view="modes" class="on">Modes</button>
+    <button type="button" data-view="reports">Reports</button>
+    <button type="button" data-view="authors">Authors</button>
+    <button type="button" data-view="games">Games</button>
+    <button type="button" id="logout">Sign out</button>
+  </nav>
+  <div class="box" id="view"></div>
+</div>
+</main>
+<script>
+// The session token stays in this tab only: closing it signs out.
+const store = sessionStorage;
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+const date = (t) => (t ? new Date(t).toLocaleString() : "");
+
+async function api(method, path, body, form) {
+  const headers = { Authorization: "Bearer " + store.getItem("token") };
+  let payload;
+  if (form) { headers["Content-Type"] = "application/x-www-form-urlencoded"; payload = new URLSearchParams(form); }
+  else if (body) { headers["Content-Type"] = "application/json"; payload = JSON.stringify(body); }
+  const r = await fetch(path, { method, headers, body: payload });
+  if (r.status === 401) { signOut(); throw new Error("session over: sign in again"); }
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
+  return r.status === 204 ? null : r.json();
+}
+
+function signOut() { store.removeItem("token"); show(); }
+
+function show() {
+  const signedIn = !!store.getItem("token");
+  $("login").hidden = signedIn;
+  $("app").hidden = !signedIn;
+  if (signedIn) render(current);
+}
+
+let current = "modes";
+const views = {
+  async modes() {
+    const modes = await api("GET", "/api/admin/modes");
+    return table(["Mode", "Game", "Author", "Visibility", "Downloads", "Updated", ""], modes.map((m) => [
+      `<strong>${esc(m.name)}</strong><div class="muted">${esc(m.id)} · v${m.versions[0]?.number ?? 0}</div>`,
+      esc(m.game.name), esc(m.author), esc(m.visibility), m.downloads, date(m.updatedAt),
+      m.withdrawnAt
+        ? `<span class="muted">${esc(m.withdrawnReason)}</span> <button data-act="restore" data-id="${esc(m.id)}">Restore</button>`
+        : `<button class="danger" data-act="withdraw" data-id="${esc(m.id)}">Withdraw</button>`,
+    ]));
+  },
+  async reports() {
+    const reports = await api("GET", "/api/admin/reports?all=true");
+    return table(["Mode", "Reason", "Details", "When", ""], reports.map((r) => [
+      `${esc(r.modeName)}<div class="muted">${esc(r.mode)}</div>`, esc(r.reason), esc(r.details), date(r.createdAt),
+      r.resolvedAt ? `<span class="muted">resolved</span>` : `<button data-act="resolve" data-id="${r.id}">Resolve</button>`,
+    ]));
+  },
+  async authors() {
+    const authors = await api("GET", "/api/admin/authors");
+    return table(["Pseudo", "Modes", "Since", ""], authors.map((a) => [
+      esc(a.pseudo), a.modes, date(a.createdAt),
+      a.blocked ? `<button data-act="unblock" data-id="${a.id}">Unblock</button>` : `<button class="danger" data-act="block" data-id="${a.id}">Block</button>`,
+    ]));
+  },
+  async games() {
+    const games = await api("GET", "/api/games");
+    return `<form id="merge"><label>Merge game <input name="from" type="number" required></label>
+      <label>into <input name="into" type="number" required></label><button type="submit">Merge</button></form><br>` +
+      table(["Id", "Game", "Steam app", "Public modes"], games.map((g) => [g.id, esc(g.name), g.steamAppId ?? "", g.modes]));
+  },
+};
+
+function table(head, rows) {
+  if (!rows.length) return `<p class="muted">Nothing here.</p>`;
+  return `<table><thead><tr>${head.map((h) => `<th>${h}</th>`).join("")}</tr></thead><tbody>` +
+    rows.map((r) => `<tr>${r.map((c) => `<td>${c}</td>`).join("")}</tr>`).join("") + `</tbody></table>`;
+}
+
+async function render(view) {
+  current = view;
+  document.querySelectorAll("nav [data-view]").forEach((b) => b.classList.toggle("on", b.dataset.view === view));
+  try { $("view").innerHTML = await views[view](); $("error").textContent = ""; }
+  catch (e) { $("error").textContent = e.message; }
+}
+
+const actions = {
+  withdraw: (id) => { const reason = prompt("Why is it withdrawn?"); return reason === null ? null : api("POST", `/api/admin/modes/${id}/withdraw`, null, { reason }); },
+  restore: (id) => api("POST", `/api/admin/modes/${id}/restore`),
+  resolve: (id) => api("POST", `/api/admin/reports/${id}/resolve`),
+  block: (id) => api("POST", `/api/admin/authors/${id}/block?blocked=true`),
+  unblock: (id) => api("POST", `/api/admin/authors/${id}/block?blocked=false`),
+};
+
+document.addEventListener("click", async (e) => {
+  const nav = e.target.closest("nav [data-view]");
+  if (nav) return render(nav.dataset.view);
+  const act = e.target.closest("[data-act]");
+  if (!act) return;
+  try { const done = actions[act.dataset.act](act.dataset.id); if (done) { await done; render(current); } }
+  catch (err) { $("error").textContent = err.message; }
+});
+
+document.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  try {
+    if (e.target.id === "login") {
+      const r = await fetch("/api/admin/session", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ token: $("token").value }) });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
+      store.setItem("token", (await r.json()).token);
+      $("token").value = "";
+      $("error").textContent = "";
+      show();
+    } else if (e.target.id === "merge") {
+      const f = new FormData(e.target);
+      await api("POST", `/api/admin/games/${f.get("from")}/merge?into=${f.get("into")}`);
+      render("games");
+    }
+  } catch (err) { $("error").textContent = err.message; }
+});
+
+$("logout").addEventListener("click", signOut);
+show();
+</script>
+</body>
+</html>
