@@ -17,8 +17,10 @@ use crate::game::Game;
 
 /// Below this width the mode's page goes under the list.
 const TWO_COLUMNS_WIDTH: f32 = 900.0;
-/// How a game's modes are sorted: what the server takes, what players read.
-const SORTS: [(&str, &str); 4] = [("trending", "Trending"), ("rating", "Top rated"), ("played", "Most played"), ("new", "New")];
+/// A game's modes, the best rated first (few votes counting little): a game has few.
+const SORT: &str = "rating";
+/// Searching waits for the player to stop typing this long.
+const SEARCH_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(300);
 const REASONS: [(&str, &str); 3] = [("broken", "Broken by a game update"), ("content", "Should not be there"), ("other", "Something else")];
 
 /// What a call to the server gives, once it came.
@@ -95,9 +97,10 @@ pub struct State {
     games: Remote<Vec<GameView>>,
     /// A game added to the library to make a mode for: the AI request opens once it is there.
     making_for: Option<String>,
-    /// The game whose modes are shown, and how they are sorted (`SORTS`; empty: the first).
+    /// The game whose modes are shown.
     game: Option<GameView>,
-    sort: &'static str,
+    /// When the search was last typed in, to search once typing stops.
+    typed: Option<std::time::Instant>,
     modes: Remote<Vec<ModeSummary>>,
     /// The mode whose page is shown, and how it was reached.
     selected: Option<Source>,
@@ -284,15 +287,15 @@ impl App {
             ui.label(RichText::new("Which game do you play?").strong().size(17.0));
             ui.label(muted("Modes other players made for it, ready in a click."));
             ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                let field = ui.add(
-                    egui::TextEdit::singleline(&mut self.community.search)
-                        .hint_text("Elden Ring, Hades II...")
-                        .font(egui::TextStyle::Heading)
-                        .desired_width(ui.available_width() - 110.0),
-                );
-                search = ui.add(primary("Search")).clicked() || (field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
-            });
+            let field = ui.add(
+                egui::TextEdit::singleline(&mut self.community.search)
+                    .hint_text("Elden Ring, Hades II...")
+                    .font(egui::TextStyle::Heading)
+                    .desired_width(ui.available_width()),
+            );
+            if field.changed() {
+                self.community.typed = Some(std::time::Instant::now());
+            }
             // The library's games, one click away.
             if !s.games.is_empty() {
                 ui.horizontal_wrapped(|ui| {
@@ -307,6 +310,15 @@ impl App {
             }
         });
         ui.add_space(12.0);
+        // Searched once typing stops for a moment: not on every key.
+        if let Some(typed) = self.community.typed {
+            if typed.elapsed() >= SEARCH_DEBOUNCE {
+                self.community.typed = None;
+                search = self.community.search.trim() != self.community.searched;
+            } else {
+                ui.ctx().request_repaint_after(SEARCH_DEBOUNCE - typed.elapsed());
+            }
+        }
         if search || matches!(self.community.games, Remote::Idle) {
             let (client, text) = (self.client(s), self.community.search.trim().to_owned());
             self.community.searched = text.clone();
@@ -421,19 +433,10 @@ impl App {
             }
             ui.label(RichText::new(&game.name).strong().size(18.0));
         });
-        ui.horizontal(|ui| {
-            let current = if self.community.sort.is_empty() { SORTS[0].0 } else { self.community.sort };
-            for (sort, label) in SORTS {
-                if ui.selectable_label(current == sort, label).clicked() {
-                    self.community.sort = sort;
-                    self.community.modes = Remote::Idle;
-                }
-            }
-        });
         ui.add_space(8.0);
         if matches!(self.community.modes, Remote::Idle) {
-            let (client, id, sort) = (self.client(s), game.id, if self.community.sort.is_empty() { SORTS[0].0 } else { self.community.sort });
-            self.community.modes.start(ui.ctx(), move || client.modes(id, sort));
+            let (client, id) = (self.client(s), game.id);
+            self.community.modes.start(ui.ctx(), move || client.modes(id, SORT));
         }
         let list = |app: &mut Self, ui: &mut egui::Ui| match &app.community.modes {
             Remote::Ready(modes) => {
@@ -493,7 +496,8 @@ impl App {
                 ui.vertical(|ui| {
                     ui.label(RichText::new(&mode.name).strong().size(15.0));
                     let mut line = format!("by {} · v{}", mode.author, mode.version);
-                    for figure in [mode.figures.liked(), players(mode.figures.players)].into_iter().flatten() {
+                    let median = (mode.figures.median_minutes > 0).then(|| format!("{} min median", mode.figures.median_minutes));
+                    for figure in [mode.figures.liked(), players(mode.figures.players), median].into_iter().flatten() {
                         line.push_str(&format!(" · {figure}"));
                     }
                     ui.label(muted(line).size(12.0));
@@ -524,6 +528,11 @@ impl App {
 
     /// The page of the mode selected: what it is, its versions, installing or updating it, reporting it.
     fn community_mode(&mut self, ui: &mut egui::Ui, s: &Shared) {
+        // Read again after an action (an install, a vote...).
+        if let (Remote::Idle, Some(source)) = (&self.community.detail, self.community.selected.clone()) {
+            let client = self.client(s);
+            self.community.detail.start(ui.ctx(), move || client.mode(&source));
+        }
         let detail = match &self.community.detail {
             Remote::Ready(detail) => detail.clone(),
             Remote::Failed(e) => {
@@ -710,7 +719,7 @@ impl App {
             let mut remote = Remote::Idle;
             remote.start(ctx, move || {
                 let Some(found) = client.game_match(&name, app)? else { return Ok(None) };
-                let modes = client.modes(found.id, SORTS[0].0)?;
+                let modes = client.modes(found.id, SORT)?;
                 Ok(Some((found, modes)))
             });
             self.community.matches.insert(game.id.clone(), remote);

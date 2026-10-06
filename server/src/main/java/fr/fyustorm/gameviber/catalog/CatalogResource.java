@@ -66,7 +66,8 @@ public class CatalogResource {
     public List<Views.ModeSummary> modes(@PathParam("id") long id, @QueryParam("sort") @DefaultValue("trending") String sort) {
         Game.<Game>findByIdOptional(id).orElseThrow(() -> Problem.notFound("no such game"));
         Comparator<Views.ModeSummary> order = switch (sort) {
-            case "rating" -> Comparator.comparingDouble(m -> -m.figures().rating());
+            // As sure as likes are, then the most played (no vote yet).
+            case "rating" -> Comparator.<Views.ModeSummary>comparingDouble(m -> -m.figures().rating()).thenComparingLong(m -> -m.figures().players());
             case "played" -> Comparator.comparingLong(m -> -m.figures().players());
             case "downloads" -> Comparator.comparingLong(m -> -m.downloads());
             case "new" -> Comparator.comparing(Views.ModeSummary::updatedAt).reversed();

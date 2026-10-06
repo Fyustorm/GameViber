@@ -11,7 +11,7 @@ intensity and **STOP ALL**.
 
 | Page | What it is for |
 |---|---|
-| **Community** | Where GameViber opens: search the game you play, and install a mode other players made for it in a click (the most downloaded or the newest first), open one shared with you by its code, report one that a game update broke. No mode for your game yet? **Create a mode for it**: an AI assistant writes it, then share it from its Sharing tab. A game's page shows its community modes too, and the library tells when the game you play has some and you have no mode of your own. |
+| **Community** | Where GameViber opens: type the game you play (it searches as you type), and install a mode other players made for it in a click (the best rated first), open one shared with you by its code, report one that a game update broke. No mode for your game yet? **Create a mode for it**: an AI assistant writes it, then share it from its Sharing tab. A game's page shows its community modes too, and the library tells when the game you play has some and you have no mode of your own. |
 | **Games** | Your games, added by name. Each game has its **Modes** and its recorded **Sessions**; each mode has its page, in tabs: **Overview** (what it does, its variants, presets and settings), **Inputs** (what GameViber reads from the game for it, see below) and **Sharing**. A game linked to its executable becomes the game being played by itself, and so does a game Steam starts once GameViber saw its Steam app id. |
 | **Live** | What happens while you play, to keep on a second screen: the mode and its main settings, what goes to the toys, the phase, the sound, the gamepad. |
 | **Toys** | The connection to Intiface Central, the toys it found, a test buzz, and how each toy plays: which mode channels, weakest and strongest intensity, response curve. |
@@ -94,10 +94,9 @@ At first launch, GameViber asks whether to share your stats with the
 community: how long you play the modes you installed from it (minutes and
 sessions, sent every ten minutes or so) and your votes, under an id made up for
 this installation. Never your name, your games' image or sound, your toys or
-how they ran, and nothing linked to your author account. They rank a game's
-modes: **Trending** (played lately), **Top rated** (liked by the most, a few
-votes counting little), **Most played** (players in the last 30 days), or
-**New**. Once you played a mode you installed, say whether you liked it on its
+how they ran, and nothing linked to your author account. A game's modes
+come the best rated first (a few votes counting little, then the most played),
+each with its share of likes, its players and its median play time. Once you played a mode you installed, say whether you liked it on its
 page or in its Sharing tab. Change your mind in **Settings › Community server**.
 
 ## A mode's inputs
