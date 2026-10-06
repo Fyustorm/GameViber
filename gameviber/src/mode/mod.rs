@@ -246,9 +246,9 @@ struct Callbacks {
     on_param_changed: Option<Function>,
     on_device: Option<Function>,
     on_audio_hit: Option<Function>,
-    on_scene: Option<Function>,
+    on_phase: Option<Function>,
     on_impact: Option<Function>,
-    on_zone: Option<Function>,
+    on_indicator: Option<Function>,
     on_event: Option<Function>,
 }
 
@@ -390,9 +390,10 @@ impl ModeRuntime {
             on_param_changed: get("on_param_changed")?,
             on_device: get("on_device")?,
             on_audio_hit: get("on_audio_hit")?,
-            on_scene: get("on_scene")?,
+            // The names of the first version of the API stay accepted.
+            on_phase: get("on_phase")?.or(get("on_scene")?),
             on_impact: get("on_impact")?,
-            on_zone: get("on_zone")?,
+            on_indicator: get("on_indicator")?.or(get("on_zone")?),
             on_event: get("on_event")?,
         };
 
@@ -414,6 +415,10 @@ impl ModeRuntime {
             ("axes", &input.axes),
             ("audio", &input.audio),
             ("screen", &input.screen),
+            ("phases", &input.scenes),
+            ("indicators", &input.zones),
+            ("external", &input.custom),
+            // Their names in the first version of the API.
             ("scenes", &input.scenes),
             ("zones", &input.zones),
             ("custom", &input.custom),
@@ -721,13 +726,14 @@ impl ModeRuntime {
                     if let Some(change) = self.scenes.zone(time, name, shown) {
                         self.scene_changed(change, time)?;
                     }
-                    if self.callbacks.on_zone.is_some() {
+                    if self.callbacks.on_indicator.is_some() {
                         let t = self.lua.create_table().map_err(lua_err)?;
+                        t.raw_set("indicator", name.as_str()).map_err(lua_err)?;
                         t.raw_set("zone", name.as_str()).map_err(lua_err)?;
                         t.raw_set("value", lua_value(*value)).map_err(lua_err)?;
                         t.raw_set("previous", previous.map(lua_value)).map_err(lua_err)?;
                         t.raw_set("t", time).map_err(lua_err)?;
-                        self.call_opt(&self.callbacks.on_zone, t)?;
+                        self.call_opt(&self.callbacks.on_indicator, t)?;
                     }
                 }
                 ModeEvent::Custom { name, value } => {
@@ -792,15 +798,16 @@ impl ModeRuntime {
 
     fn scene_changed(&self, change: SceneChange, time: f64) -> Result<(), String> {
         log::debug!("scene: {:?} -> {:?} ({:.2})", change.previous, change.scene, change.confidence);
-        if self.callbacks.on_scene.is_none() {
+        if self.callbacks.on_phase.is_none() {
             return Ok(());
         }
         let t = self.lua.create_table().map_err(lua_err)?;
+        t.raw_set("phase", change.scene.clone()).map_err(lua_err)?;
         t.raw_set("scene", change.scene).map_err(lua_err)?;
         t.raw_set("previous", change.previous).map_err(lua_err)?;
         t.raw_set("confidence", change.confidence).map_err(lua_err)?;
         t.raw_set("t", time).map_err(lua_err)?;
-        self.call_opt(&self.callbacks.on_scene, t)
+        self.call_opt(&self.callbacks.on_phase, t)
     }
 
     fn run_timers(&mut self, time: f64) -> Result<(), String> {
@@ -869,6 +876,8 @@ impl ModeRuntime {
         // The senses there are, averaged.
         let busy: Vec<f64> = [self.audio.map(|l| l.intensity), self.screen.map(|l| l.action as f64)].into_iter().flatten().collect();
         root.raw_set("intensity", if busy.is_empty() { 0.0 } else { busy.iter().sum::<f64>() / busy.len() as f64 })?;
+        root.raw_set("phase", self.scenes.current())?;
+        root.raw_set("phase_confidence", self.scenes.confidence())?;
         root.raw_set("scene", self.scenes.current())?;
         root.raw_set("scene_confidence", self.scenes.confidence())?;
         for (name, p) in self.scenes.averages() {
@@ -985,31 +994,34 @@ fn parse_info(declared: &Table) -> LoadResult<ModeInfo> {
     let number = |key: &str, default: f64| -> LoadResult<f64> {
         Ok(declared.get::<Option<f64>>(key).map_err(|e| format!("mode.{key}: {e}"))?.unwrap_or(default))
     };
+    // `phases` and `phase_window` were `scenes` and `scene_window` in the first version of the API.
+    let either = |key: &str, old: &str| if declared.contains_key(key).unwrap_or(false) { key.to_owned() } else { old.to_owned() };
+    let (phases_key, window_key) = (either("phases", "scenes"), either("phase_window", "scene_window"));
     let mut scenes = Vec::new();
-    if let Some(table) = declared.get::<Option<Table>>("scenes").map_err(|e| format!("mode.scenes: {e}"))? {
+    if let Some(table) = declared.get::<Option<Table>>(phases_key.as_str()).map_err(|e| format!("mode.{phases_key}: {e}"))? {
         for pair in table.pairs::<String, Value>() {
-            let (name, def) = pair.map_err(|e| format!("mode.scenes: {e}"))?;
+            let (name, def) = pair.map_err(|e| format!("mode.{phases_key}: {e}"))?;
             let Value::Table(def) = def else {
-                return Err(format!("mode.scenes: scene '{name}' must be a table: {{ sound = \"...\", screen = \"...\" }}"));
+                return Err(format!("mode.{phases_key}: phase '{name}' must be a table: {{ sound = \"...\", screen = \"...\" }}"));
             };
             let text = |key: &str| -> LoadResult<Option<String>> {
-                let value = def.get::<Option<String>>(key).map_err(|e| format!("mode.scenes.{name}.{key}: {e}"))?;
+                let value = def.get::<Option<String>>(key).map_err(|e| format!("mode.{phases_key}.{name}.{key}: {e}"))?;
                 Ok(value.filter(|v| !v.trim().is_empty()))
             };
             let (sound, screen) = (text("sound")?, text("screen")?);
             if sound.is_none() && screen.is_none() {
-                return Err(format!("mode.scenes: scene '{name}' needs a sound or a screen description"));
+                return Err(format!("mode.{phases_key}: phase '{name}' needs a sound or a screen description"));
             }
             scenes.push(SceneDecl { name, sound, screen, zone: None, hold: 0.0 });
         }
         scenes.sort_by(|a, b| a.name.cmp(&b.name));
         if !(2..=MAX_SCENES).contains(&scenes.len()) {
-            return Err(format!("mode.scenes must declare 2 to {MAX_SCENES} scenes"));
+            return Err(format!("mode.{phases_key} must declare 2 to {MAX_SCENES} phases"));
         }
     }
-    let scene_window = number("scene_window", scenes::DEFAULT_WINDOW)?;
+    let scene_window = number(&window_key, scenes::DEFAULT_WINDOW)?;
     if !(2.0..=60.0).contains(&scene_window) {
-        return Err("mode.scene_window must be between 2 and 60 seconds".into());
+        return Err(format!("mode.{window_key} must be between 2 and 60 seconds"));
     }
 
     Ok(ModeInfo {

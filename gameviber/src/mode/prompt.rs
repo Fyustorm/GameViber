@@ -35,37 +35,37 @@ const SPEC_ADVANCED: [&str; 3] = ["### 6.4 ", "### 6.5 ", "### 7.1 "];
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Depth {
     /// The rumble, the buttons and what GameViber makes of the sound and the
-    /// image (scenes, impacts, intensity): a mode in a couple of minutes.
+    /// image (phases, impacts, intensity): a mode in a couple of minutes.
     #[default]
     Quick,
-    /// Also the raw sound and image measures, the zones of the screen, the
+    /// Also the raw sound and image measures, the indicators of the screen, the
     /// example images and values other programs send (the game's profile).
     Advanced,
 }
 
-/// What the game's signals bring to a request: their description
-/// (`Game::describe`), if any; a quick request only gets the game's scenes.
+/// What the inputs set up for the mode bring to a request: their description
+/// (`Inputs::describe`), if any; a quick request only gets the phases.
 fn profile_text(depth: Depth, profile: Option<&str>, scenes: &[String]) -> String {
     match (depth, profile.map(str::trim).filter(|p| !p.is_empty())) {
         (Depth::Quick, _) if !scenes.is_empty() => {
             let names: Vec<String> = scenes.iter().map(|s| format!("`{s}`")).collect();
             format!(
-                "GameViber already recognizes this game's scenes: {}. Read them with `input.scene` and \
-                 `on_scene`, and do not declare `scenes` in the mode. Otherwise use the rumble, the buttons and the \
+                "GameViber already recognizes this game's phases: {}. Read them with `input.phase` and \
+                 `on_phase`, and do not declare `phases` in the mode. Otherwise use the rumble, the buttons and the \
                  high-level inputs (impacts, intensity).",
                 names.join(", ")
             )
         }
-        (Depth::Quick, _) => "Nothing more: use the rumble, the buttons and the high-level inputs (scenes, impacts, \
+        (Depth::Quick, _) => "Nothing more: use the rumble, the buttons and the high-level inputs (phases, impacts, \
              intensity)."
             .to_owned(),
         (Depth::Advanced, Some(profile)) => format!(
-            "The player set up this game's signals in GameViber (§6.5). Use what helps:\n\n{profile}"
+            "The player set up inputs for this game in GameViber (§6.5). Use what helps:\n\n{profile}"
         ),
-        (Depth::Advanced, None) => "The player has not set up anything for this game yet. If a zone of the screen \
-             would help (an interface shown only in battles, a health bar), tell the player which zones to draw in \
-             the game's Signals: a name, its kind (shown or not, or a bar) and where to draw it. Read them defensively: \
-             `input.zones.<name>` is nil until the zone exists."
+        (Depth::Advanced, None) => "The player has not set up anything for this game yet. If an indicator of the screen \
+             would help (an interface shown only in battles, a health bar), tell the player which indicators to draw in \
+             the mode's Inputs: a name, its kind (visibility or gauge) and where to draw it. Read them defensively: \
+             `input.indicators.<name>` is nil until the indicator exists."
             .to_owned(),
     }
 }
@@ -257,10 +257,14 @@ pub struct FeelReport<'a> {
 }
 
 impl FeelReport<'_> {
-    /// A mode reading the raw sound or image, zones or other programs gets the
+    /// A mode reading the raw sound or image, indicators or other programs gets the
     /// advanced specification; so does any mode while the game has a profile.
     fn depth(&self) -> Depth {
-        const ADVANCED: [&str; 7] = ["input.audio", "input.screen", "input.zones", "input.custom", "on_audio_hit", "on_zone", "on_event"];
+        const ADVANCED: [&str; 10] = [
+            "input.audio", "input.screen", "input.indicators", "input.external", "on_audio_hit", "on_indicator", "on_event",
+            // The names of the first version of the API.
+            "input.zones", "input.custom", "on_zone",
+        ];
         let profile = self.profile.is_some_and(|p| !p.trim().is_empty());
         if profile || ADVANCED.iter().any(|a| self.source.contains(a)) {
             Depth::Advanced

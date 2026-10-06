@@ -85,7 +85,7 @@ impl App {
                     if let Some(game) = &s.game {
                         let export = ui
                             .add_enabled(!self.sharing.busy(), egui::Button::new("Export"))
-                            .on_hover_text(format!("Save it in a file to share, with the signals of {}", game.name));
+                            .on_hover_text(format!("Save it in a file to share, with its inputs and {}", game.name));
                         if export.clicked() {
                             self.export_mode(game, &mode.id);
                         }
@@ -124,9 +124,9 @@ impl App {
             card(RAISED).inner_margin(Margin::same(12)).show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.horizontal_wrapped(|ui| {
-                    ui.label(format!("Scenes are recognized from the game's {what}. It needs a scene model:"));
+                    ui.label(format!("Phases are recognized from the game's {what}. It needs a phase model:"));
                     if let Some(game) = &s.game {
-                        if ui.button("Get it in the game's Signals").clicked() {
+                        if ui.button("Get it in the mode's Inputs").clicked() {
                             self.route = Route::Game { id: game.id.clone(), view: GameView::Signals };
                         }
                     }

@@ -48,7 +48,7 @@ impl App {
                 let target = if s.capture_scene.is_empty() { "to sort later".to_owned() } else { format!("as {}", s.capture_scene) };
                 let text = format!(
                     "Hold {} in game to capture its image into the game being played ({target}; change it on its captures \
-                     page). The in-game overlay confirms. Captures teach GameViber the game's scenes, and zones are \
+                     page). The in-game overlay confirms. Captures teach GameViber the game's phases, and indicators are \
                      drawn on them.",
                     combo_text(capture)
                 );

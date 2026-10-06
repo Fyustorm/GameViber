@@ -857,7 +857,7 @@ impl Engine {
             Command::DeleteCapture { dir, file } => self.edit_inputs(&dir, |i| i.remove_capture(&file)),
             Command::MoveCapture { dir, file, scene } => self.edit_inputs(&dir, |p| {
                 if let Some(capture) = p.captures.iter_mut().find(|c| c.file == file) {
-                    capture.scene = scene;
+                    capture.phase = scene;
                 }
             }),
             Command::SetKeyboardShortcuts(on) => {
@@ -1522,7 +1522,7 @@ impl Engine {
         match inputs.add_capture(&scene, frame) {
             Ok(()) => {
                 inputs.save();
-                let count = inputs.captures.iter().filter(|c| c.scene == scene).count();
+                let count = inputs.captures.iter().filter(|c| c.phase == scene).count();
                 let what = if scene.is_empty() { "to sort".to_owned() } else { scene.clone() };
                 log::info!("capture ({what}) added to {}", self.mode_name());
                 self.overlay_events.push((format!("📸 Captured: {what} ({count})"), time));

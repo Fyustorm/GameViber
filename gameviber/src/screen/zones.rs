@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 
 use super::Frame;
 use crate::mode::ZoneValue;
-use crate::package::{Direction, Zone, ZoneKind};
+use crate::package::{Direction, Zone, IndicatorKind};
 
 /// References are compared on a grayscale grid of this size.
 pub const REF_WIDTH: usize = 32;
@@ -139,14 +139,14 @@ pub fn suggest_threshold(shown: &[f32], hidden: &[f32]) -> Option<f32> {
 /// color to be told from an empty bar).
 pub fn measure(zone: &Zone, frame: &Frame) -> Option<f32> {
     match zone.kind {
-        ZoneKind::Visible => {
+        IndicatorKind::Visibility => {
             if zone.reference.len() != REF_WIDTH * REF_HEIGHT {
                 return Some(0.0);
             }
             let reference: Vec<f32> = zone.reference.iter().map(|&v| v as f32).collect();
             Some(correlation(&gray(frame, zone.rect), &reference))
         }
-        ZoneKind::Bar => bar_reading(zone, frame).map(|(fill, _)| fill),
+        IndicatorKind::Gauge => bar_reading(zone, frame).map(|(fill, _)| fill),
     }
 }
 
@@ -470,11 +470,11 @@ impl ZoneReader {
             let places: Vec<&Zone> = zones.iter().filter(|z| z.name == name).collect();
             let previous = self.values.get(name).copied();
             let (measure, value) = match places[0].kind {
-                ZoneKind::Visible => {
+                IndicatorKind::Visibility => {
                     let (shown, best) = shown_anywhere(&places, frame, previous == Some(ZoneValue::Visible(true)));
                     (Some(best), ZoneValue::Visible(shown))
                 }
-                ZoneKind::Bar => {
+                IndicatorKind::Gauge => {
                     let measure = fill_anywhere(&places, frame);
                     let missing = self.missing.entry(name.to_owned()).or_default();
                     *missing = if measure.is_none() { *missing + 1 } else { 0 };
@@ -568,7 +568,7 @@ mod tests {
         let rect = [5.0 / 160.0, 9.0 / 90.0, 150.0 / 160.0, 8.0 / 90.0];
         let zone = Zone {
             name: "hp".into(),
-            kind: ZoneKind::Bar,
+            kind: IndicatorKind::Gauge,
             rect,
             color: [40, 200, 60],
             empty_color: Some([190, 30, 30]),
@@ -602,7 +602,7 @@ mod tests {
         let rect = [5.0 / 160.0, 9.0 / 90.0, 150.0 / 160.0, 8.0 / 90.0];
         let zone = Zone {
             name: "hp".into(),
-            kind: ZoneKind::Bar,
+            kind: IndicatorKind::Gauge,
             rect,
             color: [40, 200, 60],
             empty_color: Some([190, 30, 30]),
@@ -651,7 +651,7 @@ mod tests {
         for rect in [[20.0 / 160.0, 20.0 / 90.0, 60.0 / 160.0, 3.0 / 90.0], [18.0 / 160.0, 10.0 / 90.0, 70.0 / 160.0, 14.0 / 90.0]] {
             let zone = Zone {
                 name: "hp".into(),
-                kind: ZoneKind::Bar,
+                kind: IndicatorKind::Gauge,
                 rect,
                 color: pick_color(&bar(1.0), 30.0 / 160.0, 22.5 / 90.0),
                 empty_color: Some([117, 23, 44]),
@@ -679,7 +679,7 @@ mod tests {
         };
         let place = |top: u32| Zone {
             name: "hp".into(),
-            kind: ZoneKind::Bar,
+            kind: IndicatorKind::Gauge,
             rect: [15.0 / 160.0, (top as f32 - 1.0) / 90.0, 70.0 / 160.0, 8.0 / 90.0],
             color: [40, 200, 60],
             empty_color: Some([190, 30, 30]),
@@ -727,7 +727,7 @@ mod tests {
         let full = move |x: u32, _| if gap(x) { [25, 25, 35] } else { [(220 - (x - 16) * 2) as u8, (40 + (x - 16) * 2) as u8, 40] };
         let empty = move |x: u32, _| if gap(x) { [25, 25, 35] } else { [30, 40, 90] };
         let bar = look_bar(rect, false, full, empty);
-        let mut zone = Zone { name: "hp".into(), kind: ZoneKind::Bar, rect, full_look: look(&bar(1.0), rect, Direction::Right), ..Zone::default() };
+        let mut zone = Zone { name: "hp".into(), kind: IndicatorKind::Gauge, rect, full_look: look(&bar(1.0), rect, Direction::Right), ..Zone::default() };
         assert!(has_look(&zone));
         for level in [1.0, 0.75, 0.5, 0.25, 0.0] {
             let got = measure(&zone, &bar(level)).unwrap();
@@ -763,7 +763,7 @@ mod tests {
         let full = move |x, y| if inside(x, y) { [220, 30, 40] } else { [25, 25, 35] };
         let empty = move |x, y| if inside(x, y) { [50, 50, 50] } else { [25, 25, 35] };
         let bar = look_bar(rect, false, full, empty);
-        let mut zone = Zone { name: "hp".into(), kind: ZoneKind::Bar, rect, full_look: look(&bar(1.0), rect, Direction::Right), ..Zone::default() };
+        let mut zone = Zone { name: "hp".into(), kind: IndicatorKind::Gauge, rect, full_look: look(&bar(1.0), rect, Direction::Right), ..Zone::default() };
         // Without the empty look, the edges of an empty heart (mostly
         // background) look full too: the reading is within a heart.
         for level in [1.0, 0.75, 0.45, 0.1] {
@@ -801,7 +801,7 @@ mod tests {
         let rect = [20.0 / 160.0, 10.0 / 90.0, 80.0 / 160.0, 6.0 / 90.0];
         let color = bar_color(&bar(1.0), rect);
         assert!(color[0] > 180 && color[1] < 60, "{color:?}");
-        let zone = Zone { name: "hp".into(), kind: ZoneKind::Bar, rect, color, ..Zone::default() };
+        let zone = Zone { name: "hp".into(), kind: IndicatorKind::Gauge, rect, color, ..Zone::default() };
         for level in [1.0, 0.75, 0.3, 0.0] {
             let got = measure(&zone, &bar(level)).unwrap();
             assert!((got - level).abs() < 0.04, "{level}: {got}");

@@ -250,7 +250,7 @@ impl Simulation {
         if self.ticks.iter().any(|t| t.image.is_some()) {
             let _ = writeln!(out, "\n### The game's image\n\n{} flashes seen (on_impact).", self.flashes);
             if !self.zone_changes.is_empty() {
-                let _ = writeln!(out, "\nZone changes ({}):\n", self.zone_changes.len());
+                let _ = writeln!(out, "\nIndicator changes ({}):\n", self.zone_changes.len());
                 for (t, name, value) in self.zone_changes.iter().take(MAX_PRESSES) {
                     let value = match value {
                         ZoneValue::Visible(shown) => if *shown { "shown" } else { "hidden" }.to_owned(),
@@ -263,7 +263,7 @@ impl Simulation {
             }
         }
         if !self.external.is_empty() || self.custom_values > 0 {
-            let _ = writeln!(out, "\n### Sent by other programs\n\n{} values set (input.custom).", self.custom_values);
+            let _ = writeln!(out, "\n### Sent by other programs\n\n{} values set (input.external).", self.custom_values);
             for (t, name) in self.external.iter().take(MAX_PRESSES) {
                 let _ = writeln!(out, "- {t:.2} s: event {name}");
             }
@@ -272,17 +272,17 @@ impl Simulation {
         if !self.has_scenes {
             return out;
         }
-        out.push_str("\n### Scenes\n\n");
+        out.push_str("\n### Phases\n\n");
         if let Some(why) = &self.scenes_unavailable {
-            let _ = writeln!(out, "Some scenes could not be recognized: {why}.\n");
+            let _ = writeln!(out, "Some phases could not be recognized: {why}.\n");
         }
         if !self.ticks.iter().any(|t| t.sound.is_some() || t.image.is_some()) {
-            out.push_str("Neither the sound nor the image was captured during this session: no scene was recognized.\n");
+            out.push_str("Neither the sound nor the image was captured during this session: no phase was recognized.\n");
             return out;
         }
-        let _ = writeln!(out, "Scene changes ({}):\n", self.scene_changes.len());
+        let _ = writeln!(out, "Phase changes ({}):\n", self.scene_changes.len());
         if self.scene_changes.is_empty() {
-            out.push_str("None: no scene was recognized.\n");
+            out.push_str("None: no phase was recognized.\n");
         }
         let mut previous: Option<&Option<String>> = None;
         for (t, scene) in self.scene_changes.iter().take(MAX_PRESSES) {
@@ -324,7 +324,7 @@ impl Simulation {
             header.push("image action".into());
         }
         if self.has_scenes {
-            header.push("scene".into());
+            header.push("phase".into());
         }
         header.extend(channels.iter().map(|c| format!("out {c}")));
         header.extend(plots.iter().map(|p| format!("plot {p}")));
@@ -445,11 +445,11 @@ function tick(dt, input) end
         };
         let report = simulate("t.luau", source, &BTreeMap::new(), &Inputs::default(), session).unwrap().report();
         assert!(report.contains("### The game's sound\n\n1 hits heard"), "{report}");
-        assert!(report.contains("| sound | scene |"), "{report}");
+        assert!(report.contains("| sound | phase |"), "{report}");
         assert!(report.contains("| 0.25 | 0.00 | - | 0.60 | - | 0.90 |"), "{report}");
         // Without the downloaded model the scenes are explained, not silently missing.
         if !Model::Sound.ready() {
-            assert!(report.contains("Some scenes could not be recognized"), "{report}");
+            assert!(report.contains("Some phases could not be recognized"), "{report}");
         }
     }
 

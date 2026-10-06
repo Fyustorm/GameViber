@@ -20,8 +20,8 @@ impl App {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 heading(ui, "Sound, by default");
                 ui.label(muted(
-                    "Modes react to the game's sound: impacts, loudness, and scenes recognized from the music. This is \
-                     what GameViber listens to for games that pick nothing else in their Signals. The sound is analysed \
+                    "Modes react to the game's sound: impacts, loudness, and phases recognized from the music. This is \
+                     what GameViber listens to for games that pick nothing else in their Inputs. The sound is analysed \
                      on your computer and never saved.",
                 ));
                 ui.add_space(8.0);
@@ -141,8 +141,8 @@ fn heard_now(ui: &mut egui::Ui, s: &Shared) {
 pub(super) fn model_card(ui: &mut egui::Ui, model: Model, state: &ModelState) -> Option<Command> {
     let mut command = None;
     let (title, what) = match model {
-        Model::Sound => ("Scene recognition from the sound", "a sound model (CLAP, by LAION)"),
-        Model::Image => ("Scene recognition from the image", "an image model (CLIP, by OpenAI)"),
+        Model::Sound => ("Phase recognition from the sound", "a sound model (CLAP, by LAION)"),
+        Model::Image => ("Phase recognition from the image", "an image model (CLIP, by OpenAI)"),
     };
     card(PANEL).inner_margin(Margin::symmetric(16, 12)).show(ui, |ui| {
         ui.set_width(ui.available_width());
@@ -150,19 +150,19 @@ pub(super) fn model_card(ui: &mut egui::Ui, model: Model, state: &ModelState) ->
         match state {
             ModelState::Missing | ModelState::Failed(_) => {
                 ui.label(format!(
-                    "Recognizing scenes needs {what}. It is downloaded once and runs on your computer, using a \
-                     little processor time while a mode uses scenes."
+                    "Recognizing phases needs {what}. It is downloaded once and runs on your computer, using a \
+                     little processor time while a mode uses phases."
                 ));
                 if let ModelState::Failed(error) = state {
                     ui.label(RichText::new(format!("Download failed: {error}")).color(DANGER_TEXT).size(12.0));
                 }
-                let label = format!("Download the scene model ({} MB)", model.size() / 1_000_000);
+                let label = format!("Download the phase model ({} MB)", model.size() / 1_000_000);
                 if ui.add(primary(&label)).clicked() {
                     command = Some(Command::DownloadModel(model));
                 }
             }
             ModelState::Downloading { done, total } => {
-                ui.label("Downloading the scene model...");
+                ui.label("Downloading the phase model...");
                 let fraction = *done as f32 / (*total).max(1) as f32;
                 ui.add(egui::ProgressBar::new(fraction).desired_width(320.0).text(format!(
                     "{} / {} MB",
@@ -173,7 +173,7 @@ pub(super) fn model_card(ui: &mut egui::Ui, model: Model, state: &ModelState) ->
             ModelState::Ready => {
                 ui.horizontal(|ui| {
                     dot(ui, OK);
-                    ui.label("Scene model ready");
+                    ui.label("Phase model ready");
                 });
             }
         }

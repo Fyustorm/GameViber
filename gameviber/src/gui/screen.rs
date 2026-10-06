@@ -18,7 +18,7 @@ use super::theme::*;
 use super::App;
 use crate::engine::{Command, Shared};
 use crate::game::Game;
-use crate::package::{self, valid_name, Direction, Inputs, Zone, ZoneKind};
+use crate::package::{self, valid_name, Direction, Inputs, Zone, IndicatorKind};
 use crate::models::Model;
 use crate::screen::{zones, Frame};
 
@@ -137,14 +137,14 @@ impl State {
         let captures = &self.captures;
         let found = |file: &str| {
             captures.get(file).is_some_and(|(frame, _)| match zone.kind {
-                ZoneKind::Bar => zones::fill_anywhere(&[zone], frame).is_some(),
-                ZoneKind::Visible => zones::measure(zone, frame).is_some_and(|m| m >= zone.threshold),
+                IndicatorKind::Gauge => zones::fill_anywhere(&[zone], frame).is_some(),
+                IndicatorKind::Visibility => zones::measure(zone, frame).is_some_and(|m| m >= zone.threshold),
             })
         };
         if self.selected.as_deref().is_some_and(found) {
             return;
         }
-        let in_scene = |c: &&package::Capture| zone.scene.as_ref().is_none_or(|s| c.scene == *s);
+        let in_scene = |c: &&package::Capture| zone.phase.as_ref().is_none_or(|s| c.phase == *s);
         let best = inputs.captures.iter().filter(in_scene).find(|c| found(&c.file)).or_else(|| inputs.captures.iter().find(|c| found(&c.file)));
         if let Some(capture) = best {
             self.selected = Some(capture.file.clone());
@@ -174,22 +174,22 @@ impl State {
         let first = d.zone.as_ref().and_then(|name| inputs.zones.iter().find(|z| z.name == *name));
         let base = d.editing.and_then(|i| inputs.zones.get(i)).or(first).cloned().unwrap_or_default();
         let drawn = d.drawn_on.as_ref().and_then(|f| self.captures.get(f)).map(|(frame, _)| frame);
-        let scene = d.drawn_on.as_ref().and_then(|f| inputs.captures.iter().find(|c| c.file == *f)).map(|c| c.scene.clone());
+        let scene = d.drawn_on.as_ref().and_then(|f| inputs.captures.iter().find(|c| c.file == *f)).map(|c| c.phase.clone());
         let mut zone = Zone {
             rect,
             threshold: d.threshold,
-            scene: if drawn.is_some() { scene.filter(|s| !s.is_empty()) } else { base.scene.clone() },
+            phase: if drawn.is_some() { scene.filter(|s| !s.is_empty()) } else { base.phase.clone() },
             capture: if drawn.is_some() { d.drawn_on.clone() } else { base.capture.clone() },
             ..base.clone()
         };
         self.shared(&mut zone);
         match zone.kind {
-            ZoneKind::Visible => {
+            IndicatorKind::Visibility => {
                 if let Some(frame) = drawn {
                     zone.reference = zones::reference(frame, rect);
                 }
             }
-            ZoneKind::Bar => {
+            IndicatorKind::Gauge => {
                 zone.reference.clear();
                 if d.full.is_empty() {
                     zone.color = match drawn {
@@ -216,7 +216,7 @@ impl State {
         zone.kind = d.kind;
         zone.direction = d.direction;
         zone.tolerance = d.tolerance;
-        if d.kind == ZoneKind::Bar {
+        if d.kind == IndicatorKind::Gauge {
             if let Some(color) = d.full.first() {
                 zone.color = *color;
             }
@@ -231,17 +231,17 @@ impl State {
         let d = &self.draft;
         let placing = d.zone.is_none() || d.editing.is_some() || d.rect().is_some();
         if d.zone.is_none() && !d.kind_chosen {
-            Some("Choose what the zone reads.")
+            Some("Choose what the indicator reads.")
         } else if placing && d.rect().is_none() {
             Some("Draw it on the image.")
-        } else if d.kind == ZoneKind::Visible && d.editing.is_none() && d.rect().is_some() && d.drawn_on.is_none() {
+        } else if d.kind == IndicatorKind::Visibility && d.editing.is_none() && d.rect().is_some() && d.drawn_on.is_none() {
             Some("Draw the rectangle on a capture that shows the element.")
-        } else if d.kind == ZoneKind::Bar && d.by_look && placing && !d.rect().is_some_and(|r| d.look.as_ref().is_some_and(|l| l.fits(r, d.direction))) {
+        } else if d.kind == IndicatorKind::Gauge && d.by_look && placing && !d.rect().is_some_and(|r| d.look.as_ref().is_some_and(|l| l.fits(r, d.direction))) {
             Some("Take the bar's look full, on a capture where it is full.")
         } else if !valid_name(&d.name) {
             Some("Name: letters, digits and _, starting with a letter.")
         } else if inputs.zones.iter().any(|z| z.name == d.name && Some(&z.name) != d.zone.as_ref()) {
-            Some("Another zone has this name.")
+            Some("Another indicator has this name.")
         } else {
             None
         }
@@ -261,7 +261,7 @@ impl State {
                 self.shared(zone);
             }
             if *old != d.name {
-                g.scenes.iter_mut().filter(|sc| sc.zone.as_ref() == Some(old)).for_each(|sc| sc.zone = Some(d.name.clone()));
+                g.phases.iter_mut().filter(|sc| sc.indicator.as_ref() == Some(old)).for_each(|sc| sc.indicator = Some(d.name.clone()));
             }
         }
         let place = match (d.editing, self.draft_zone(inputs)) {
@@ -373,7 +373,7 @@ struct Draft {
     /// The drag going on.
     grab: Option<Grab>,
     name: String,
-    kind: ZoneKind,
+    kind: IndicatorKind,
     direction: Direction,
     /// The next click on the image picks this color of the bar.
     picking: Option<Pick>,
@@ -423,7 +423,7 @@ impl Default for Draft {
             end: None,
             grab: None,
             name: String::new(),
-            kind: ZoneKind::Visible,
+            kind: IndicatorKind::Visibility,
             direction: Direction::Right,
             picking: None,
             full: Vec::new(),
@@ -473,7 +473,7 @@ impl Draft {
         self.kind = zone.kind;
         self.direction = zone.direction;
         self.tolerance = zone.tolerance;
-        self.full = if zone.kind == ZoneKind::Bar { std::iter::once(zone.color).chain(zone.more_colors.iter().copied()).collect() } else { Vec::new() };
+        self.full = if zone.kind == IndicatorKind::Gauge { std::iter::once(zone.color).chain(zone.more_colors.iter().copied()).collect() } else { Vec::new() };
         self.empty = zone.empty_color.into_iter().chain(zone.more_empty.iter().copied()).collect();
     }
 
@@ -612,21 +612,21 @@ fn tag(ui: &egui::Ui, at: Pos2, align: egui::Align2, text: String, color: Color3
 fn reading_places(places: &[&Zone], frame: &Frame) -> (String, Color32) {
     let Some(first) = places.first() else { return (String::new(), MUTED) };
     match first.kind {
-        ZoneKind::Visible => {
+        IndicatorKind::Visibility => {
             let (shown, best) = zones::shown_anywhere(places, frame, false);
             if shown { (format!("shown {best:.2}"), ACCENT_TEXT) } else { (format!("hidden {best:.2}"), MUTED) }
         }
-        ZoneKind::Bar => reading(first, zones::fill_anywhere(places, frame)),
+        IndicatorKind::Gauge => reading(first, zones::fill_anywhere(places, frame)),
     }
 }
 
 /// What a zone reads on an image, as text and color.
 fn reading(zone: &Zone, measure: Option<f32>) -> (String, Color32) {
     match (zone.kind, measure) {
-        (ZoneKind::Visible, Some(m)) if m >= zone.threshold => (format!("shown {m:.2}"), ACCENT_TEXT),
-        (ZoneKind::Visible, m) => (format!("hidden {:.2}", m.unwrap_or(0.0)), MUTED),
-        (ZoneKind::Bar, Some(m)) => (format!("{:.0}%", m * 100.0), ACCENT_TEXT),
-        (ZoneKind::Bar, None) => ("unknown".to_owned(), WARN),
+        (IndicatorKind::Visibility, Some(m)) if m >= zone.threshold => (format!("shown {m:.2}"), ACCENT_TEXT),
+        (IndicatorKind::Visibility, m) => (format!("hidden {:.2}", m.unwrap_or(0.0)), MUTED),
+        (IndicatorKind::Gauge, Some(m)) => (format!("{:.0}%", m * 100.0), ACCENT_TEXT),
+        (IndicatorKind::Gauge, None) => ("unknown".to_owned(), WARN),
     }
 }
 
@@ -636,8 +636,8 @@ impl App {
     pub(super) fn screen_page(&mut self, ui: &mut egui::Ui, s: &Shared, game: &Game) {
         let Some(inputs) = self.inputs_of(ui, s, game) else { return };
         self.load_captures(ui.ctx(), Some(inputs));
-        heading(ui, "Captures and zones");
-        ui.label(muted("Zones are drawn on captures and checked on all of them. Captures stay on your computer."));
+        heading(ui, "Captures and indicators");
+        ui.label(muted("Indicators are drawn on captures and checked on all of them. Captures stay on your computer."));
         ui.add_space(4.0);
         // What the zone selected reads on each capture: its places, the one edited as drawn now.
         let st = &self.screen;
@@ -720,7 +720,7 @@ impl App {
             let height = (ui.available_height() - self.screen.captures_below).max(60.0);
             if inputs.captures.is_empty() {
                 ui.allocate_ui(Vec2::new(ui.available_width(), height), |ui| {
-                    ui.label(muted("No capture yet: capture each scene a few times, in different places."));
+                    ui.label(muted("No capture yet: capture each phase a few times, in different spots."));
                 });
             } else {
                 egui::ScrollArea::vertical().id_salt("captures").auto_shrink([false, false]).max_height(height).min_scrolled_height(height).show(ui, |ui| {
@@ -730,7 +730,7 @@ impl App {
             let top = ui.cursor().top();
             let analysed = inputs.captures.iter().filter(|c| !c.embedding.is_empty()).count();
             if analysed < inputs.captures.len() {
-                let why = if Model::Image.ready() { "analysing..." } else { "download the image model in Signals, step 2, to use them for scenes" };
+                let why = if Model::Image.ready() { "analysing..." } else { "download the image model in Inputs, step 2, to use them for phases" };
                 ui.label(muted(format!("{analysed} of {} analysed: {why}", inputs.captures.len())).size(11.5));
             }
             self.add_captures(ui, s, game, inputs);
@@ -741,11 +741,11 @@ impl App {
     /// Filters: all, each scene, to sort.
     fn capture_filters(&mut self, ui: &mut egui::Ui, inputs: &Inputs) {
         let mut filters: Vec<(Option<String>, String)> = vec![(None, format!("All · {}", inputs.captures.len()))];
-        for scene in inputs.scenes() {
-            let n = inputs.captures.iter().filter(|c| c.scene == scene).count();
+        for scene in inputs.phase_names() {
+            let n = inputs.captures.iter().filter(|c| c.phase == scene).count();
             filters.push((Some(scene.clone()), format!("{scene} · {n}")));
         }
-        let to_sort = inputs.captures.iter().filter(|c| c.scene.is_empty()).count();
+        let to_sort = inputs.captures.iter().filter(|c| c.phase.is_empty()).count();
         if to_sort > 0 {
             filters.push((Some(String::new()), format!("to sort · {to_sort}")));
         }
@@ -766,8 +766,8 @@ impl App {
     /// click opens one in the editor.
     fn capture_grid(&mut self, ui: &mut egui::Ui, inputs: &Inputs, readings: &HashMap<String, (String, Color32)>, marked: &HashSet<String>) {
         let shown: Vec<&package::Capture> =
-            inputs.captures.iter().filter(|c| self.screen.filter.as_ref().is_none_or(|f| c.scene == *f)).collect();
-        let targets = inputs.scenes();
+            inputs.captures.iter().filter(|c| self.screen.filter.as_ref().is_none_or(|f| c.phase == *f)).collect();
+        let targets = inputs.phase_names();
         let mut delete = None;
         let mut moved = None;
         let gap = 6.0;
@@ -783,7 +783,7 @@ impl App {
                         ui.set_width(width);
                         ui.spacing_mut().item_spacing.y = 2.0;
                         let response = thumbnail(ui, texture, image_size(width, frame), selected)
-                            .on_hover_text("Open it in the editor; right-click to file it under another scene or delete it");
+                            .on_hover_text("Open it in the editor; right-click to file it under another phase or delete it");
                         if marked.contains(&capture.file) {
                             tag(ui, response.rect.right_top() + Vec2::new(-3.0, 3.0), egui::Align2::RIGHT_TOP, "📍".to_owned(), ACCENT_TEXT);
                         }
@@ -791,7 +791,7 @@ impl App {
                             self.screen.selected = Some(capture.file.clone());
                         }
                         response.context_menu(|ui| {
-                            for other in targets.iter().filter(|o| **o != capture.scene) {
+                            for other in targets.iter().filter(|o| **o != capture.phase) {
                                 if ui.button(format!("Move to {other}")).clicked() {
                                     moved = Some((capture.file.clone(), other.clone()));
                                 }
@@ -800,7 +800,7 @@ impl App {
                                 delete = Some(capture.file.clone());
                             }
                         });
-                        let (scene, color) = if capture.scene.is_empty() { ("to sort", WARN) } else { (capture.scene.as_str(), MUTED) };
+                        let (scene, color) = if capture.phase.is_empty() { ("to sort", WARN) } else { (capture.phase.as_str(), MUTED) };
                         ui.horizontal_wrapped(|ui| {
                             ui.spacing_mut().item_spacing = Vec2::new(4.0, 0.0);
                             ui.label(RichText::new(scene).color(color).size(11.5));
@@ -854,7 +854,7 @@ impl App {
             } else {
                 ui.label(muted(format!("Images of the game from your computer (screenshots), or play {} to capture it.", game.name)).size(12.5));
             }
-            let scenes = inputs.scenes();
+            let scenes = inputs.phase_names();
             let current = s.capture_scene.clone();
             let label = |scene: &str| if scene.is_empty() { "to sort later".to_owned() } else { scene.to_owned() };
             let mut target = None;
@@ -883,7 +883,7 @@ impl App {
             }
             if playing {
                 let mut on = s.settings.screen;
-                if ui.checkbox(&mut on, "Modes see the game's image").on_hover_text("Scenes from the image, zones, flashes and motion").changed() {
+                if ui.checkbox(&mut on, "Modes see the game's image").on_hover_text("Phases from the image, indicators, flashes and motion").changed() {
                     self.send(Command::SetScreen(on));
                 }
             } else if ui.button("Play this game").on_hover_text("To capture it in game").clicked() {
@@ -963,9 +963,9 @@ impl App {
                     changed = self.zone_editor(ui, inputs, &file, &frame, &texture);
                 }
                 None => {
-                    ui.label(RichText::new("Zones").strong().size(16.0));
+                    ui.label(RichText::new("Indicators").strong().size(16.0));
                     ui.label(muted(
-                        "A zone is a part of the screen modes read: whether something is shown (the battle interface), \
+                        "An indicator is a part of the screen modes read: whether something is shown (the battle interface), \
                          or how full a bar is (health). They are drawn on captures: capture the game first (left).",
                     ));
                 }
@@ -1000,7 +1000,7 @@ impl App {
         // The zones.
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
-            ui.label(RichText::new("Zones").strong());
+            ui.label(RichText::new("Indicators").strong());
             let mut seen: Vec<&str> = Vec::new();
             for zone in &inputs.zones {
                 if seen.contains(&zone.name.as_str()) {
@@ -1008,14 +1008,14 @@ impl App {
                 }
                 seen.push(&zone.name);
                 let n = inputs.zones.iter().filter(|z| z.name == zone.name).count();
-                let kind = if zone.kind == ZoneKind::Bar { "bar" } else { "shown or not" };
+                let kind = if zone.kind == IndicatorKind::Gauge { "gauge" } else { "visibility" };
                 let on = zone_name.as_deref() == Some(zone.name.as_str());
                 let text = if n > 1 { format!("{} · {kind} · {n}", zone.name) } else { format!("{} · {kind}", zone.name) };
-                if ui.selectable_label(on, text).on_hover_text(format!("{n} place(s)")).clicked() && !on {
+                if ui.selectable_label(on, text).on_hover_text(format!("{n} zone(s)")).clicked() && !on {
                     target = Some(Target::Zone(zone.name.clone()));
                 }
             }
-            if ui.selectable_label(zone_name.is_none(), RichText::new("+ New zone").color(ACCENT_TEXT)).clicked() && zone_name.is_some() {
+            if ui.selectable_label(zone_name.is_none(), RichText::new("+ New indicator").color(ACCENT_TEXT)).clicked() && zone_name.is_some() {
                 target = Some(Target::NewZone);
             }
         });
@@ -1024,26 +1024,26 @@ impl App {
             ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
             match &zone_name {
                 Some(name) => {
-                    ui.label(RichText::new("Places").strong());
+                    ui.label(RichText::new("Zones").strong());
                     for (n, &i) in places.iter().enumerate() {
                         let on = draft.editing == Some(i);
-                        let scene = inputs.zones[i].scene.as_deref().unwrap_or("any scene");
-                        let hover = if on { "Leave this place" } else { "Edit this place, on its capture" };
+                        let scene = inputs.zones[i].phase.as_deref().unwrap_or("any phase");
+                        let hover = if on { "Leave this zone" } else { "Edit this zone, on its capture" };
                         if ui.selectable_label(on, format!("{} · {scene}", n + 1)).on_hover_text(hover).clicked() {
                             target = Some(if on { Target::Zone(name.clone()) } else { Target::Place(i, true) });
                         }
                     }
                     let hover = "Draw it again where, or as, the game also shows it: the health bar out of battles, \
-                                 another menu. Its value comes from the place where it is found; shown when any place is.";
-                    if ui.selectable_label(draft.editing.is_none(), "+ Place").on_hover_text(hover).clicked() && draft.editing.is_some() {
+                                 another menu. Its value comes from the zone where it is found; shown when any zone is.";
+                    if ui.selectable_label(draft.editing.is_none(), "+ Zone").on_hover_text(hover).clicked() && draft.editing.is_some() {
                         target = Some(Target::Zone(name.clone()));
                     }
                 }
                 None => {
-                    ui.label(RichText::new("New zone, reads").strong());
+                    ui.label(RichText::new("New indicator, reads").strong());
                     for (kind, help) in [
-                        (ZoneKind::Visible, "Whether an element is on screen: a battle menu, a dialogue box"),
-                        (ZoneKind::Bar, "How full a bar is: health, mana, a timer"),
+                        (IndicatorKind::Visibility, "Whether an element is on screen: a battle menu, a dialogue box"),
+                        (IndicatorKind::Gauge, "How full a bar is: health, mana, a timer"),
                     ] {
                         if ui.selectable_label(draft.kind_chosen && draft.kind == kind, kind.label()).on_hover_text(help).clicked() {
                             draft.kind = kind;
@@ -1057,9 +1057,9 @@ impl App {
         ui.horizontal(|ui| {
             ui.label(muted("Show"));
             for (show, label, help) in [
-                (Show::All, "All zones", "Every zone"),
-                (Show::Zone, "This zone", "Only the places of the zone selected"),
-                (Show::Nothing, "None", "Hide every zone, to see the image"),
+                (Show::All, "All indicators", "Every indicator"),
+                (Show::Zone, "This indicator", "Only the zones of the indicator selected"),
+                (Show::Nothing, "None", "Hide every indicator, to see the image"),
             ] {
                 ui.selectable_value(&mut st.show, show, label).on_hover_text(help);
             }
@@ -1230,7 +1230,7 @@ impl App {
                     let label = if draft.name.is_empty() { text } else { format!("{} · {text}", draft.name) };
                     tag(ui, r.left_top() - Vec2::new(0.0, 6.0), egui::Align2::LEFT_BOTTOM, label, color);
                     // The bar as found: its full part green, its empty part red, along the zone.
-                    if zone.kind == ZoneKind::Bar && (zone.empty_color.is_some() || zones::has_look(zone)) {
+                    if zone.kind == IndicatorKind::Gauge && (zone.empty_color.is_some() || zones::has_look(zone)) {
                         let ((a, b), (c, d)) = zones::bar_extent(zone, frame);
                         let horizontal = matches!(zone.direction, Direction::Right | Direction::Left);
                         let segment = |from: f32, to: f32| {
@@ -1283,9 +1283,9 @@ impl App {
         let hint = match (draft.picking, draft.rect()) {
             (Some(Pick::Full), _) => "Click the bar's full part on the image (Esc: stop).",
             (Some(Pick::Empty), _) => "Click the bar's empty part on the image (Esc: stop).",
-            (None, None) if !can_draw => "Choose what the new zone reads, above, then draw it on the image.",
-            (None, None) if zone_name.is_some() => "Pick a place above, or click or drag it on the image; or draw a new place.",
-            (None, None) if draft.kind == ZoneKind::Bar => "Drag a rectangle along the bar, from its empty end to its full end.",
+            (None, None) if !can_draw => "Choose what the new indicator reads, above, then draw it on the image.",
+            (None, None) if zone_name.is_some() => "Pick a zone above, or click or drag it on the image; or draw a new zone.",
+            (None, None) if draft.kind == IndicatorKind::Gauge => "Drag a rectangle along the bar, from its empty end to its full end.",
             (None, None) => "Drag a rectangle around fixed parts of the element (not text that changes).",
             (None, Some(_)) => "Drag its edges to resize it, its inside to move it; arrow keys nudge it (Shift: 10 px). Esc leaves it.",
         };
@@ -1294,14 +1294,14 @@ impl App {
         // The zone's settings, shared by its places.
         if can_draw {
             ui.horizontal_wrapped(|ui| {
-                ui.label(RichText::new("Zone").strong());
+                ui.label(RichText::new("Indicator").strong());
                 ui.label("Name");
                 ui.add(egui::TextEdit::singleline(&mut draft.name).hint_text("battle_menu").desired_width(130.0).font(egui::TextStyle::Monospace))
-                    .on_hover_text("Renaming renames all its places, and keeps the scene it is a sign of");
+                    .on_hover_text("Renaming renames all its zones, and keeps the phase it is a sign of");
                 if draft.zone.is_some() {
-                    ui.label(muted(draft.kind.label())).on_hover_text("Set when the zone was made: for another kind, make a new zone");
+                    ui.label(muted(draft.kind.label())).on_hover_text("Set when the indicator was made: for another kind, make a new indicator");
                 }
-                if draft.kind == ZoneKind::Bar {
+                if draft.kind == IndicatorKind::Gauge {
                     egui::ComboBox::from_id_salt("zone-direction").selected_text(draft.direction.label()).show_ui(ui, |ui| {
                         for d in Direction::ALL {
                             ui.selectable_value(&mut draft.direction, d, d.label());
@@ -1309,33 +1309,33 @@ impl App {
                     });
                 }
                 // The scene this zone is a sure sign of (saved right away).
-                if let Some(name) = zone_name.as_ref().filter(|_| !inputs.scenes.is_empty()) {
-                    let current = inputs.scenes.iter().find(|sc| sc.zone.as_ref() == Some(name)).map(|sc| sc.name.clone());
+                if let Some(name) = zone_name.as_ref().filter(|_| !inputs.phases.is_empty()) {
+                    let current = inputs.phases.iter().find(|sc| sc.indicator.as_ref() == Some(name)).map(|sc| sc.name.clone());
                     let mut chosen = current.clone();
                     ui.label("Sure sign of").on_hover_text(
-                        "While this zone is shown (any of its places), GameViber is sure of the scene, right away (a \
-                         battle menu: battle). How long the scene is kept once it hides is set with the scene, in Signals.",
+                        "While this indicator is shown (any of its zones), GameViber is sure of the phase, right away (a \
+                         battle menu: battle). How long the phase is kept once it hides is set with the phase, in Inputs.",
                     );
-                    egui::ComboBox::from_id_salt("zone-scene").selected_text(chosen.clone().unwrap_or_else(|| "no scene".to_owned())).show_ui(ui, |ui| {
-                        ui.selectable_value(&mut chosen, None, "no scene");
-                        for scene in &inputs.scenes {
+                    egui::ComboBox::from_id_salt("zone-scene").selected_text(chosen.clone().unwrap_or_else(|| "no phase".to_owned())).show_ui(ui, |ui| {
+                        ui.selectable_value(&mut chosen, None, "no phase");
+                        for scene in &inputs.phases {
                             ui.selectable_value(&mut chosen, Some(scene.name.clone()), &scene.name);
                         }
                     });
                     if chosen != current {
                         let mut g = inputs.clone();
-                        for scene in &mut g.scenes {
+                        for scene in &mut g.phases {
                             if Some(&scene.name) == chosen.as_ref() {
-                                scene.zone = Some(name.clone());
-                            } else if scene.zone.as_ref() == Some(name) {
-                                scene.zone = None;
+                                scene.indicator = Some(name.clone());
+                            } else if scene.indicator.as_ref() == Some(name) {
+                                scene.indicator = None;
                             }
                         }
                         linked = Some(g);
                     }
                 }
             });
-            if draft.kind == ZoneKind::Bar {
+            if draft.kind == IndicatorKind::Gauge {
                 ui.horizontal(|ui| {
                     ui.label("Read by");
                     ui.selectable_value(&mut draft.by_look, false, "Colors");
@@ -1350,7 +1350,7 @@ impl App {
                 };
                 ui.label(muted(why).size(12.0));
             }
-            if draft.kind == ZoneKind::Bar && draft.by_look {
+            if draft.kind == IndicatorKind::Gauge && draft.by_look {
                 let rect = draft.rect();
                 let fits = |draft: &Draft| rect.is_some_and(|r| draft.look.as_ref().is_some_and(|l| l.fits(r, draft.direction)));
                 let moved = rect.is_some() && draft.look.is_some() && !fits(draft);
@@ -1387,7 +1387,7 @@ impl App {
                     if ui.add_enabled(fits(draft), egui::Button::new("Add its empty part")).on_hover_text(help).clicked() {
                         if let (Some(rect), Some(look)) = (rect, draft.look.as_mut()) {
                             let zone = Zone {
-                                kind: ZoneKind::Bar,
+                                kind: IndicatorKind::Gauge,
                                 rect,
                                 direction: draft.direction,
                                 tolerance: draft.tolerance,
@@ -1422,7 +1422,7 @@ impl App {
                          its empty part reads full.",
                     );
                 });
-            } else if draft.kind == ZoneKind::Bar {
+            } else if draft.kind == IndicatorKind::Gauge {
                 ui.horizontal_wrapped(|ui| {
                     let mut remove = None;
                     for (pick, label) in [(Pick::Full, "Full"), (Pick::Empty, "Empty")] {
@@ -1467,8 +1467,8 @@ impl App {
         if draft.rect().is_some() {
             let saved = draft.editing.and_then(|i| inputs.zones.get(i));
             ui.horizontal_wrapped(|ui| {
-                ui.label(RichText::new("Place").strong());
-                if draft.kind == ZoneKind::Visible {
+                ui.label(RichText::new("Zone").strong());
+                if draft.kind == IndicatorKind::Visibility {
                     ui.add(egui::Slider::new(&mut draft.threshold, 0.1..=0.95).text("threshold"))
                         .on_hover_text("Similarity with its look (where it was drawn) above which it counts as shown");
                 }
@@ -1482,7 +1482,7 @@ impl App {
                     _ => {}
                 }
             });
-            if draft.kind == ZoneKind::Visible {
+            if draft.kind == IndicatorKind::Visibility {
                 if draft.editing.is_some() && draft.drawn_on.is_some() {
                     ui.label(muted("Its look is taken again from this capture.").size(12.0));
                 } else if saved.is_some_and(|z| zones::measure(z, frame).is_none_or(|m| m < z.threshold)) {
@@ -1492,13 +1492,13 @@ impl App {
                 }
             }
             // A threshold telling the place's scene from the others, from all the captures.
-            if let Some(zone) = tested.as_ref().filter(|z| z.kind == ZoneKind::Visible) {
-                if let Some(scene) = &zone.scene {
+            if let Some(zone) = tested.as_ref().filter(|z| z.kind == IndicatorKind::Visibility) {
+                if let Some(scene) = &zone.phase {
                     let (mut shown_in, mut others) = (Vec::new(), Vec::new());
-                    for capture in inputs.captures.iter().filter(|c| !c.scene.is_empty()) {
+                    for capture in inputs.captures.iter().filter(|c| !c.phase.is_empty()) {
                         let Some((capture_frame, _)) = st.captures.get(&capture.file) else { continue };
                         let m = zones::measure(zone, capture_frame).unwrap_or(-1.0);
-                        if capture.scene == *scene { shown_in.push(m) } else { others.push(m) }
+                        if capture.phase == *scene { shown_in.push(m) } else { others.push(m) }
                     }
                     ui.horizontal(|ui| match zones::suggest_threshold(&shown_in, &others) {
                         Some(t) if (t - draft.threshold).abs() > 0.01 => {
@@ -1507,10 +1507,10 @@ impl App {
                             }
                         }
                         Some(_) => {
-                            ui.label(RichText::new(format!("✔ tells {scene} from the other scenes")).color(OK).size(12.0));
+                            ui.label(RichText::new(format!("✔ tells {scene} from the other phases")).color(OK).size(12.0));
                         }
                         None if !shown_in.is_empty() && !others.is_empty() => {
-                            ui.label(RichText::new("No threshold tells the scenes apart: draw it tighter, on fixed parts").color(WARN).size(12.0));
+                            ui.label(RichText::new("No threshold tells the phases apart: draw it tighter, on fixed parts").color(WARN).size(12.0));
                         }
                         None => {}
                     });
@@ -1535,8 +1535,8 @@ impl App {
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let label = match (&zone_name, draft.editing, draft.rect()) {
-                    (None, ..) => "Save the zone",
-                    (Some(_), None, Some(_)) => "Save the place",
+                    (None, ..) => "Save the indicator",
+                    (Some(_), None, Some(_)) => "Save the zone",
                     _ => "Save",
                 };
                 if ui.add_enabled(dirty && problem.is_none(), primary(label)).clicked() {
@@ -1547,18 +1547,18 @@ impl App {
                 }
                 if let Some(name) = &zone_name {
                     if st.confirm_delete {
-                        let really = egui::Button::new(RichText::new(format!("Delete {name} and its {} place(s)", places.len())).color(Color32::WHITE)).fill(DANGER);
+                        let really = egui::Button::new(RichText::new(format!("Delete {name} and its {} zone(s)", places.len())).color(Color32::WHITE)).fill(DANGER);
                         if ui.add(really).clicked() {
                             delete_zone = true;
                         }
                         if ui.button("Keep it").clicked() {
                             st.confirm_delete = false;
                         }
-                    } else if ui.button(RichText::new("Delete the zone").color(DANGER_TEXT)).clicked() {
+                    } else if ui.button(RichText::new("Delete the indicator").color(DANGER_TEXT)).clicked() {
                         st.confirm_delete = true;
                     }
                     if let Some(i) = draft.editing.filter(|_| places.len() > 1) {
-                        if ui.button(RichText::new("Delete this place").color(DANGER_TEXT)).on_hover_text("Also the Delete key").clicked() {
+                        if ui.button(RichText::new("Delete this zone").color(DANGER_TEXT)).on_hover_text("Also the Delete key").clicked() {
                             delete_place = Some(i);
                         }
                     }
@@ -1581,7 +1581,7 @@ impl App {
             if let Some(name) = &zone_name {
                 let mut g = inputs.clone();
                 g.zones.retain(|z| z.name != *name);
-                g.scenes.iter_mut().filter(|sc| sc.zone.as_ref() == Some(name)).for_each(|sc| sc.zone = None);
+                g.phases.iter_mut().filter(|sc| sc.indicator.as_ref() == Some(name)).for_each(|sc| sc.indicator = None);
                 st.draft = Draft { zoom: st.draft.zoom, ..Draft::default() };
                 st.confirm_delete = false;
                 return Some(g);

@@ -509,21 +509,21 @@ fn ai_prompt_names_the_game_and_embeds_the_api() {
     }
     assert!(!text.contains("{{") && !text.contains("<!--"), "every placeholder and marker replaced");
     // A quick request: high-level inputs only.
-    assert!(text.contains("### 6.3 ") && text.contains("on_scene"), "scenes are high level");
+    assert!(text.contains("### 6.3 ") && text.contains("on_phase"), "phases are high level");
     for advanced in ["### 6.4 ", "### 6.5 ", "### 7.1 "] {
         assert!(!text.contains(advanced), "{advanced}");
     }
     assert!(text.contains("Nothing more: use the rumble"), "{text}");
 
     // An advanced request: the raw inputs and the game's profile.
-    let profile = "Zones of the screen (`input.zones`, `on_zone`):\n- `battle_hud`: true while shown, false otherwise\n";
+    let profile = "Indicators of the screen (`input.indicators`, `on_indicator`):\n- `battle_hud`: true while shown, false otherwise\n";
     let advanced = prompt::new_mode_prompt(&prompt::Templates::builtin(), "Hades II", "English", prompt::Depth::Advanced, Some(profile), &[]);
     assert!(advanced.contains("### 6.4 ") && advanced.contains("### 6.5 ") && advanced.contains("### 7.1 "));
     assert!(advanced.contains("- `battle_hud`: true while shown"), "the profile");
     let blank = prompt::new_mode_prompt(&prompt::Templates::builtin(), "Hades II", "English", prompt::Depth::Advanced, None, &[]);
-    let quick_scenes = prompt::new_mode_prompt(&prompt::Templates::builtin(), "Hades II", "English", prompt::Depth::Quick, None, &["battle".to_owned(), "hub".to_owned()]);
-    assert!(quick_scenes.contains("already recognizes this game's scenes: `battle`, `hub`"), "a quick request names the game's scenes");
-    assert!(blank.contains("tell the player which zones to draw"), "no profile yet");
+    let quick_phases = prompt::new_mode_prompt(&prompt::Templates::builtin(), "Hades II", "English", prompt::Depth::Quick, None, &["battle".to_owned(), "hub".to_owned()]);
+    assert!(quick_phases.contains("already recognizes this game's phases: `battle`, `hub`"), "a quick request names the game's phases");
+    assert!(blank.contains("tell the player which indicators to draw"), "no profile yet");
 }
 
 #[test]
@@ -534,7 +534,7 @@ fn left_out_spec_sections_exist() {
         "## 2. Architecture",
         "### 4.1 Presets",
         "### 6.4 Raw sound and image",
-        "### 6.5 The game's signals",
+        "### 6.5 The mode's inputs",
         "### 7.1 Advanced inputs",
         "## 11. Errors",
         "## 12. Safety",
@@ -676,7 +676,7 @@ fn input_audio_and_hits_follow_the_game_sound() {
            plot('intensity', input.intensity)
            plot('hits', hits)
            plot('impacts', impacts)
-           plot('scene', input.scene == nil and 0 or 1)
+           plot('phase', input.phase == nil and 0 or 1)
          end",
     );
     let mut rt = load(&src);
@@ -694,7 +694,7 @@ fn input_audio_and_hits_follow_the_game_sound() {
     assert_eq!(plot_value(&out, "hits"), 2.0);
     assert_eq!(plot_value(&out, "impacts"), 1.0, "weak hits are no impacts");
     assert_eq!(plot_value(&out, "source"), 1.0);
-    assert_eq!(plot_value(&out, "scene"), 0.0, "no scenes declared");
+    assert_eq!(plot_value(&out, "phase"), 0.0, "no scenes declared");
 
     // The image adds to the intensity, and its flashes are impacts.
     rt.set_screen(Some(ScreenLevels { brightness: 0.5, motion: 0.2, action: 0.75 }));
@@ -729,23 +729,23 @@ fn input_screen_follows_the_game_image() {
 }
 
 #[test]
-fn scenes_are_declared_and_reported() {
-    let src = "mode { api = 1, name = 'T', scene_window = 4,
-                 scenes = {
+fn phases_are_declared_and_reported() {
+    let src = "mode { api = 1, name = 'T', phase_window = 4,
+                 phases = {
                    calm = { sound = 'calm ambient music', screen = 'a quiet village' },
                    battle = { sound = 'intense battle music' },
                  } }
                last, previous, changes = 'none', 'none', 0
-               function on_scene(ev)
+               function on_phase(ev)
                  changes += 1
-                 last = ev.scene or 'none'
+                 last = ev.phase or 'none'
                  previous = ev.previous or 'none'
                  plot('confidence', ev.confidence)
                end
                function tick(dt, input)
                  plot('changes', changes)
-                 plot('battle', input.scenes.battle)
-                 plot('is_battle', input.scene == 'battle' and 1 or 0)
+                 plot('battle', input.phases.battle)
+                 plot('is_battle', input.phase == 'battle' and 1 or 0)
                end";
     let mut rt = load(src);
     let info = rt.info();
@@ -782,24 +782,49 @@ fn scenes_are_declared_and_reported() {
 }
 
 #[test]
-fn scene_declarations_are_checked() {
-    let one = load_err("mode { api = 1, name = 'T', scenes = { a = { sound = 'x' } } } function tick() end");
-    assert!(one.contains("2 to 8 scenes"), "{one}");
-    let empty = load_err("mode { api = 1, name = 'T', scenes = { a = { sound = 'x' }, b = { screen = ' ' } } } function tick() end");
+fn phase_declarations_are_checked() {
+    let one = load_err("mode { api = 1, name = 'T', phases = { a = { sound = 'x' } } } function tick() end");
+    assert!(one.contains("mode.phases must declare 2 to 8 phases"), "{one}");
+    let empty = load_err("mode { api = 1, name = 'T', phases = { a = { sound = 'x' }, b = { screen = ' ' } } } function tick() end");
     assert!(empty.contains("needs a sound or a screen description"), "{empty}");
-    let flat = load_err("mode { api = 1, name = 'T', scenes = { a = 'x', b = 'y' } } function tick() end");
+    let flat = load_err("mode { api = 1, name = 'T', phases = { a = 'x', b = 'y' } } function tick() end");
     assert!(flat.contains("must be a table"), "{flat}");
-    let window = load_err("mode { api = 1, name = 'T', scene_window = 0.5 } function tick() end");
-    assert!(window.contains("between 2 and 60"), "{window}");
+    let window = load_err("mode { api = 1, name = 'T', phase_window = 0.5 } function tick() end");
+    assert!(window.contains("mode.phase_window must be between 2 and 60"), "{window}");
 }
 
 #[test]
-fn zones_and_external_inputs_reach_the_mode() {
+fn names_of_the_first_api_version_still_work() {
+    let src = "mode { api = 1, name = 'T', scene_window = 4,
+                 scenes = { calm = { sound = 'calm music' }, battle = { sound = 'battle music' } } }
+               zone_events = 0
+               function on_scene(ev) end
+               function on_zone(ev) if ev.zone == 'hp' then zone_events += 1 end end
+               function tick(dt, input)
+                 plot('hp', input.zones.hp or -1)
+                 plot('ammo', input.custom.ammo or -1)
+                 plot('zone_events', zone_events)
+                 plot('no_scene', input.scene == nil and input.scene_confidence == 0 and 1 or 0)
+               end";
+    let mut rt = load(src);
+    assert_eq!((rt.info().scenes.len(), rt.info().scene_window), (2, 4.0));
+    rt.set_screen(Some(ScreenLevels::default()));
+    let events = [
+        ModeEvent::Zone { name: "hp".into(), value: ZoneValue::Bar(0.5) },
+        ModeEvent::Custom { name: "ammo".into(), value: serde_json::json!(3) },
+    ];
+    let out = rt.step(DT, rumble(0.0, 0.0), &PadState::default(), 1e9, &events).unwrap();
+    assert_eq!(["hp", "ammo", "zone_events", "no_scene"].map(|k| plot_value(&out, k)), [0.5, 3.0, 1.0, 1.0]);
+    assert!(load_err("mode { api = 1, name = 'T', scene_window = 0.5 } function tick() end").contains("mode.scene_window"));
+}
+
+#[test]
+fn indicators_and_external_inputs_reach_the_mode() {
     let src = wrap(
         "zone_events, events = 0, 0
-         function on_zone(ev)
+         function on_indicator(ev)
            zone_events += 1
-           if ev.zone == 'hp' then plot('previous_hp', ev.previous or -1) end
+           if ev.indicator == 'hp' then plot('previous_hp', ev.previous or -1) end
          end
          function on_event(ev)
            events += 1
@@ -807,12 +832,12 @@ fn zones_and_external_inputs_reach_the_mode() {
            log(ev.name)
          end
          function tick(dt, input)
-           plot('hud', input.zones.battle_hud and 1 or 0)
-           plot('hp', input.zones.hp or -1)
+           plot('hud', input.indicators.battle_hud and 1 or 0)
+           plot('hp', input.indicators.hp or -1)
            plot('zone_events', zone_events)
            plot('events', events)
-           plot('ammo', input.custom.ammo or -1)
-           plot('stance', input.custom.stance == 'low' and 1 or 0)
+           plot('ammo', input.external.ammo or -1)
+           plot('stance', input.external.stance == 'low' and 1 or 0)
          end",
     );
     let mut rt = load(&src);

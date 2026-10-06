@@ -75,7 +75,7 @@ pub fn export(game: &str, mode: &str, path: &Path) -> anyhow::Result<()> {
     let source = entry.source().with_context(|| format!("cannot read {}", entry.id))?;
     let mut inputs = Inputs::of(&entry);
     // Captures to sort are examples of no scene yet.
-    inputs.captures.retain(|c| !c.scene.is_empty());
+    inputs.captures.retain(|c| !c.phase.is_empty());
     let mut images = Vec::new();
     inputs.captures.retain_mut(|capture| {
         capture.embedding.clear();
@@ -202,10 +202,10 @@ fn install_mode(dir: &Path, stem: &str, source: &str, mut inputs: Inputs, images
     let path = config::unused_mode_path_in(dir, if stem.is_empty() { "shared-mode" } else { &stem });
     config::write_file(&path, source).with_context(|| format!("cannot write {}", path.display()))?;
     inputs.dir = ModeEntry::from_id(&path.to_string_lossy()).dir().context("no package for the mode")?;
-    inputs.scenes.truncate(MAX_SCENES);
+    inputs.phases.truncate(MAX_SCENES);
     inputs.captures.clear();
     for (capture, bytes) in images {
-        let of_scene = inputs.captures.iter().filter(|c| c.scene == capture.scene).count();
+        let of_scene = inputs.captures.iter().filter(|c| c.phase == capture.phase).count();
         if of_scene >= MAX_CAPTURES || inputs.captures.iter().any(|c| c.file == capture.file) {
             continue;
         }
@@ -268,7 +268,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
-    use crate::package::{Capture, InputDecl, SceneDef, Zone};
+    use crate::package::{Capture, ExternalInput, PhaseDef, Zone};
     use crate::screen::Frame;
 
     const MODE_SOURCE: &str = "mode { api = 1, name = \"Battles\" }\nfunction tick(dt, input) set(input.rumble.level) end\n";
@@ -292,8 +292,8 @@ mod tests {
         let mode = mode_path.to_string_lossy().into_owned();
 
         let mut inputs = Inputs::of(&ModeEntry::from_id(&mode));
-        inputs.scenes.push(SceneDef { name: "battle".into(), sound: Some("battle music".into()), ..SceneDef::default() });
-        inputs.inputs.push(InputDecl { name: "hp".into(), ..InputDecl::default() });
+        inputs.phases.push(PhaseDef { name: "battle".into(), sound: Some("battle music".into()), ..PhaseDef::default() });
+        inputs.external.push(ExternalInput { name: "hp".into(), ..ExternalInput::default() });
         inputs.add_capture("battle", &frame(1)).unwrap();
         inputs.add_capture("", &frame(2)).unwrap();
         inputs.captures[0].embedding = vec![1.0, 0.0];
@@ -320,7 +320,7 @@ mod tests {
         assert_eq!((got.name.as_str(), &got.executables, &got.modes), ("Metaphor: ReFantazio", &game.executables, &vec![mode.clone()]));
         assert_eq!(got.audio, None, "the sound to listen to stays on each computer");
         let got = Inputs::of(&ModeEntry::from_id(&mode));
-        assert_eq!((&got.scenes, &got.inputs), (&inputs.scenes, &inputs.inputs));
+        assert_eq!((&got.phases, &got.external), (&inputs.phases, &inputs.external));
         assert_eq!(got.captures.len(), 1, "captures to sort stay home");
         assert!(got.captures[0].embedding.is_empty(), "embeddings are computed again");
         assert_eq!(package::load_capture(&got.dir, &drawn_on).unwrap().pixels, vec![1; 32]);
@@ -357,7 +357,7 @@ mod tests {
         zip.finish().unwrap();
         let imported = import_into(&path, &modes).unwrap();
         let inputs = Inputs::of(&ModeEntry::from_id(&imported.mode));
-        assert_eq!((inputs.scenes[0].name.as_str(), inputs.zones[0].name.as_str(), inputs.captures.len()), ("boss", "hp", 1));
+        assert_eq!((inputs.phases[0].name.as_str(), inputs.zones[0].name.as_str(), inputs.captures.len()), ("boss", "hp", 1));
         assert!(package::capture_path(&inputs.dir, "boss-1.png").exists());
         assert_eq!(Game::load(&imported.game).unwrap().executables, ["Hades2.exe"]);
         let _ = fs::remove_dir_all(root);
@@ -378,7 +378,7 @@ mod tests {
             path
         };
         let manifest = |format: u32, mode: &str| {
-            let inputs = Inputs { captures: vec![Capture { file: "../../evil.png".into(), scene: "a".into(), embedding: Vec::new() }], ..Inputs::default() };
+            let inputs = Inputs { captures: vec![Capture { file: "../../evil.png".into(), phase: "a".into(), embedding: Vec::new() }], ..Inputs::default() };
             let game = serde_json::json!({ "name": "Test" });
             serde_json::to_vec(&Manifest { format, app_version: "9.0.0".into(), mode: mode.into(), game, inputs: Some(inputs) }).unwrap()
         };

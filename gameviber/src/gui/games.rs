@@ -120,8 +120,8 @@ impl App {
             ui.vertical(|ui| {
                 heading(ui, "Games");
                 ui.label(muted(
-                    "Each game has its modes, and the signals GameViber reads from it: its scenes, its screen, its \
-                     sound. Set them up once, before playing or while playing.",
+                    "Each game has its modes, and each mode the inputs GameViber reads from the game for it: its phases, \
+                     its screen, values from other programs. Set them up before playing or while playing.",
                 ));
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -130,7 +130,7 @@ impl App {
                 }
                 let import = ui
                     .add_enabled(!self.sharing.busy(), egui::Button::new("Import a mode"))
-                    .on_hover_text("A .gameviber file someone shared: a mode with its game's signals");
+                    .on_hover_text("A .gameviber file someone shared: a mode with its inputs and its game");
                 if import.clicked() {
                     self.import_mode();
                 }
@@ -210,7 +210,7 @@ impl App {
             GameView::Screen => {
                 self.breadcrumb(
                     ui,
-                    &[("Games", Some(Route::Library)), (&game.name, at(GameView::Modes)), ("Signals", at(GameView::Signals)), ("Captures and zones", None)],
+                    &[("Games", Some(Route::Library)), (&game.name, at(GameView::Modes)), ("Inputs", at(GameView::Signals)), ("Captures and indicators", None)],
                 );
                 self.screen_page(ui, s, game);
                 return;
@@ -218,7 +218,7 @@ impl App {
             _ => {}
         }
         let tab = match view {
-            GameView::Signals => "Signals",
+            GameView::Signals => "Inputs",
             GameView::Sessions => "Sessions",
             _ => "Modes",
         };
@@ -226,7 +226,7 @@ impl App {
         self.game_header(ui, s, game);
         ui.add_space(6.0);
         ui.horizontal(|ui| {
-            for (v, label) in [(GameView::Modes, format!("Modes · {}", game.modes.len())), (GameView::Signals, "Signals".to_owned()), (GameView::Sessions, "Sessions".to_owned())] {
+            for (v, label) in [(GameView::Modes, format!("Modes · {}", game.modes.len())), (GameView::Signals, "Inputs".to_owned()), (GameView::Sessions, "Sessions".to_owned())] {
                 if ui.selectable_label(view == v, RichText::new(label).size(15.0)).clicked() {
                     self.route = Route::Game { id: game.id.clone(), view: v };
                 }
@@ -282,7 +282,7 @@ impl App {
                     }
                     if playing {
                         pill(ui, "Playing", ON_ACCENT, ACCENT);
-                    } else if ui.add(primary("Play this game")).on_hover_text("Its signals and modes become the active ones").clicked() {
+                    } else if ui.add(primary("Play this game")).on_hover_text("Its modes become the ones to play").clicked() {
                         self.send(Command::SelectGame(Some(game.id.clone())));
                     }
                 }
@@ -350,7 +350,7 @@ impl App {
                             if entry.is_some_and(|e| !e.builtin) {
                                 let button = ui
                                     .add_enabled(!self.sharing.busy(), egui::Button::new("Export"))
-                                    .on_hover_text("Save it in a file to share, with this game's signals");
+                                    .on_hover_text("Save it in a file to share, with its inputs");
                                 if button.clicked() {
                                     export = Some(id.clone());
                                 }
@@ -387,11 +387,11 @@ impl App {
         ui.add_space(12.0);
         ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new("New mode").strong());
-            if ui.button("✨ Quick · 2 minutes").on_hover_text("An AI assistant writes it from the rumble, the buttons, scenes and impacts").clicked() {
+            if ui.button("✨ Quick · 2 minutes").on_hover_text("An AI assistant writes it from the rumble, the buttons, phases and impacts").clicked() {
                 self.open_generator_for(game, Depth::Quick);
             }
-            let advanced = egui::Button::new("✨ Advanced · with this game's signals").stroke(egui::Stroke::new(1.0, ACCENT));
-            if ui.add(advanced).on_hover_text("Also its zones, captures and values from other programs").clicked() {
+            let advanced = egui::Button::new("✨ Advanced · with the active mode's inputs").stroke(egui::Stroke::new(1.0, ACCENT));
+            if ui.add(advanced).on_hover_text("Also its indicators, captures and values from other programs").clicked() {
                 self.open_generator_for(game, Depth::Advanced);
             }
             let builtins: Vec<_> = s.modes.iter().filter(|e| e.builtin && !game.modes.contains(&e.id)).collect();
@@ -449,7 +449,7 @@ impl App {
         let modal = egui::Modal::new(egui::Id::new("add-game")).show(ctx, |ui| {
             ui.set_width(520.0);
             heading(ui, "Add a game");
-            ui.label(muted("No need to launch it: give it a name, then set up its signals and ask for modes whenever you like."));
+            ui.label(muted("No need to launch it: give it a name, then set up its inputs and ask for modes whenever you like."));
             ui.add_space(10.0);
             ui.label(RichText::new("Name").strong());
             ui.add(egui::TextEdit::singleline(name).hint_text("e.g. Metaphor: ReFantazio").desired_width(f32::INFINITY));
@@ -466,7 +466,7 @@ impl App {
                 if ui.add_enabled(ok, primary("Add, then get a mode")).clicked() {
                     done = Some(GameView::Modes);
                 }
-                if ui.add_enabled(ok, egui::Button::new("Add, then set up its signals")).clicked() {
+                if ui.add_enabled(ok, egui::Button::new("Add, then set up its inputs")).clicked() {
                     done = Some(GameView::Signals);
                 }
                 if ui.button("Cancel").clicked() {

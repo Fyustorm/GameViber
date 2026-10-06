@@ -90,15 +90,15 @@ impl App {
             self.sharing.job = None;
             self.sharing.message = match outcome {
                 Outcome::Exported(path) => {
-                    Some((true, format!("Exported to {}: send this file to share the mode and the game's signals.", path.display())))
+                    Some((true, format!("Exported to {}: send this file to share the mode with its inputs.", path.display())))
                 }
                 Outcome::Imported(imported) => {
                     // Opened once the engine lists it.
                     self.games.open_when_listed(&imported.name, GameView::Modes);
                     let what = match (imported.new_game, imported.mode_existed) {
                         (true, _) => format!("{} was added with its mode.", imported.name),
-                        (false, false) => format!("The mode joined {}; the signals it lacked were added.", imported.name),
-                        (false, true) => format!("{} had this mode already; the signals it lacked were added.", imported.name),
+                        (false, false) => format!("The mode joined {}, with its inputs.", imported.name),
+                        (false, true) => format!("{} had this mode already: its inputs stay as they are.", imported.name),
                     };
                     Some((true, format!("Imported: {what}")))
                 }

@@ -74,24 +74,24 @@ impl App {
 
             step(ui, 2, "Quick or advanced?");
             ui.radio_value(&mut g.depth, prompt::Depth::Quick, "Quick (a couple of minutes)").on_hover_text(
-                "The rumble, the buttons, and the scenes, impacts and intensity GameViber gets from the sound and image",
+                "The rumble, the buttons, and the phases, impacts and intensity GameViber gets from the sound and image",
             );
             ui.radio_value(&mut g.depth, prompt::Depth::Advanced, "Advanced").on_hover_text(
-                "Also the raw sound and image, and the game's zones, captures and values from other programs (its \
-                 Signals)",
+                "Also the raw sound and image, and the game's indicators, captures and values from other programs (its \
+                 Inputs)",
             );
             // The signals of the active mode, when it is one of the game's: the new mode starts with them.
             let inputs = for_game.filter(|game| game.modes.contains(&s.mode.id)).and(s.mode_inputs.as_ref());
             let profile = for_game.zip(inputs).map(|(game, inputs)| (game.name.clone(), inputs.describe()));
             match (&profile, g.depth) {
                 (Some((game, text)), prompt::Depth::Advanced) if !text.is_empty() => {
-                    ui.label(muted(format!("The request includes the signals of {game}.")).size(12.0));
+                    ui.label(muted(format!("The request includes the inputs set up for {game}.")).size(12.0));
                 }
                 (_, prompt::Depth::Advanced) => {
-                    ui.label(muted("No signals set up yet: the assistant may ask you to draw zones in the game's Signals.").size(12.0));
+                    ui.label(muted("No inputs set up yet: the assistant may ask you to draw indicators in the mode's Inputs.").size(12.0));
                 }
-                (Some((_, text)), prompt::Depth::Quick) if text.contains("input.scene") => {
-                    ui.label(muted("The request names the game's scenes.").size(12.0));
+                (Some((_, text)), prompt::Depth::Quick) if text.contains("input.phase") => {
+                    ui.label(muted("The request names the game's phases.").size(12.0));
                 }
                 _ => {}
             }
@@ -102,7 +102,7 @@ impl App {
                 let game = g.game.trim().to_owned();
                 if ui.add_enabled(!game.is_empty(), primary("📋 Copy the request")).clicked() {
                     let profile = profile.as_ref().map(|(_, text)| text.as_str());
-                    let scenes: Vec<String> = inputs.iter().flat_map(|i| i.scenes.iter().map(|s| s.name.clone())).collect();
+                    let scenes: Vec<String> = inputs.iter().flat_map(|i| i.phases.iter().map(|s| s.name.clone())).collect();
                     let request = prompt::new_mode_prompt(&prompt::Templates::load(), &game, &s.settings.language, g.depth, profile, &scenes);
                     ui.ctx().copy_text(request);
                     g.copied = Some(game.clone());

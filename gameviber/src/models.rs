@@ -79,8 +79,8 @@ impl Model {
 
     pub fn label(self) -> &'static str {
         match self {
-            Model::Sound => "sound scene model",
-            Model::Image => "image scene model",
+            Model::Sound => "sound phase model",
+            Model::Image => "image phase model",
         }
     }
 

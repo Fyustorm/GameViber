@@ -29,7 +29,7 @@ impl App {
                     // Straight to the game's pages.
                     if let Some(game) = &s.game {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            for (label, view) in [("Captures and zones ›", GameView::Screen), ("Signals ›", GameView::Signals), ("Game ›", GameView::Modes)] {
+                            for (label, view) in [("Captures and indicators ›", GameView::Screen), ("Inputs ›", GameView::Signals), ("Game ›", GameView::Modes)] {
                                 if ui.button(label).clicked() {
                                     self.page = Page::Games;
                                     self.route = Route::Game { id: game.id.clone(), view };
@@ -205,12 +205,12 @@ fn output_card(ui: &mut egui::Ui, app: &mut App, s: &Shared) {
 fn signals_card(ui: &mut egui::Ui, s: &Shared) {
     card(PANEL).show(ui, |ui| {
         ui.set_width(ui.available_width());
-        eyebrow(ui, "Signals");
+        eyebrow(ui, "Inputs");
         // The scene, and how likely each is.
         match &s.scenes.scene {
             Some(scene) => ui.label(RichText::new(scene).size(22.0).strong().color(ACCENT_TEXT)),
-            None if s.scenes.scenes.is_empty() => ui.label(muted("No scenes: name them in the game's Signals.")),
-            None => ui.label(RichText::new("No scene yet").size(18.0).color(MUTED)),
+            None if s.scenes.scenes.is_empty() => ui.label(muted("No phases: name them in the mode's Inputs.")),
+            None => ui.label(RichText::new("No phase yet").size(18.0).color(MUTED)),
         };
         for (name, p) in &s.scenes.scenes {
             let current = s.scenes.scene.as_ref() == Some(name);
@@ -222,7 +222,7 @@ fn signals_card(ui: &mut egui::Ui, s: &Shared) {
         // Zones on screen.
         if !s.screen.zones.is_empty() {
             ui.add_space(6.0);
-            eyebrow(ui, "Zones");
+            eyebrow(ui, "Indicators");
             if s.screen.frame.is_none() {
                 ui.label(muted("Read on the game's image, through the in-game overlay.").size(12.0));
             }

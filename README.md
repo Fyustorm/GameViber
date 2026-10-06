@@ -76,7 +76,7 @@ write are yours.
 
 ## Learn more
 
-- [User guide](docs/user-guide.md): every page of the app, a game's signals
-  (scenes, captures, zones), the overlay, the built-in modes, known limitations.
+- [User guide](docs/user-guide.md): every page of the app, a mode's inputs
+  (phases, captures, indicators), the overlay, the built-in modes, known limitations.
 - [Contributing](CONTRIBUTING.md): building, architecture, writing modes by
   hand, packaging.

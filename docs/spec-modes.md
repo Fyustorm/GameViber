@@ -15,9 +15,9 @@ Modes are created and edited on the fly from the built-in editor, without recomp
 - A single intercepted gamepad.
 - Scalar Buttplug outputs: `Vibrate`, `Rotate`, `Oscillate`.
 - Hot reload, parameters adjustable from the GUI, debug graphs, simulator.
-- What GameViber makes of the game's sound and image: scenes, impacts, intensity (§6.3);
-  their raw measures (§6.4); zones of the screen, example images and values other
-  programs send, set up per game in its Signals (§6.5).
+- What GameViber makes of the game's sound and image: phases, impacts, intensity (§6.3);
+  their raw measures (§6.4); indicators read on the screen, example images and values
+  other programs send (external inputs), set up by the player for a mode (§6.5).
 
 **Not in v1** (see §13): mode chaining, automatic per-game mode, linear outputs
 (strokers), multiple gamepads, block editor.
@@ -32,9 +32,9 @@ Gamepad proxy ──► event queue ──► Lua runtime (active mode) ──�
 
 - The **proxy** produces raw events: FF effects (upload, play, stop), buttons, axes.
 - The **audio analysis** listens to the game's sound through PipeWire and produces levels,
-  hits and scene embeddings (§6.3), on its own threads.
+  hits and phase embeddings (§6.3), on its own threads.
 - The **in-game overlay** copies small images of the game (§6.4); GameViber measures
-  them, reads the game's zones and embeds them for scenes.
+  them, reads the mode's indicators and embeds them for phases.
 - **Other programs** send values and events over a local WebSocket or a pipe (§6.5).
 - The **runtime** normalizes these events, dispatches them to the mode's callbacks, then
   calls `tick`. It runs in its own thread.
@@ -64,7 +64,7 @@ mode {
   channels    = { "main" },                 -- output channels, default { "main" }
   params      = { ... },                    -- see §4
   feedback    = { ... },                    -- questions for the player, see §4.2
-  scenes      = { ... },                    -- scenes recognized from the sound and image, see §6.3
+  phases      = { ... },                    -- phases recognized from the sound and image, see §6.3
 }
 ```
 
@@ -176,10 +176,10 @@ All callbacks are optional, except `tick`. They are global functions defined aft
 | `on_button(ev)` | a button is pressed or released |
 | `on_param_changed(name, value)` | a parameter was changed in the GUI |
 | `on_device(ev)` | a toy is connected or disconnected (`ev.connected`, `ev.name`) |
-| `on_scene(ev)` | the scene recognized in the game's sound and image changes (§6.3) |
+| `on_phase(ev)` | the phase recognized in the game's sound and image changes (§6.3) |
 | `on_impact(ev)` | an impact is heard or seen (§6.3) |
 | `on_audio_hit(ev)` | any hit is heard in the game's sound (§6.4) |
-| `on_zone(ev)` | a zone of the screen changes (§6.5) |
+| `on_indicator(ev)` | an indicator of the screen changes (§6.5) |
 | `on_event(ev)` | another program sends an event (§6.5) |
 
 **Execution order on every tick:**
@@ -245,7 +245,7 @@ down.
 Axis movements do not generate callbacks, to avoid a flood of events. Their current state
 is read from `input.axes` on every tick.
 
-### 6.3 Scenes, impacts and intensity
+### 6.3 Phases, impacts and intensity
 
 GameViber listens to the game's sound through PipeWire (by default the game showing the
 in-game overlay, or else everything the computer plays; the player can pick another
@@ -254,18 +254,18 @@ analysed on the player's computer and never saved: recorded sessions keep only w
 measured, so that a replay feeds the mode the same events. What GameViber makes of them
 comes in three high-level inputs; prefer them to the raw measures of §6.4.
 
-**Scenes** are phases of the game that should not feel the same (a battle, exploring, a
-dialogue). **The player defines them once per game**, in its Signals: their names, how
-they sound, and captures of how they look. Every mode of the game gets them; a request to
-an AI assistant lists their names, and the mode only reads them (`input.scene`,
-`on_scene`) without declaring anything.
+**Phases** are the parts of the game that should not feel the same (a battle,
+exploring, a dialogue). **The player sets them up for a mode**, in its Inputs (§6.5):
+their names, how they sound, and captures of how they look. A request to an AI assistant
+lists their names, and the mode only reads them (`input.phase`, `on_phase`) without
+declaring anything.
 
-A mode that suits any game (a built-in one), or played with a game that has no scenes
-yet, can describe its own in words, as they sound and as they look; the game's scenes,
-when it has some, replace them:
+A mode that suits any game (a built-in one), or played with a game that has no phases
+yet, can describe its own in words, as they sound and as they look; the phases set up
+for it, when it has some, replace them:
 
 ```lua
-scenes = {
+phases = {
   battle  = { sound  = "aggressive battle theme with heavy drums and brass stabs",
               screen = "a turn-based battle menu with command icons and enemy monsters" },
   explore = { sound  = "light adventurous orchestral background music",
@@ -273,46 +273,47 @@ scenes = {
   story   = { sound  = "people talking, voice acting dialogue over soft music",
               screen = "a dialogue box with a character portrait and subtitles" },
 },
-scene_window = 10,   -- seconds the probabilities are averaged over (2 to 60), default 10
+phase_window = 10,   -- seconds the probabilities are averaged over (2 to 60), default 10
 ```
 
-- 2 to 8 scenes, sorted by name. Each has a `sound` description, a `screen` description,
+- 2 to 8 phases, sorted by name. Each has a `sound` description, a `screen` description,
   or both. A sound model (CLAP) compares the last 10 s of sound with the `sound`
   descriptions every 2 s; an image model (CLIP) compares the image with the `screen`
-  descriptions every second, and with the game's **captures** (§6.5) of scenes of the
+  descriptions every second, and with the game's **captures** (§6.5) of phases of the
   same name. Each sense only speaks about
-  the scenes it has a description or examples for; their probabilities are multiplied
-  and averaged over `scene_window`.
-- A scene is entered when its average reaches 0.5 and, when another scene is current,
-  beats it by 0.1. `on_scene(ev)` is then called with `ev.scene`, `ev.previous` (nil at
+  the phases it has a description or examples for; their probabilities are multiplied
+  and averaged over `phase_window`.
+- A phase is entered when its average reaches 0.5 and, when another phase is current,
+  beats it by 0.1. `on_phase(ev)` is then called with `ev.phase`, `ev.previous` (nil at
   first) and `ev.confidence` (its average). When neither the sound nor the image is left,
-  the scene is forgotten: `ev.scene` is nil. `input.scene`, `input.scene_confidence` and
-  `input.scenes.<name>` (the average probability of each) follow it.
-- In its Signals, a game's scene can be tied to a **zone** (§6.5) shown only in it (the
-  battle menu): while the zone is shown (for half a second) the scene is certain, entered
-  at once with a confidence of 1, and while zones are read it is only entered through it.
-  Each of the game's scenes is also **kept** a few seconds (3 by default) after its last
-  sign (its zone gone, or another scene more likely), so that a sign that comes and goes
-  does not flip it. When the zone is gone and no other scene is likely, `ev.scene` is nil.
-  Modes still get scenes late and must not time effects on them.
-- **Describe what is only heard or only seen in a scene**: music style, tempo,
+  the phase is forgotten: `ev.phase` is nil. `input.phase`, `input.phase_confidence` and
+  `input.phases.<name>` (the average probability of each) follow it.
+- In its Inputs, a phase can be tied to an **indicator** (§6.5) shown only in it (the
+  battle menu): while the indicator is shown (for half a second) the phase is certain,
+  entered at once with a confidence of 1, and while indicators are read it is only
+  entered through it. Each phase set up is also **kept** a few seconds (3 by default)
+  after its last sign (its indicator gone, or another phase more likely), so that a sign
+  that comes and goes does not flip it. When the indicator is gone and no other phase is
+  likely, `ev.phase` is nil.
+  Modes still get phases late and must not time effects on them.
+- **Describe what is only heard or only seen in a phase**: music style, tempo,
   instruments, voices for `sound`; the interface, framing and colors for `screen`. Two or
-  three contrasted scenes work much better than many close ones. Make them contrast:
-  describe the strong scene by what only it has ("aggressive battle theme with heavy
+  three contrasted phases work much better than many close ones. Make them contrast:
+  describe the strong phase by what only it has ("aggressive battle theme with heavy
   drums, brass stabs and screams") and the others as lighter background.
 - **Each sense only knows what it shows.** Phases sharing their music cannot be told
   apart by the sound: in Metaphor: ReFantazio, dungeons play epic, rhythmic music both
   while exploring and in fights. The image tells them apart when its descriptions name
   what differs (the battle menu), and much better with example images: give such phases
-  a `screen` description, or merge them into one scene and let the rumble and buttons
+  a `screen` description, or merge them into one phase and let the rumble and buttons
   tell them apart. Measured on that game: story versus action is reliable from the sound;
   battle versus exploration needs the image (about 85 % right with ten examples per
-  scene, less from descriptions alone).
-- **Expect mistakes.** A scene appears seconds late (2 to 15 s from the sound) and can
-  stay wrong for a while (a cutscene keeping the battle music). Use scenes for the mood
+  phase, less from descriptions alone).
+- **Expect mistakes.** A phase appears seconds late (2 to 15 s from the sound) and can
+  stay wrong for a while (a cutscene keeping the battle music). Use phases for the mood
   (overall level, which mechanics are active), not to time effects; combine them with
   the rumble and the buttons, which say when the action really happens.
-- **Typical use: the scene sets the tension, not the algorithm.** The mode keeps the
+- **Typical use: the phase sets the tension, not the algorithm.** The mode keeps the
   same mechanics everywhere; in tense phases it adds a background that runs whatever
   the player does, and lets its peaks come from the rumble, the buttons and impacts, as
   usual. The background is usually:
@@ -323,10 +324,10 @@ scene_window = 10,   -- seconds the probabilities are averaged over (2 to 60), d
   0.15, with a minimum above 0 too), not silence. GameViber plays any value of 0.01 or
   more at least at each toy's weakest intensity (set by the player per toy), so the low point is felt as the
   toy's gentlest vibration and the wave never stops while the phase lasts. Fade the
-  background in and out over a few seconds, so a late or wrong scene is barely felt:
+  background in and out over a few seconds, so a late or wrong phase is barely felt:
 
 ```lua
-scenes = {
+phases = {
   dungeon = { sound = "epic rhythmic orchestral music with heavy drums" },
   story   = { sound = "people talking, voice acting dialogue over soft music",
               screen = "a dialogue box with a character portrait and subtitles" },
@@ -339,10 +340,10 @@ params = {
 
 local tension = 0
 function tick(dt, input)
-  local target = input.scene == "dungeon" and 1 or 0
+  local target = input.phase == "dungeon" and 1 or 0
   tension += (target - tension) * math.min(1, dt / 3)  -- ~3 s fade
-  local phase = 0.5 - 0.5 * math.cos(2 * math.pi * input.time / P.wave_period)
-  local wave = (P.wave_low + (P.wave_high - P.wave_low) * phase) * tension
+  local swing = 0.5 - 0.5 * math.cos(2 * math.pi * input.time / P.wave_period)
+  local wave = (P.wave_low + (P.wave_high - P.wave_low) * swing) * tension
   set(math.max(wave, input.rumble.level))              -- peaks still follow the game
 end
 ```
@@ -350,10 +351,10 @@ end
   The same background suits phases told apart otherwise, e.g. "the game rumbled in the
   last 10 s" for a fight (with the delay as a parameter).
 
-- Scenes need the models, downloaded once (the sound model, about 200 MB, and the image
-  model, about 150 MB, from the game's Signals or Setup › Sound), and cost a little processor
+- Phases need the models, downloaded once (the sound model, about 200 MB, and the image
+  model, about 150 MB, from a mode's Inputs or Setup › Sound), and cost a little processor
   time while the mode is active. Without them, or without sound and image,
-  `input.scene` stays nil: **a mode must work without scenes**.
+  `input.phase` stays nil: **a mode must work without phases**.
 
 **Impacts**: `on_impact(ev)` is called on a strong hit in the sound (an impact, a shot,
 an explosion, but also a door or a beat; about 20 ms late) or a sudden flash of the
@@ -391,36 +392,38 @@ player can turn this off on a game's captures page).
 - `motion`: how much the image changed since the previous copy, 0..1 (camera moves,
   effects); `action`: motion over the last ~6 s.
 
-### 6.5 The game's signals
+### 6.5 The mode's inputs
 
-In a game's Signals the player teaches GameViber about the game, for one mode: they are
-part of the mode (its package) and travel with it when it is shared. Built-in modes get
-none. Everything here exists only once the player set it up:
-**read it defensively** (`input.zones.hp or 1`).
+Besides what GameViber reads by itself (the rumble, the buttons, the sound, the image),
+the player teaches it about the game in a mode's **Inputs**: phases (§6.3), captures,
+indicators and external inputs. They are part of the mode (its package) and travel with
+it when it is shared; built-in modes have none. Everything here exists only once the
+player set it up: **read it defensively** (`input.indicators.hp or 1`).
 
-**Captures**: images of the game the player captured per scene ("battle", "dungeon"...),
-in game with a gamepad combo or from the game's page. They are the examples scenes are
-recognized with, and zones are drawn on them.
+**Captures**: images of the game the player captured per phase ("battle", "dungeon"...),
+in game with a gamepad combo or from the mode's Inputs. They are the examples phases are
+recognized with, and indicators are drawn on them.
 
-**Zones**: rectangles of the screen the player drew on a capture, and checked on all of
-them.
+**Indicators**: parts of the game's interface whose state is read, in one or more
+**zones** (rectangles of the screen the player drew on a capture, checked on all of
+them; an indicator shown in several places has a zone for each).
 
-- A zone that is **shown or not** (the battle interface, a warning) reads `true` while
+- A **visibility** indicator (the battle interface, a warning) reads `true` while
   the screen there looks like when it was drawn, `false` otherwise.
-- A **bar** (health, stamina) reads how full it is, 0..1, measured with the colors of
+- A **gauge** (health, stamina) reads how full its bar is, 0..1, measured with the colors of
   its full and empty parts (or with how it looks full and empty along its length:
   gradients, segments, hearts), or **nil while it is not on screen** (a menu, a cutscene):
   not knowing is not 0 health. Keep the last known value when the mode needs one. A bar that moves (Metaphor shifts a character's health bar
   with its stance) is found in a wider zone as the longest run of its two colors.
-- `input.zones.<name>` holds the value; `on_zone(ev)` is called when it changes, with
-  `ev.zone`, `ev.value` (nil for a bar gone from the screen) and `ev.previous` (nil at
-  first). Zones are read ten times per
-  second; a bar change below 0.02 is not reported.
-- Zones say exactly what scenes guess (the battle interface is on screen or not) and
-  come within 0.1 s: prefer them when the game has them.
+- `input.indicators.<name>` holds the value; `on_indicator(ev)` is called when it
+  changes, with `ev.indicator`, `ev.value` (nil for a gauge gone from the screen) and
+  `ev.previous` (nil at first). Indicators are read ten times per second; a gauge change
+  below 0.02 is not reported.
+- Indicators say exactly what phases guess (the battle interface is on screen or not)
+  and come within 0.1 s: prefer them when the game has them.
 
 
-**Values from other programs**: a game's existing mod, a script reading a game's API or
+**External inputs**: values and events from other programs. A game's existing mod, a script reading a game's API or
 anything else can send JSON to `ws://127.0.0.1:12350` (the port is set in Setup;
 web pages are refused) or, one message per line, to the pipe
 `$XDG_RUNTIME_DIR/gameviber/inputs`:
@@ -430,11 +433,11 @@ web pages are refused) or, one message per line, to the pipe
 {"event": "kill", "data": {"weapon": "bow"}}
 ```
 
-- `set` keeps values in `input.custom.<name>` (numbers, booleans, strings, or tables);
+- `set` keeps values in `input.external.<name>` (numbers, booleans, strings, or tables);
   `null` removes one. Names are letters, digits and `_`, starting with a letter.
 - `event` calls `on_event(ev)` with `ev.name` and `ev.data` (nil without `data`).
-- The player declares in the game's Signals what the program sends ("hp: health, 0 to 100"), so
-  that an AI assistant writing a mode for the game knows it.
+- The player declares in the mode's Inputs what the program sends ("hp: health, 0 to
+  100"), so that an AI assistant writing a mode for the game knows it.
 
 ## 7. The `input` table (current state, read-only)
 
@@ -454,9 +457,9 @@ input.axes.LT, RT        -- 0..1
 input.rumble_idle        -- s since the end of the last vibration (0 while active)
 input.input_idle         -- s since the last player input (button, or axis outside the dead zone)
 input.idle               -- min(rumble_idle, input_idle)
-input.scene              -- name of the current scene (§6.3), or nil
-input.scene_confidence   -- 0..1, average probability of the current scene
-input.scenes.battle      -- 0..1, average probability of each declared scene
+input.phase              -- name of the current phase (§6.3), or nil
+input.phase_confidence   -- 0..1, average probability of the current phase
+input.phases.battle      -- 0..1, average probability of each declared phase
 input.intensity          -- 0..1, how busy the game's sound and image are lately (§6.3)
 ```
 
@@ -472,12 +475,19 @@ input.screen.active      -- true while the game's image is copied (§6.4)
 input.screen.brightness  -- 0..1
 input.screen.motion      -- 0..1, change since the previous copy
 input.screen.action      -- 0..1, motion over the last ~6 s
-input.zones.battle_hud   -- true/false, or 0..1 for a bar; nil if unknown (§6.5)
-input.custom.hp          -- what another program set; nil until it does (§6.5)
+input.indicators.battle_hud  -- true/false, or 0..1 for a gauge; nil if unknown (§6.5)
+input.external.hp            -- what another program set; nil until it does (§6.5)
 ```
 
 When the sound is not captured, every `input.audio` number is 0; likewise for
-`input.screen` without the image, and the zones are gone with it.
+`input.screen` without the image, and the indicators are gone with it.
+
+Modes written before the terms changed keep working: `scenes`, `scene_window`,
+`on_scene` (`ev.scene`), `input.scene`, `input.scene_confidence`, `input.scenes`,
+`input.zones`, `on_zone` (`ev.zone`) and `input.custom` are the same as `phases`,
+`phase_window`, `on_phase` (`ev.phase`), `input.phase`, `input.phase_confidence`,
+`input.phases`, `input.indicators`, `on_indicator` (`ev.indicator`) and
+`input.external`. New modes use the new names.
 
 ## 8. Outputs
 

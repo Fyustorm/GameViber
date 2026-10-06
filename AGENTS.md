@@ -20,8 +20,19 @@ Linux only for now; everything OS-specific is isolated so that other systems
 (Windows first) can be added later (see Platforms).
 
 Pipeline: **source** (interception), **audio** (the game's sound), **screen** (its
-image, the profile's zones) and **inputs** (other programs) → **mode** (Luau
+image, the mode's indicators) and **inputs** (other programs) → **mode** (Luau
 script) → **safety layer** → **Intiface output**.
+
+Terms players and modes see: a game has **modes**; a mode has **presets** (named
+settings) and its **Inputs**: what
+GameViber reads by itself (rumble, gamepad, sound, image) and what the player sets
+up for the mode — **phases** (parts of the game that should not feel the same),
+**captures**, **indicators** (part of the game's interface read as visibility or a
+gauge, in one or more **zones** of the screen) and **external inputs** (values and
+events other programs send). The code behind phase recognition still says
+"scene" (`mode/scenes.rs`, the sound and image scene models), and a `Zone` is one
+zone of an indicator (zones sharing a name are one indicator); the API's old names
+(`input.scene`, `input.zones`, `input.custom`...) stay accepted.
 
 ## Layout
 
@@ -33,17 +44,17 @@ script) → **safety layer** → **Intiface output**.
 | `gameviber/src/models.rs` | scene models downloaded on demand (CLAP, CLIP): download, ONNX sessions, text embeddings |
 | `gameviber/src/rumble.rs` | force-feedback semantics (evdev's, ff-memless) → strong/weak levels |
 | `gameviber/src/gamepad.rs` | button/axis normalization (Xbox layout) from `codes` (Linux's numbering, which every source translates to), panic combo |
-| `gameviber/src/mode/` | Luau runtime: `library.rs` (script API), `outputs.rs` (channels, pulses, patterns), `rumble_events.rs`, `scenes.rs` (scenes fused from the sound, the image and the game's captures; the game's scenes replace the mode's own), `prompt.rs` (AI requests: a per-game mode, a fix for a mode that feels wrong), `report.rs` (a session replayed offline into a mode, for the fix request), `tests.rs` |
-| `gameviber/src/screen/` | the game's image: frames copied by the overlay, measures (brightness, motion, flashes), `clip` (image scene model: PIL-exact preprocessing, encoder thread), `zones` (shown-or-not and bar zones) |
+| `gameviber/src/mode/` | Luau runtime: `library.rs` (script API), `outputs.rs` (channels, pulses, patterns), `rumble_events.rs`, `scenes.rs` (phases fused from the sound, the image and the mode's captures; the phases set up for the mode replace its own), `prompt.rs` (AI requests: a per-game mode, a fix for a mode that feels wrong), `report.rs` (a session replayed offline into a mode, for the fix request), `tests.rs` |
+| `gameviber/src/screen/` | the game's image: frames copied by the overlay, measures (brightness, motion, flashes), `clip` (image scene model: PIL-exact preprocessing, encoder thread), `zones` (indicators read in their zones: visibility and gauges) |
 | `gameviber/src/game.rs` | games (`~/.config/gameviber/games/<id>.json`), identified by name: linked executables (optional), sound source, modes; migration of the older exe-keyed profiles |
-| `gameviber/src/package.rs` | mode packages (`~/.config/gameviber/modes/<name>/`): the script (`mode.luau`) and the inputs the player set up for the mode (`mode.json`: scenes, captures per scene, also the scene examples, as PNG in `captures/`, zones drawn on them, declared inputs); migration of the older mode files and game-held inputs |
+| `gameviber/src/package.rs` | mode packages (`~/.config/gameviber/modes/<name>/`): the script (`mode.luau`) and the inputs the player set up for the mode (`mode.json`: phases, captures per phase, also the phase examples, as PNG in `captures/`, indicators drawn on them, declared external inputs); migration of the older mode files and game-held inputs |
 | `gameviber/src/sharing.rs` | a mode shared with its game: `.gameviber` files (zip: `gameviber.json` with the game and the mode's inputs, `mode.luau`, `captures/`), exported from a mode's page, imported from the library (joined to the game of the same name); `gui/sharing.rs` |
 | `gameviber/src/shortcuts/` | keyboard shortcuts for the combos' actions; `linux`: the desktop's global shortcuts portal (needs a desktop entry for the app id, written on first use) |
 | `gameviber/src/update/` | new versions from the GitHub releases, installed according to how GameViber was installed (the `distribution` file of `packaging/linux/`): package through pkexec, archive in place, only announced for stores and source builds; `gui/updates.rs`: banner and Settings card |
 | `gameviber/src/inputs/` | values and events other programs send: local WebSocket (browsers refused) and, `linux`, a named pipe |
 | `gameviber/src/engine.rs` | engine thread: sources, audio, image, mode, safety layer, routing, output |
-| `gameviber/src/session.rs` | recorded play sessions (rumble, buttons, axes, sound and image measures, hits, flashes, zones, scene embeddings, values from other programs) and their replay |
-| `gameviber/src/gui/` | egui GUI: setup guide (`onboarding`), pages: `live` (while playing: mode, output, signals, gamepad combos), `games` (library, then each game by breadcrumb: modes, sessions), `play` (a mode's page, mode tiles), `signals` (a game's guided Signals, for the active mode), `screen` (the active mode's captures and zoomable zone editor checked on every capture), `toys`, `setup` (tabs: `gamepad`, `keybindings`, `overlay`, `audio` (default sound), other programs), `creator`, `settings`; AI requests (`generator` dialog: a mode for a game; `feedback` page: a fix for the active mode), Luau highlighting (`luau`), `theme` |
+| `gameviber/src/session.rs` | recorded play sessions (rumble, buttons, axes, sound and image measures, hits, flashes, indicators, scene embeddings, values from other programs) and their replay |
+| `gameviber/src/gui/` | egui GUI: setup guide (`onboarding`), pages: `live` (while playing: mode, output, inputs, gamepad combos), `games` (library, then each game by breadcrumb: modes, sessions), `play` (a mode's page, mode tiles), `signals` (the guided Inputs of the active mode), `screen` (the active mode's captures and zoomable indicator editor checked on every capture), `toys`, `setup` (tabs: `gamepad`, `keybindings`, `overlay`, `audio` (default sound), other programs), `creator`, `settings`; AI requests (`generator` dialog: a mode for a game; `feedback` page: a fix for the active mode), Luau highlighting (`luau`), `theme` |
 | `gameviber/src/config.rs` | config files, built-in mode registry (`BUILTIN_MODES`) |
 | `gameviber/modes/` | built-in modes, embedded in the binary |
 | `gameviber/prompts/new-mode.md` | template of the request asking an AI assistant to write a mode for one game |
@@ -155,17 +166,17 @@ no eBPF, an overlay of its own) is planned. Keep the way open:
 - Output to each toy is limited to 20 updates/s: waveforms faster than ~5 Hz blur.
 - `input.idle` is `min(rumble_idle, input_idle)`, and `rumble_idle` counts from mode
   activation when no vibration has happened yet.
-- Scenes come seconds late, can be wrong, and need the downloaded models: modes use
+- Phases come seconds late, can be wrong, and need the downloaded models: modes use
   them for the mood of a phase, never to time effects, and must work without them.
-  Each sense only speaks about the scenes it describes; their likelihoods multiply.
+  Each sense only speaks about the phases it describes; their likelihoods multiply.
   Phases sharing their music cannot be told apart by the sound (Metaphor: dungeon
   exploration and fights); the image can, poorly from descriptions alone (zero-shot
-  CLIP, ~70 %), well from the profile's example images (~85 % with ten per scene) or a
-  zone. A scene sets the tension (a faded background in tense phases: a slow wave in
+  CLIP, ~70 %), well from the mode's example images (~85 % with ten per phase) or an
+  indicator. A phase sets the tension (a faded background in tense phases: a slow wave in
   battles, a heartbeat in tense games, whose low point never goes to 0), the rumble and
-  buttons make the peaks. Two or three contrasted scenes beat many close ones.
-- The API has two levels: scenes, impacts and intensity (§6.3) for every request;
-  raw sound and image, zones and other programs' values (§6.4, §6.5, §7.1) only in
+  buttons make the peaks. Two or three contrasted phases beat many close ones.
+- The API has two levels: phases, impacts and intensity (§6.3) for every request;
+  raw sound and image, indicators and external inputs (§6.4, §6.5, §7.1) only in
   advanced requests (`SPEC_ADVANCED` in `mode/prompt.rs`). Keep new inputs in the
   advanced level unless every mode should use them.
 - Image copies (overlay): made before the panel is drawn, so the panel never

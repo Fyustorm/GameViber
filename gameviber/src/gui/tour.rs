@@ -38,8 +38,8 @@ const STOPS: [(&str, Stop); 19] = [
     ("game-modes", Stop::Games(|s| game(s, GameView::Modes))),
     ("generator", Stop::Generator),
     ("mode", Stop::Games(|s| game(s, GameView::Mode))),
-    ("signals", Stop::Games(|s| game(s, GameView::Signals))),
-    ("captures-zones", Stop::Games(|s| game(s, GameView::Screen))),
+    ("inputs", Stop::Games(|s| game(s, GameView::Signals))),
+    ("captures-indicators", Stop::Games(|s| game(s, GameView::Screen))),
     ("zone-edit", Stop::ZoneEdit),
     ("sessions", Stop::Games(|s| game(s, GameView::Sessions))),
     ("live", Stop::Page(Page::Live)),
@@ -122,7 +122,7 @@ impl App {
                 if let Some(game) = s.game.as_ref().or(s.games.first()).cloned() {
                     self.route = Route::Game { id: game.id.clone(), view: GameView::Screen };
                     if let Some(inputs) = s.mode_inputs.as_ref().filter(|_| tour.frames == 1) {
-                        let zone = inputs.zones.iter().position(|z| z.kind == crate::package::ZoneKind::Bar).unwrap_or(0);
+                        let zone = inputs.zones.iter().position(|z| z.kind == crate::package::IndicatorKind::Gauge).unwrap_or(0);
                         self.screen.edit_zone(zone, inputs);
                     }
                 }

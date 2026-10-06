@@ -46,12 +46,12 @@ Mode **{{NAME}}**, with the player's current settings:
    marked moments. Do not go back and forth on the same setting.
 2. **Fix it.** If new settings are enough, list them (with their labels) and stop there.
    Otherwise send the **complete corrected `.luau` file** in a single code block, keeping
-   the existing parameters' names and types where you can, and bump `version`. A scene
+   the existing parameters' names and types where you can, and bump `version`. A phase
    that is often wrong is usually fixed by rewording it as sound only heard there (or as
-   what only shows on screen there), or by merging scenes neither tells apart; when the
-   game defines its scenes, tell the player what to change in its Signals (a sound
-   description, more captures). A zone that is missing or misplaced is fixed by the
-   player in the game's Signals: say which.
+   what only shows on screen there), or by merging phases neither tells apart; when the
+   player set up the phases, tell them what to change in the mode's Inputs (a sound
+   description, more captures). An indicator that is missing or misplaced is fixed by the
+   player in the mode's Inputs: say which.
 3. Give a short **tuning guide**: which parameters to adjust first if it still feels off.
 
 <!-- full -->

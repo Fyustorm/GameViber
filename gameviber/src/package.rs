@@ -30,19 +30,21 @@ pub const MAX_SCENES: usize = 8;
 /// a description for the image model.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct SceneDef {
+pub struct PhaseDef {
     pub name: String,
     pub sound: Option<String>,
     pub screen: Option<String>,
-    /// A zone whose showing is a sure sign of the scene (its battle menu).
-    pub zone: Option<String>,
+    /// An indicator whose showing is a sure sign of the phase (its battle
+    /// menu); `zone` before the terms changed.
+    #[serde(alias = "zone")]
+    pub indicator: Option<String>,
     /// Seconds the scene is kept after its last sign: longer for signs that come and go.
     pub hold: f64,
 }
 
-impl Default for SceneDef {
+impl Default for PhaseDef {
     fn default() -> Self {
-        Self { name: String::new(), sound: None, screen: None, zone: None, hold: DEFAULT_HOLD }
+        Self { name: String::new(), sound: None, screen: None, indicator: None, hold: DEFAULT_HOLD }
     }
 }
 
@@ -55,27 +57,32 @@ pub const DEFAULT_HOLD: f64 = 3.0;
 pub struct Capture {
     /// PNG file name in the profile's directory.
     pub file: String,
-    /// Empty for a capture to sort (taken in game, filed later).
-    pub scene: String,
+    /// Its phase (`scene` before the terms changed); empty for a capture to
+    /// sort (taken in game, filed later).
+    #[serde(alias = "scene")]
+    pub phase: String,
     /// Its embedding (`screen::clip`); empty until the image model computed it.
     pub embedding: Vec<f32>,
 }
 
+/// What an indicator reads (stored `visible` and `bar` before the terms changed).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum ZoneKind {
+pub enum IndicatorKind {
     /// Is this element on screen? Compared with how it looked when the zone was drawn.
     #[default]
-    Visible,
-    /// How full is this bar? Measured with the bar's color.
-    Bar,
+    #[serde(alias = "visible")]
+    Visibility,
+    /// How full is this bar? Measured with the bar's color, or its look.
+    #[serde(alias = "bar")]
+    Gauge,
 }
 
-impl ZoneKind {
+impl IndicatorKind {
     pub fn label(self) -> &'static str {
         match self {
-            ZoneKind::Visible => "Shown or not",
-            ZoneKind::Bar => "Bar (how full)",
+            IndicatorKind::Visibility => "Visibility (shown or not)",
+            IndicatorKind::Gauge => "Gauge (how full)",
         }
     }
 }
@@ -111,7 +118,7 @@ pub struct Zone {
     /// places of one zone (a bar shown elsewhere out of battles): its value
     /// comes from the place where it is found.
     pub name: String,
-    pub kind: ZoneKind,
+    pub kind: IndicatorKind,
     /// Left, top, width, height, as fractions of the screen.
     pub rect: [f32; 4],
     /// Visible: grayscale look of the zone when it was drawn (`screen::zones`).
@@ -141,8 +148,10 @@ pub struct Zone {
     /// ...and empty, as far as captures showed it so (None: not seen empty yet).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub empty_look: Vec<Option<[u8; 3]>>,
-    /// The scene of the capture it was drawn on (shown there, for a visible zone)...
-    pub scene: Option<String>,
+    /// The phase of the capture it was drawn on (shown there, for a visible
+    /// zone; `scene` before the terms changed)...
+    #[serde(alias = "scene")]
+    pub phase: Option<String>,
     /// ...and that capture's file, to show it again when the place is edited.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub capture: Option<String>,
@@ -155,7 +164,7 @@ impl Default for Zone {
     fn default() -> Self {
         Self {
             name: String::new(),
-            kind: ZoneKind::Visible,
+            kind: IndicatorKind::Visibility,
             rect: [0.0, 0.0, 0.1, 0.1],
             reference: Vec::new(),
             threshold: 0.45,
@@ -166,7 +175,7 @@ impl Default for Zone {
             length: 0.0,
             full_look: Vec::new(),
             empty_look: Vec::new(),
-            scene: None,
+            phase: None,
             capture: None,
             direction: Direction::Right,
             tolerance: 60.0,
@@ -176,7 +185,7 @@ impl Default for Zone {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum InputKind {
+pub enum ExternalKind {
     /// A value kept in `input.custom.<name>`.
     #[default]
     Value,
@@ -187,9 +196,9 @@ pub enum InputKind {
 /// A value or an event another program sends, declared so that AI assistants know it.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct InputDecl {
+pub struct ExternalInput {
     pub name: String,
-    pub kind: InputKind,
+    pub kind: ExternalKind,
     /// What it means and its range ("health, 0 to 100").
     pub description: String,
 }
@@ -209,13 +218,18 @@ pub struct Inputs {
     /// one (built-in, or a file outside `modes/`).
     #[serde(skip)]
     pub dir: PathBuf,
-    pub scenes: Vec<SceneDef>,
+    /// Its phases (§6.3), `scenes` before the terms changed.
+    #[serde(alias = "scenes")]
+    pub phases: Vec<PhaseDef>,
+    /// The zones of the screen its indicators are read in: zones sharing a
+    /// name are one indicator.
     pub zones: Vec<Zone>,
-    /// Images of the game the player captured, by scene.
+    /// Images of the game the player captured, by phase.
     pub captures: Vec<Capture>,
     /// Values and events other programs send while the mode is played (§6.5),
-    /// for the requests to AI assistants.
-    pub inputs: Vec<InputDecl>,
+    /// for the requests to AI assistants; `inputs` before the terms changed.
+    #[serde(alias = "inputs")]
+    pub external: Vec<ExternalInput>,
 }
 
 /// Where a capture of the package in `dir` is (its PNG file).
@@ -319,7 +333,7 @@ impl Inputs {
 
     /// Nothing set up.
     pub fn is_empty(&self) -> bool {
-        self.scenes.is_empty() && self.zones.is_empty() && self.captures.is_empty() && self.inputs.is_empty()
+        self.phases.is_empty() && self.zones.is_empty() && self.captures.is_empty() && self.external.is_empty()
     }
 
     /// A copy in the package `dir`, captures included (a new mode starting
@@ -339,14 +353,14 @@ impl Inputs {
 
     /// The scenes as modes see them.
     pub fn scene_decls(&self) -> Vec<SceneDecl> {
-        self.scenes
+        self.phases
             .iter()
             .map(|s| SceneDecl {
                 name: s.name.clone(),
                 sound: s.sound.clone(),
                 screen: s.screen.clone(),
                 // Only a zone the mode still has.
-                zone: s.zone.clone().filter(|z| self.zones.iter().any(|zone| zone.name == *z)),
+                zone: s.indicator.clone().filter(|z| self.zones.iter().any(|zone| zone.name == *z)),
                 hold: s.hold,
             })
             .collect()
@@ -370,8 +384,8 @@ impl Inputs {
             return Err(std::io::Error::other("built-in modes keep no captures"));
         }
         let file = save_capture(&self.dir, scene, frame)?;
-        self.captures.push(Capture { file, scene: scene.to_owned(), embedding: Vec::new() });
-        let of_scene: Vec<usize> = self.captures.iter().enumerate().filter(|(_, c)| c.scene == scene).map(|(i, _)| i).collect();
+        self.captures.push(Capture { file, phase: scene.to_owned(), embedding: Vec::new() });
+        let of_scene: Vec<usize> = self.captures.iter().enumerate().filter(|(_, c)| c.phase == scene).map(|(i, _)| i).collect();
         if of_scene.len() > MAX_CAPTURES {
             self.remove_capture(&self.captures[of_scene[0]].file.clone());
         }
@@ -387,11 +401,11 @@ impl Inputs {
     }
 
     /// Names of its scenes, then of scenes only its captures name.
-    pub fn scenes(&self) -> Vec<String> {
-        let mut scenes: Vec<String> = self.scenes.iter().map(|s| s.name.clone()).collect();
-        for capture in self.captures.iter().filter(|c| !c.scene.is_empty()) {
-            if !scenes.contains(&capture.scene) {
-                scenes.push(capture.scene.clone());
+    pub fn phase_names(&self) -> Vec<String> {
+        let mut scenes: Vec<String> = self.phases.iter().map(|s| s.name.clone()).collect();
+        for capture in self.captures.iter().filter(|c| !c.phase.is_empty()) {
+            if !scenes.contains(&capture.phase) {
+                scenes.push(capture.phase.clone());
             }
         }
         scenes
@@ -399,10 +413,10 @@ impl Inputs {
 
     /// The mean of each scene's capture embeddings: what the image is compared with.
     pub fn example_centroids(&self) -> Vec<(String, crate::models::Embedding)> {
-        self.scenes()
+        self.phase_names()
             .into_iter()
             .filter_map(|scene| {
-                let embeddings: Vec<&Vec<f32>> = self.captures.iter().filter(|c| c.scene == scene && !c.embedding.is_empty()).map(|c| &c.embedding).collect();
+                let embeddings: Vec<&Vec<f32>> = self.captures.iter().filter(|c| c.phase == scene && !c.embedding.is_empty()).map(|c| &c.embedding).collect();
                 let len = embeddings.first()?.len();
                 let mut mean = vec![0f32; len];
                 for e in embeddings.iter().filter(|e| e.len() == len) {
@@ -416,35 +430,35 @@ impl Inputs {
     /// How the inputs read for an AI assistant writing a mode with them (§6.5).
     pub fn describe(&self) -> String {
         let mut out = String::new();
-        if !self.scenes.is_empty() {
-            let names: Vec<String> = self.scenes.iter().map(|s| format!("`{}`", s.name)).collect();
+        if !self.phases.is_empty() {
+            let names: Vec<String> = self.phases.iter().map(|s| format!("`{}`", s.name)).collect();
             out.push_str(&format!(
-                "Scenes GameViber recognizes in this game (`input.scene`, `on_scene`; do not declare `scenes`): {}\n",
+                "Phases GameViber recognizes in this game (`input.phase`, `on_phase`; do not declare `phases`): {}\n",
                 names.join(", ")
             ));
         }
         if !self.zones.is_empty() {
-            out.push_str("Zones of the screen (`input.zones`, `on_zone`):\n");
+            out.push_str("Indicators of the screen (`input.indicators`, `on_indicator`):\n");
             let mut seen = Vec::new();
             for z in &self.zones {
-                // A zone drawn in several places is one input.
+                // An indicator read in several zones is one input.
                 if seen.contains(&&z.name) {
                     continue;
                 }
                 seen.push(&z.name);
                 let what = match z.kind {
-                    ZoneKind::Visible => "true while shown, false otherwise".to_owned(),
-                    ZoneKind::Bar => "how full the bar is, 0 to 1, or nil while it is not on screen (menus, cutscenes)".to_owned(),
+                    IndicatorKind::Visibility => "true while shown, false otherwise".to_owned(),
+                    IndicatorKind::Gauge => "how full the gauge is, 0 to 1, or nil while it is not on screen (menus, cutscenes)".to_owned(),
                 };
                 out.push_str(&format!("- `{}`: {what}\n", z.name));
             }
         }
-        if !self.inputs.is_empty() {
-            out.push_str("Sent by another program (`input.custom`, `on_event`):\n");
-            for i in &self.inputs {
+        if !self.external.is_empty() {
+            out.push_str("Sent by another program (`input.external`, `on_event`):\n");
+            for i in &self.external {
                 let kind = match i.kind {
-                    InputKind::Value => format!("`input.custom.{}`", i.name),
-                    InputKind::Event => format!("event `{}`", i.name),
+                    ExternalKind::Value => format!("`input.external.{}`", i.name),
+                    ExternalKind::Event => format!("event `{}`", i.name),
                 };
                 out.push_str(&format!("- {kind}: {}\n", i.description));
             }
@@ -593,20 +607,20 @@ mod tests {
             inputs.add_capture("battle", &frame(i as u8)).unwrap();
         }
         inputs.add_capture("story", &frame(200)).unwrap();
-        assert_eq!(inputs.captures.iter().filter(|c| c.scene == "battle").count(), MAX_CAPTURES);
-        inputs.scenes.push(SceneDef { name: "menu".into(), ..SceneDef::default() });
-        assert_eq!(inputs.scenes(), ["menu", "battle", "story"], "its scenes, then those only captures name");
+        assert_eq!(inputs.captures.iter().filter(|c| c.phase == "battle").count(), MAX_CAPTURES);
+        inputs.phases.push(PhaseDef { name: "menu".into(), ..PhaseDef::default() });
+        assert_eq!(inputs.phase_names(), ["menu", "battle", "story"], "its scenes, then those only captures name");
         let first = &inputs.captures[0];
         assert_eq!(load_capture(&inputs.dir, &first.file).unwrap().pixels, vec![2; 32], "the two oldest went first");
         assert!(inputs.example_centroids().is_empty(), "no embedding yet");
         inputs.captures[0].embedding = vec![0.0, 2.0];
         assert_eq!(inputs.example_centroids(), vec![("battle".to_owned(), crate::models::normalize(&[0.0, 1.0]))]);
 
-        inputs.zones.push(Zone { name: "hp".into(), kind: ZoneKind::Bar, ..Zone::default() });
-        inputs.inputs.push(InputDecl { name: "kill".into(), kind: InputKind::Event, description: "an enemy died".into() });
+        inputs.zones.push(Zone { name: "hp".into(), kind: IndicatorKind::Gauge, ..Zone::default() });
+        inputs.external.push(ExternalInput { name: "kill".into(), kind: ExternalKind::Event, description: "an enemy died".into() });
         let text = inputs.describe();
-        assert!(text.contains("`hp`: how full the bar is"), "{text}");
-        assert!(text.contains("recognizes in this game (`input.scene`, `on_scene`; do not declare `scenes`): `menu`"), "{text}");
+        assert!(text.contains("`hp`: how full the gauge is"), "{text}");
+        assert!(text.contains("recognizes in this game (`input.phase`, `on_phase`; do not declare `phases`): `menu`"), "{text}");
         assert!(text.contains("event `kill`: an enemy died"), "{text}");
         inputs.save();
         assert_eq!(Inputs::of(&mode), inputs);
@@ -655,7 +669,7 @@ mod tests {
         let game = game::Game::load("metaphor").unwrap();
         assert_eq!((game.name.as_str(), &game.modes[..]), ("Metaphor", &[id.clone(), "builtin:simple".to_owned()][..]));
         let inputs = Inputs::of(&ModeEntry::from_id(&id));
-        assert_eq!((inputs.scenes.len(), inputs.zones.len(), inputs.inputs.len()), (1, 1, 1));
+        assert_eq!((inputs.phases.len(), inputs.zones.len(), inputs.external.len()), (1, 1, 1));
         assert_eq!(inputs.captures[0].embedding, [0.5], "embeddings kept");
         assert!(capture_path(&inputs.dir, "battle-1.png").exists(), "captures copied");
         assert!(Inputs::of(&ModeEntry::from_id(&modes.join("other").join(config::MODE_FILE).to_string_lossy())).is_empty(), "a mode of no game");

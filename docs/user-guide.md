@@ -11,8 +11,8 @@ intensity and **STOP ALL**.
 
 | Page | What it is for |
 |---|---|
-| **Games** | Your games, added by name. Each game has its **Modes**, its **Signals** (what GameViber reads from it, see below) and its recorded **Sessions**. A game linked to its executable becomes the game being played by itself. |
-| **Live** | What happens while you play, to keep on a second screen: the mode and its main settings, what goes to the toys, the scene, the sound, the gamepad. |
+| **Games** | Your games, added by name. Each game has its **Modes**, the **Inputs** of the mode being played (what GameViber reads from the game for it, see below) and its recorded **Sessions**. A game linked to its executable becomes the game being played by itself. |
+| **Live** | What happens while you play, to keep on a second screen: the mode and its main settings, what goes to the toys, the phase, the sound, the gamepad. |
 | **Toys** | The connection to Intiface Central, the toys it found, a test buzz, and how each toy plays: which mode channels, weakest and strongest intensity, response curve. |
 | **Setup** | What does not depend on the game: the gamepad and how it is captured, the shortcuts (panic stop, mark a moment, capture the screen) on the gamepad or the keyboard, the in-game overlay, the sound listened to by default, other programs. |
 | **Settings** | The language AI assistants answer in, the requests sent to them (editable). |
@@ -27,8 +27,8 @@ The best experience is a mode written for the game you play. In a game's
 **Modes**, **New mode** guides you through getting one from any AI assistant:
 
 1. Type the game's name, and pick **Quick** (a couple of minutes) or
-   **Advanced** (the assistant may also use the game's signals, and ask you to
-   draw zones).
+   **Advanced** (the assistant may also use the active mode's inputs, and ask
+   you to draw indicators).
 2. Copy the request GameViber builds and paste it into a new conversation. An
    assistant with web search can check the game's default controls.
 3. Paste the answer back (or just its code, or drop the `.luau` file on the
@@ -55,57 +55,60 @@ tuned copy of a built-in one.
 
 ### Sharing a mode
 
-A mode written for a game reads that game's scenes and zones, so it is shared
-with them. **Export** on a mode's page saves it in a `.gameviber` file with the
-game's signals: its scenes, zones, captures (filed under a scene; captures to
-sort stay home), values from other programs and executables. Captures are
-images of your screen: look at them before sharing the file.
+A mode written for a game reads the phases and indicators set up for it, so it
+is shared with them. **Export** on a mode's page saves it in a `.gameviber` file
+with its inputs (phases, indicators, captures filed under a phase, captures to
+sort stay home; external inputs) and the game's name and executables. Captures
+are images of your screen: look at them before sharing the file.
 
-**Import a mode** in the library adds the mode to the game of the same name,
-with the signals it lacks (what you set up is kept), or adds the game. Captures
-are analysed again once the game is played. Modes run in a sandbox: they can
+**Import a mode** in the library adds the mode, with its inputs, to the game of
+the same name, or adds the game. Captures are analysed again once the mode is
+played. Modes run in a sandbox: they can
 only drive your toys, never reach your files or the network.
 
-## A game's signals
+## A mode's inputs
 
 The rumble and the buttons do not say whether you are fighting, exploring or
-watching a cutscene; the music and the screen usually do. A game's **Signals**
-teach GameViber about the game, step by step, for the mode being played: each
+watching a cutscene; the music and the screen usually do. GameViber reads the
+rumble, the gamepad, the sound and the image by itself; a mode's **Inputs**
+teach it more about the game, step by step, for the mode being played: each
 mode of yours keeps its own (a new mode made from the game's page starts with
 those of the active mode), and shares them with the mode. Built-in modes read
 none: duplicate one to set some up.
 
-- **Scenes**: name the phases that should not feel the same (battle,
-  exploration, story, menu), and describe how each sounds if the music
+- **Phases**: name the parts of the game that should not feel the same
+  (battle, exploration, story, menu), and describe how each sounds if the music
   changes between them. GameViber recognizes them from the sound and from your
   captures, with models (about 350 MB) downloaded the first time a mode needs
-  them, running on your computer. Scenes come a few seconds late: modes use
+  them, running on your computer. Phases come a few seconds late: modes use
   them for the mood of a phase.
 - **Captures**: while the game shows a battle, a dialogue..., hold **BACK + LS**
   on the gamepad (or press the capture key, Ctrl + Alt + C suggested). The image
-  is captured without leaving the game. A few captures per scene make the
+  is captured without leaving the game. A few captures per phase make the
   recognition much more reliable. Needs the in-game overlay. Screenshots on
   your computer can be added too (**From files...** under the captures).
-- **Zones**: on a capture, draw a rectangle around something shown only at
-  times (the battle interface) or around a bar (health). Modes read whether it
-  is shown, or how full the bar is, ten times a second. A bar of one color is
+- **Indicators**: on a capture, draw a zone (a rectangle) around something
+  shown only at times (the battle interface: a visibility indicator) or around
+  a bar (health: a gauge). Modes read whether it is shown, or how full the bar
+  is, ten times a second; an indicator shown in several places has a zone for
+  each. A bar of one color is
   read by its colors (pick its full and empty parts); a bar in a gradient, in
   segments or made of hearts by its look: draw the rectangle exactly on it
   (not its icon), take its look on a capture where it is full, then add its
   empty look from captures where it is low.
 - **Sound**: which application to listen to (by default, the game showing the
   overlay, otherwise everything the computer plays).
-- **Values from other programs**: a mod of the game, or a script reading its
+- **External inputs**: a mod of the game, or a script reading its
   API, can send values to GameViber (`{"set": {"hp": 0.4}}`,
   `{"event": "kill"}`) on `ws://127.0.0.1:12350`. Declare what it sends so AI
   assistants know about it.
 
 ## In-game overlay
 
-A small panel over the game: the mode and preset, the scene, how strong the
+A small panel over the game: the mode and preset, the phase, how strong the
 toys run, the mode's gauges and what it detects ("Parry!"), and warnings (toy
 lost, Intiface disconnected, panic stop). It also lets GameViber see the
-game's image (for scenes, captures and zones).
+game's image (for phases, captures and indicators).
 
 The package installs it; with the `.tar.gz`, install it from
 **Setup › In-game overlay**. Then turn it on per game, in Steam's launch

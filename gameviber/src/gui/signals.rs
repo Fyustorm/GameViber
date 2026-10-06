@@ -15,14 +15,14 @@ use super::{App, GameView, Route};
 use crate::config::AudioSource;
 use crate::engine::{Command, Shared};
 use crate::game::Game;
-use crate::package::{valid_name, InputDecl, InputKind, Inputs, SceneDef, MAX_SCENES};
+use crate::package::{valid_name, ExternalInput, ExternalKind, Inputs, PhaseDef, MAX_SCENES};
 use crate::mode::prompt::Depth;
 use crate::mode::ZoneValue;
 use crate::models::Model;
 
-const SURE_SIGN_HELP: &str = "A zone shown only in this scene (the battle menu, drawn on the captures page): \
-    while it is shown the scene is certain, right away, and the scene is only entered through it.";
-const HOLD_HELP: &str = "How long the scene is kept after its last sign (its zone gone, or another scene sounding \
+const SURE_SIGN_HELP: &str = "An indicator shown only in this phase (the battle menu, drawn on the captures page): \
+    while it is shown the phase is certain, right away, and the phase is only entered through it.";
+const HOLD_HELP: &str = "How long the phase is kept after its last sign (its indicator gone, or another phase sounding \
     or looking more likely). Longer for signs that come and go, like a battle menu hidden during attacks.";
 
 /// Captures per scene that make its recognition reliable.
@@ -38,7 +38,7 @@ pub struct State {
     sounds: HashMap<String, String>,
     /// Holds being dragged, by scene.
     holds: HashMap<String, f64>,
-    new_input: InputDecl,
+    new_input: ExternalInput,
 }
 
 enum Status {
@@ -92,11 +92,11 @@ impl App {
     pub(super) fn inputs_of<'a>(&mut self, ui: &mut egui::Ui, s: &'a Shared, game: &Game) -> Option<&'a Inputs> {
         let name = s.mode.info.as_ref().map_or_else(|| s.mode.id.clone(), |i| i.name.clone());
         let why = if !game.modes.contains(&s.mode.id) {
-            "Signals belong to a mode: open one of this game's modes to set up what it reads."
+            "Inputs belong to a mode: open one of this game's modes to set up what it reads."
         } else if s.mode_inputs.is_none() {
-            "Built-in modes read no signals set up for a game: duplicate it to set some up for this game."
+            "Built-in modes read no inputs set up for a game: duplicate it to set some up for this game."
         } else {
-            ui.label(muted(format!("Signals of the mode {name}.")));
+            ui.label(muted(format!("Inputs of the mode {name}.")));
             return s.mode_inputs.as_ref();
         };
         card(PANEL).inner_margin(Margin::symmetric(18, 14)).show(ui, |ui| {
@@ -112,10 +112,10 @@ impl App {
     fn signals_intro(&mut self, ui: &mut egui::Ui) {
         card(SELECTED_BG).stroke(egui::Stroke::new(1.0, LINE)).inner_margin(Margin::symmetric(18, 14)).show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.label(RichText::new("What are signals?").strong().size(16.0));
+            ui.label(RichText::new("What are inputs?").strong().size(16.0));
             ui.label(
                 "By default a mode only knows that the gamepad rumbles and which buttons you press: it cannot tell a \
-                 fight from a dialogue. Signals tell your modes what is going on in the game, so they can keep a tense \
+                 fight from a dialogue. Inputs tell your modes what is going on in the game, so they can keep a tense \
                  vibration through a battle and calm down during a cutscene.",
             );
             ui.label(muted(
@@ -126,20 +126,20 @@ impl App {
     }
 
     fn scenes_step(&mut self, ui: &mut egui::Ui, s: &Shared, game: &Game, inputs: &Inputs) {
-        let status = if inputs.scenes.len() >= 2 {
-            Status::Done(format!("Done · {} scenes", inputs.scenes.len()))
+        let status = if inputs.phases.len() >= 2 {
+            Status::Done(format!("Done · {} phases", inputs.phases.len()))
         } else {
             Status::Next("Start here".to_owned())
         };
         let mut changed: Option<Inputs> = None;
-        step_card(ui, 1, "Name the scenes of the game", status, |ui| {
+        step_card(ui, 1, "Name the phases of the game", status, |ui| {
             ui.label(muted(
-                "A scene is a phase of the game that should not feel the same: a battle, exploring, a dialogue, a \
+                "A phase is a part of the game that should not feel the same: a battle, exploring, a dialogue, a \
                  menu. Modes vibrate differently in each one. Name 2 to 4 of them, the ones that feel the most \
                  different.",
             ));
             ui.add_space(4.0);
-            if !inputs.scenes.is_empty() {
+            if !inputs.phases.is_empty() {
                 let live: HashMap<&str, f64> = if s.game.as_ref().is_some_and(|g| g.id == game.id) {
                     s.scenes.scenes.iter().map(|(n, p)| (n.as_str(), *p)).collect()
                 } else {
@@ -149,15 +149,15 @@ impl App {
                 zone_names.dedup();
                 zone_names.sort();
                 zone_names.dedup();
-                egui::Grid::new("game-scenes").num_columns(6).spacing([12.0, 6.0]).show(ui, |ui| {
-                    ui.label(muted("Scene").size(12.0));
+                egui::Grid::new("game-phases").num_columns(6).spacing([12.0, 6.0]).show(ui, |ui| {
+                    ui.label(muted("Phase").size(12.0));
                     ui.label(muted("How it sounds (optional, for the sound model)").size(12.0));
                     ui.label(muted("Sure sign").size(12.0)).on_hover_text(SURE_SIGN_HELP);
                     ui.label(muted("Kept").size(12.0)).on_hover_text(HOLD_HELP);
                     ui.label(muted("Right now").size(12.0));
                     ui.label("");
                     ui.end_row();
-                    for (i, scene) in inputs.scenes.iter().enumerate() {
+                    for (i, scene) in inputs.phases.iter().enumerate() {
                         let current = s.scenes.scene.as_deref() == Some(scene.name.as_str()) && !live.is_empty();
                         let name = RichText::new(&scene.name).strong();
                         ui.label(if current { name.color(ACCENT_TEXT) } else { name });
@@ -166,14 +166,14 @@ impl App {
                         let typed = text.trim().to_owned();
                         if edit.lost_focus() && Some(typed.as_str()) != scene.sound.as_deref().or(Some("")) {
                             let mut g = inputs.clone();
-                            g.scenes[i].sound = (!typed.is_empty()).then_some(typed);
+                            g.phases[i].sound = (!typed.is_empty()).then_some(typed);
                             changed = Some(g);
                         }
                         // A zone shown only in this scene.
-                        let mut zone = scene.zone.clone().filter(|z| zone_names.contains(&z.as_str()));
-                        let label = zone.clone().unwrap_or_else(|| if zone_names.is_empty() { "no zone yet".to_owned() } else { "none".to_owned() });
+                        let mut zone = scene.indicator.clone().filter(|z| zone_names.contains(&z.as_str()));
+                        let label = zone.clone().unwrap_or_else(|| if zone_names.is_empty() { "no indicator yet".to_owned() } else { "none".to_owned() });
                         ui.add_enabled_ui(!zone_names.is_empty(), |ui| {
-                            egui::ComboBox::from_id_salt(("scene-zone", i)).selected_text(label).width(120.0).show_ui(ui, |ui| {
+                            egui::ComboBox::from_id_salt(("phase-indicator", i)).selected_text(label).width(120.0).show_ui(ui, |ui| {
                                 ui.selectable_value(&mut zone, None, "none");
                                 for name in &zone_names {
                                     ui.selectable_value(&mut zone, Some((*name).to_owned()), *name);
@@ -182,9 +182,9 @@ impl App {
                             .response
                             .on_hover_text(SURE_SIGN_HELP);
                         });
-                        if zone != scene.zone.clone().filter(|z| zone_names.contains(&z.as_str())) {
+                        if zone != scene.indicator.clone().filter(|z| zone_names.contains(&z.as_str())) {
                             let mut g = inputs.clone();
-                            g.scenes[i].zone = zone;
+                            g.phases[i].indicator = zone;
                             changed = Some(g);
                         }
                         let hold = self.signals.holds.entry(scene.name.clone()).or_insert(scene.hold);
@@ -193,7 +193,7 @@ impl App {
                         let done = drag.drag_stopped() || drag.lost_focus() || (drag.changed() && !drag.dragged() && !drag.has_focus());
                         if done && *hold != scene.hold && changed.is_none() {
                             let mut g = inputs.clone();
-                            g.scenes[i].hold = *hold;
+                            g.phases[i].hold = *hold;
                             changed = Some(g);
                         }
                         if !drag.dragged() && !drag.has_focus() && !done {
@@ -207,9 +207,9 @@ impl App {
                                 ui.label(muted("-"));
                             }
                         }
-                        if ui.small_button("Remove").on_hover_text("Forget this scene (its captures stay, to sort)").clicked() {
+                        if ui.small_button("Remove").on_hover_text("Forget this phase (its captures stay, to sort)").clicked() {
                             let mut g = inputs.clone();
-                            g.scenes.remove(i);
+                            g.phases.remove(i);
                             changed = Some(g);
                         }
                         ui.end_row();
@@ -217,20 +217,20 @@ impl App {
                 });
             }
             ui.horizontal_wrapped(|ui| {
-                let room = inputs.scenes.len() < MAX_SCENES;
-                for suggestion in SUGGESTED_SCENES.iter().filter(|n| !inputs.scenes.iter().any(|s| s.name == **n)) {
+                let room = inputs.phases.len() < MAX_SCENES;
+                for suggestion in SUGGESTED_SCENES.iter().filter(|n| !inputs.phases.iter().any(|s| s.name == **n)) {
                     if ui.add_enabled(room, egui::Button::new(format!("+ {suggestion}"))).clicked() {
                         let mut g = inputs.clone();
-                        g.scenes.push(SceneDef { name: (*suggestion).to_owned(), ..SceneDef::default() });
+                        g.phases.push(PhaseDef { name: (*suggestion).to_owned(), ..PhaseDef::default() });
                         changed = Some(g);
                     }
                 }
-                ui.add(egui::TextEdit::singleline(&mut self.signals.new_scene).hint_text("another scene").desired_width(120.0));
+                ui.add(egui::TextEdit::singleline(&mut self.signals.new_scene).hint_text("another phase").desired_width(120.0));
                 let name = self.signals.new_scene.trim().to_owned();
-                let ok = room && valid_name(&name) && !inputs.scenes.iter().any(|s| s.name == name);
+                let ok = room && valid_name(&name) && !inputs.phases.iter().any(|s| s.name == name);
                 if ui.add_enabled(ok, egui::Button::new("Add")).clicked() {
                     let mut g = inputs.clone();
-                    g.scenes.push(SceneDef { name, ..SceneDef::default() });
+                    g.phases.push(PhaseDef { name, ..PhaseDef::default() });
                     changed = Some(g);
                     self.signals.new_scene.clear();
                 }
@@ -243,23 +243,23 @@ impl App {
 
     fn looks_step(&mut self, ui: &mut egui::Ui, s: &Shared, game: &Game, inputs: &Inputs) {
         let counts: Vec<(String, usize)> =
-            inputs.scenes.iter().map(|sc| (sc.name.clone(), inputs.captures.iter().filter(|c| c.scene == sc.name).count())).collect();
+            inputs.phases.iter().map(|sc| (sc.name.clone(), inputs.captures.iter().filter(|c| c.phase == sc.name).count())).collect();
         let enough = !counts.is_empty() && counts.iter().all(|(_, n)| *n >= CAPTURES_WANTED);
-        let status = match (inputs.scenes.is_empty(), enough) {
+        let status = match (inputs.phases.is_empty(), enough) {
             (true, _) => Status::Optional("After step 1".to_owned()),
             (false, true) => Status::Done("Done".to_owned()),
             (false, false) => Status::Next("Recommended · next step".to_owned()),
         };
         let mut open = false;
         let mut command = None;
-        step_card(ui, 2, "Show GameViber what each scene looks like", status, |ui| {
+        step_card(ui, 2, "Show GameViber what each phase looks like", status, |ui| {
             ui.label(muted(
-                "GameViber recognizes a scene from images of it: capture a few screens of each scene, in different \
-                 places. Where the music is the same in two scenes (a dungeon and its battles), the images tell them \
+                "GameViber recognizes a phase from images of it: capture a few screens of each phase, in different \
+                 spots. Where the music is the same in two phases (a dungeon and its battles), the images tell them \
                  apart.",
             ));
             if !counts.is_empty() {
-                egui::Grid::new("scene-captures").num_columns(3).spacing([12.0, 6.0]).show(ui, |ui| {
+                egui::Grid::new("phase-captures").num_columns(3).spacing([12.0, 6.0]).show(ui, |ui| {
                     for (scene, n) in &counts {
                         ui.label(scene);
                         let color = if *n >= CAPTURES_WANTED { OK } else { WARN };
@@ -269,13 +269,13 @@ impl App {
                     }
                 });
             }
-            let to_sort = inputs.captures.iter().filter(|c| c.scene.is_empty()).count();
+            let to_sort = inputs.captures.iter().filter(|c| c.phase.is_empty()).count();
             if to_sort > 0 {
                 ui.label(RichText::new(format!("{to_sort} captures to sort")).color(WARN));
             }
             ui.horizontal_wrapped(|ui| {
                 ui.label(format!(
-                    "While playing, hold {} when the game shows a scene (pick which one on the captures page).",
+                    "While playing, hold {} when the game shows a phase (pick which one on the captures page).",
                     crate::gamepad::combo_text(&s.settings.capture_combo)
                 ));
                 open = ui.add(primary("See the captures")).clicked();
@@ -285,10 +285,10 @@ impl App {
             }
             egui::CollapsingHeader::new("The sound helps too").id_salt("sound-helps").show(ui, |ui| {
                 ui.label(muted(
-                    "Describe how a scene sounds in step 1 and the music is compared with it as well: useful when the \
-                     music changes between scenes, useless when it does not.",
+                    "Describe how a phase sounds in step 1 and the music is compared with it as well: useful when the \
+                     music changes between phases, useless when it does not.",
                 ));
-                if inputs.scenes.iter().any(|sc| sc.sound.is_some()) && s.audio.model != crate::models::ModelState::Ready {
+                if inputs.phases.iter().any(|sc| sc.sound.is_some()) && s.audio.model != crate::models::ModelState::Ready {
                     if let Some(c) = model_card(ui, Model::Sound, &s.audio.model) {
                         command = Some(c);
                     }
@@ -307,12 +307,12 @@ impl App {
         let mut names: Vec<&str> = inputs.zones.iter().map(|z| z.name.as_str()).collect();
         names.sort();
         names.dedup();
-        let status = Status::Optional(if names.is_empty() { "Optional".to_owned() } else { format!("Optional · {} zones", names.len()) });
+        let status = Status::Optional(if names.is_empty() { "Optional".to_owned() } else { format!("Optional · {} indicators", names.len()) });
         let mut open = false;
         step_card(ui, 3, "Read exact values on screen", status, |ui| {
             ui.label(muted(
-                "A zone is a part of the screen GameViber reads ten times a second: how full the health bar is, \
-                 whether the battle menu is shown. Scenes are a good guess a few seconds late; zones are exact and \
+                "An indicator is a part of the screen GameViber reads ten times a second: how full the health bar is, \
+                 whether the battle menu is shown. Phases are a good guess a few seconds late; indicators are exact and \
                  instant. A mode can then beat faster when health drops below 30%.",
             ));
             ui.horizontal_wrapped(|ui| {
@@ -327,7 +327,7 @@ impl App {
                     };
                     pill(ui, &text, TEXT, RAISED);
                 }
-                let label = if inputs.captures.is_empty() { "Capture images first, then draw zones on them ›" } else { "Draw zones on the captures ›" };
+                let label = if inputs.captures.is_empty() { "Capture images first, then draw indicators on them ›" } else { "Draw indicators on the captures ›" };
                 open = ui.link(label).clicked();
             });
         });
@@ -394,17 +394,17 @@ impl App {
                      to {} (Setup › Other programs). Declare them here so that AI assistants know them.",
                     s.inputs.address.as_deref().unwrap_or("GameViber")
                 )));
-                for (i, input) in inputs.inputs.iter().enumerate() {
+                for (i, input) in inputs.external.iter().enumerate() {
                     ui.horizontal(|ui| {
                         let kind = match input.kind {
-                            InputKind::Value => format!("input.custom.{}", input.name),
-                            InputKind::Event => format!("event {}", input.name),
+                            ExternalKind::Value => format!("input.external.{}", input.name),
+                            ExternalKind::Event => format!("event {}", input.name),
                         };
                         ui.label(RichText::new(kind).monospace());
                         ui.label(&input.description);
                         if ui.small_button("Delete").clicked() {
                             let mut g = inputs.clone();
-                            g.inputs.remove(i);
+                            g.external.remove(i);
                             changed = Some(g);
                         }
                     });
@@ -412,17 +412,17 @@ impl App {
                 let new = &mut self.signals.new_input;
                 ui.horizontal(|ui| {
                     egui::ComboBox::from_id_salt("input-kind")
-                        .selected_text(if new.kind == InputKind::Value { "Value" } else { "Event" })
+                        .selected_text(if new.kind == ExternalKind::Value { "Value" } else { "Event" })
                         .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut new.kind, InputKind::Value, "Value");
-                            ui.selectable_value(&mut new.kind, InputKind::Event, "Event");
+                            ui.selectable_value(&mut new.kind, ExternalKind::Value, "Value");
+                            ui.selectable_value(&mut new.kind, ExternalKind::Event, "Event");
                         });
                     ui.add(egui::TextEdit::singleline(&mut new.name).hint_text("hp").desired_width(100.0));
                     ui.add(egui::TextEdit::singleline(&mut new.description).hint_text("health, 0 to 100").desired_width(220.0));
-                    let ok = valid_name(&new.name) && !new.description.trim().is_empty() && !inputs.inputs.iter().any(|i| i.name == new.name);
+                    let ok = valid_name(&new.name) && !new.description.trim().is_empty() && !inputs.external.iter().any(|i| i.name == new.name);
                     if ui.add_enabled(ok, egui::Button::new("Declare")).clicked() {
                         let mut g = inputs.clone();
-                        g.inputs.push(std::mem::take(new));
+                        g.external.push(std::mem::take(new));
                         changed = Some(g);
                     }
                 });
@@ -446,8 +446,8 @@ impl App {
                 ui.label(muted("Live, while the game runs."));
                 ui.add_space(4.0);
                 match (&s.scenes.scene, s.scenes.scenes.iter().find(|(n, _)| Some(n) == s.scenes.scene.as_ref())) {
-                    (Some(scene), Some((_, p))) => known(ui, &capitalized(scene), &format!("scene, {:.0}% sure", p * 100.0), ACCENT_TEXT),
-                    _ if !inputs.scenes.is_empty() => known(ui, "No scene yet", "it takes a few seconds of the game", MUTED),
+                    (Some(scene), Some((_, p))) => known(ui, &capitalized(scene), &format!("phase, {:.0}% sure", p * 100.0), ACCENT_TEXT),
+                    _ if !inputs.phases.is_empty() => known(ui, "No phase yet", "it takes a few seconds of the game", MUTED),
                     _ => {}
                 }
                 for (name, _, value) in &s.screen.zones {
@@ -466,7 +466,7 @@ impl App {
                 }
             }
             ui.add_space(8.0);
-            ui.label(muted("Ask for an Advanced mode to get one written around these signals."));
+            ui.label(muted("Ask for an Advanced mode to get one written around these inputs."));
             advanced = ui.button("✨ New advanced mode").clicked();
         });
         if advanced {
