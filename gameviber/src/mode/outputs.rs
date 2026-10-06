@@ -4,6 +4,9 @@
 use std::collections::BTreeMap;
 
 pub const ALL_CHANNELS: &str = "*";
+/// Pulses and patterns going on at once, on all channels (docs/spec-modes.md §10).
+const MAX_PULSES: usize = 64;
+const MAX_PATTERNS: usize = 16;
 
 #[derive(Debug, Clone)]
 struct Pulse {
@@ -91,6 +94,10 @@ impl Outputs {
     }
 
     pub fn pulse(&mut self, channel: &str, level: f64, seconds: f64, now: f64) -> Result<(), String> {
+        self.pulses.retain(|p| p.until > now);
+        if self.pulses.len() >= MAX_PULSES {
+            return Err(format!("pulse: at most {MAX_PULSES} at once"));
+        }
         for c in self.targets(channel)? {
             self.pulses.push(Pulse { channel: c, level: level.clamp(0.0, 1.0), until: now + seconds.max(0.0) });
         }
@@ -107,6 +114,9 @@ impl Outputs {
     ) -> Result<u64, String> {
         if points.is_empty() {
             return Err("pattern has no points".into());
+        }
+        if self.patterns.len() >= MAX_PATTERNS {
+            return Err(format!("play: at most {MAX_PATTERNS} patterns at once"));
         }
         points.sort_by(|a, b| a.0.total_cmp(&b.0));
         let id = self.next_id;

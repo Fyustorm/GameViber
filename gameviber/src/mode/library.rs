@@ -15,6 +15,17 @@ const QUESTION_TAG: &str = "__question";
 const DEFAULT_CHANNEL: &str = "main";
 const MAX_HUD_GAUGES: usize = 4;
 const MAX_HUD_EVENT_CHARS: usize = 40;
+/// What a mode may keep outside its Lua memory (docs/spec-modes.md §10): its
+/// callbacks run from code shared by everyone, so they are bounded too.
+const MAX_HUD_EVENTS: usize = 4;
+const MAX_HUD_LABEL_CHARS: usize = 24;
+const MAX_TIMERS: usize = 64;
+const MAX_PLOTS: usize = 32;
+const MAX_PLOT_NAME_CHARS: usize = 40;
+const MAX_PATTERN_POINTS: usize = 256;
+/// Log lines per second of the mode's time, and characters per line.
+const MAX_LOG_LINES: u32 = 20;
+const MAX_LOG_CHARS: usize = 500;
 
 /// Base-library functions that could escape the sandbox or load code.
 const REMOVED_GLOBALS: [&str; 5] = ["loadstring", "getfenv", "setfenv", "require", "dofile"];
@@ -120,6 +131,9 @@ pub(super) fn register(lua: &Lua, ctx: &Rc<RefCell<Ctx>>) -> mlua::Result<()> {
                     return Err(runtime_err("pattern times must be >= 0"));
                 }
                 copy.push(lua.create_sequence_from([t, v])?);
+                if copy.len() > MAX_PATTERN_POINTS {
+                    return Err(runtime_err(format!("pattern: at most {MAX_PATTERN_POINTS} points")));
+                }
             }
             if copy.is_empty() {
                 return Err(runtime_err("pattern needs at least one { time, intensity } point"));
@@ -188,6 +202,9 @@ pub(super) fn register(lua: &Lua, ctx: &Rc<RefCell<Ctx>>) -> mlua::Result<()> {
             lua.create_function(move |lua, (seconds, func): (f64, Function)| {
                 let id = {
                     let mut c = ctx.borrow_mut();
+                    if c.timers.len() >= MAX_TIMERS {
+                        return Err(runtime_err(format!("{name}: at most {MAX_TIMERS} timers at once")));
+                    }
                     let id = c.next_timer;
                     c.next_timer += 1;
                     let seconds = seconds.max(0.0);
@@ -217,7 +234,15 @@ pub(super) fn register(lua: &Lua, ctx: &Rc<RefCell<Ctx>>) -> mlua::Result<()> {
         g.set(
             "plot",
             lua.create_function(move |_, (name, value): (String, f64)| {
-                ctx.borrow_mut().plots.push((name, value));
+                let name: String = name.chars().take(MAX_PLOT_NAME_CHARS).collect();
+                let mut c = ctx.borrow_mut();
+                if !c.plot_names.contains(&name) {
+                    if c.plot_names.len() >= MAX_PLOTS {
+                        return Err(runtime_err(format!("plot: at most {MAX_PLOTS} series")));
+                    }
+                    c.plot_names.insert(name.clone());
+                }
+                c.plots.push((name, value));
                 Ok(())
             })?,
         )?;
@@ -229,6 +254,7 @@ pub(super) fn register(lua: &Lua, ctx: &Rc<RefCell<Ctx>>) -> mlua::Result<()> {
         g.set(
             "hud",
             lua.create_function(move |_, (label, value, max): (String, Option<f64>, Option<f64>)| {
+                let label: String = label.chars().take(MAX_HUD_LABEL_CHARS).collect();
                 let mut c = ctx.borrow_mut();
                 let Some(value) = value else {
                     c.hud.retain(|h| h.label != label);
@@ -257,7 +283,11 @@ pub(super) fn register(lua: &Lua, ctx: &Rc<RefCell<Ctx>>) -> mlua::Result<()> {
             "hud_event",
             lua.create_function(move |_, text: String| {
                 let text: String = text.chars().take(MAX_HUD_EVENT_CHARS).collect();
-                ctx.borrow_mut().hud_events.push(text);
+                let mut c = ctx.borrow_mut();
+                // More in one tick could not be read anyway.
+                if c.hud_events.len() < MAX_HUD_EVENTS {
+                    c.hud_events.push(text);
+                }
                 Ok(())
             })?,
         )?;
@@ -267,7 +297,22 @@ pub(super) fn register(lua: &Lua, ctx: &Rc<RefCell<Ctx>>) -> mlua::Result<()> {
         g.set(
             name,
             lua.create_function(move |_, values: Variadic<Value>| {
-                log::info!(target: "mode", "[{}] {}", ctx.borrow().mode_name, display(&values));
+                let mut c = ctx.borrow_mut();
+                let second = c.time.floor();
+                if c.log_window.0 != second {
+                    c.log_window = (second, 0);
+                }
+                c.log_window.1 += 1;
+                match c.log_window.1 {
+                    n if n <= MAX_LOG_LINES => {
+                        let line: String = display(&values).chars().take(MAX_LOG_CHARS).collect();
+                        log::info!(target: "mode", "[{}] {line}", c.mode_name);
+                    }
+                    n if n == MAX_LOG_LINES + 1 => {
+                        log::info!(target: "mode", "[{}] more than {MAX_LOG_LINES} lines this second: the rest is left out", c.mode_name);
+                    }
+                    _ => {}
+                }
                 Ok(())
             })?,
         )?;

@@ -569,8 +569,14 @@ resolution is therefore 20 ms.
   `getfenv` / `setfenv`, and any file or network access. Available libraries are
   read-only.
 - Budget per callback call: 10 ms of real time, enforced by the Luau interrupt (200 ms for
-  running the file at load time). Exceeding it counts as a runtime error.
+  running the file at load time), and 25 ms for all the calls of one tick (timers,
+  events, `tick`). Exceeding it counts as a runtime error.
 - Mode memory: 16 MB maximum.
+- What GameViber keeps for a mode is bounded too: 64 timers, 64 pulses and 16 patterns
+  at once (more is a runtime error), 256 points per pattern, 32 `plot()` series (names
+  cut at 40 characters), `hud()` labels cut at 24 characters, 4 `hud_event()` messages
+  per tick (the others are dropped), 20 `log()` lines per second of 500 characters at
+  most.
 - Script global variables are reset on every (re)load, except `persist`.
 
 ## 11. Errors and hot reload

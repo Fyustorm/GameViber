@@ -253,6 +253,35 @@ fn infinite_loop_hits_time_budget() {
 }
 
 #[test]
+fn a_tick_has_a_budget_for_all_its_calls() {
+    let mut rt = load(&wrap("function tick() for i = 1, 1000 do end end"));
+    assert!(rt.step(DT, rumble(0.0, 0.0), &PadState::default(), 0.0, &[]).is_ok());
+    // Earlier calls of the tick took it all.
+    rt.tick_deadline.set(Some(Instant::now()));
+    let err = rt.run_tick(DT, rumble(0.0, 0.0), &PadState::default(), 0.0, &[]).unwrap_err();
+    assert!(err.contains("time budget"), "{err}");
+}
+
+#[test]
+fn what_a_mode_keeps_outside_lua_is_bounded() {
+    let err = |body: &str| {
+        let mut rt = load(&wrap(&format!("function tick() {body} end")));
+        rt.step(DT, rumble(0.0, 0.0), &PadState::default(), 0.0, &[]).unwrap_err()
+    };
+    assert!(err("for i = 1, 65 do every(1, function() end) end").contains("at most 64 timers"));
+    assert!(err("for i = 1, 33 do plot('p' .. i, i) end").contains("at most 32 series"));
+    assert!(err("for i = 1, 65 do pulse(1, 10) end").contains("at most 64 at once"));
+    assert!(err("local p = pattern { { 0, 1 } } for i = 1, 17 do play(p, { loops = 0 }) end").contains("at most 16 patterns"));
+    let points: Vec<String> = (0..257).map(|i| format!("{{ {i}, 1 }}")).collect();
+    assert!(err(&format!("pattern {{ {} }}", points.join(", "))).contains("at most 256 points"));
+
+    // Plotting the same series again is fine; overlay messages past a few a tick are dropped.
+    let mut rt = load(&wrap("function tick() for i = 1, 100 do plot('same', i) hud_event('x' .. i) end end"));
+    let out = step(&mut rt, rumble(0.0, 0.0));
+    assert_eq!(out.hud_events, ["x1", "x2", "x3", "x4"]);
+}
+
+#[test]
 fn sandbox_blocks_escapes() {
     let src = wrap(
         "function tick()

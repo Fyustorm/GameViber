@@ -25,8 +25,10 @@ use outputs::Outputs;
 use rumble_events::{RumbleEvent, RumbleLevels, RumbleTracker, DEFAULT_RELEASE, DEFAULT_THRESHOLD};
 
 pub const API_VERSION: u32 = 1;
-/// Wall-clock budget for one callback invocation.
+/// Wall-clock budget for one callback invocation...
 const CALLBACK_BUDGET: Duration = Duration::from_millis(10);
+/// ...and for all of a tick's (timers, events, `tick`).
+const TICK_BUDGET: Duration = Duration::from_millis(25);
 /// Budget for running the file's top level (declaration, helpers).
 const LOAD_BUDGET: Duration = Duration::from_millis(200);
 const MEMORY_LIMIT: usize = 16 * 1024 * 1024;
@@ -211,6 +213,10 @@ struct Ctx {
     time: f64,
     outputs: Option<Outputs>,
     plots: Vec<(String, f64)>,
+    /// Every series plotted since loading.
+    plot_names: HashSet<String>,
+    /// The second of the mode's time log lines are counted in, and how many.
+    log_window: (f64, u32),
     hud: Vec<HudGauge>,
     hud_events: Vec<String>,
     timers: Vec<Timer>,
@@ -271,6 +277,8 @@ pub struct ModeRuntime {
     lua: Lua,
     ctx: Rc<RefCell<Ctx>>,
     deadline: Rc<Cell<Option<Instant>>>,
+    /// When the tick being run must end (`TICK_BUDGET`).
+    tick_deadline: Cell<Option<Instant>>,
     info: ModeInfo,
     callbacks: Callbacks,
     param_values: BTreeMap<String, ParamValue>,
@@ -329,6 +337,8 @@ impl ModeRuntime {
             time: 0.0,
             outputs: None,
             plots: Vec::new(),
+            plot_names: HashSet::new(),
+            log_window: (0.0, 0),
             hud: Vec::new(),
             hud_events: Vec::new(),
             timers: Vec::new(),
@@ -440,6 +450,7 @@ impl ModeRuntime {
             lua,
             ctx,
             deadline,
+            tick_deadline: Cell::new(None),
             info,
             callbacks,
             param_values,
@@ -565,7 +576,8 @@ impl ModeRuntime {
     }
 
     fn call(&self, f: &Function, args: impl mlua::IntoLuaMulti) -> Result<(), String> {
-        self.deadline.set(Some(Instant::now() + CALLBACK_BUDGET));
+        let call = Instant::now() + CALLBACK_BUDGET;
+        self.deadline.set(Some(self.tick_deadline.get().map_or(call, |tick| tick.min(call))));
         let result = f.call::<()>(args);
         self.deadline.set(None);
         result.map_err(lua_err)
@@ -641,6 +653,20 @@ impl ModeRuntime {
     /// One engine tick: timers, queued events, derived rumble events, `tick`.
     /// `input_idle` is computed by the caller, whose clock the pad state uses.
     pub fn step(
+        &mut self,
+        dt: f64,
+        rumble: RumbleLevels,
+        pad: &PadState,
+        input_idle: f64,
+        events: &[ModeEvent],
+    ) -> Result<TickOutput, String> {
+        self.tick_deadline.set(Some(Instant::now() + TICK_BUDGET));
+        let result = self.run_tick(dt, rumble, pad, input_idle, events);
+        self.tick_deadline.set(None);
+        result
+    }
+
+    fn run_tick(
         &mut self,
         dt: f64,
         rumble: RumbleLevels,
