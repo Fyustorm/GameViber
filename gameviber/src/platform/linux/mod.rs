@@ -55,6 +55,23 @@ pub fn runtime_dir() -> PathBuf {
     std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("/tmp/gameviber-{}", uid())))
 }
 
+/// The Steam app id of a running process, as Steam sets it in the game's
+/// environment (`SteamAppId`; Proton games too). None for a game Steam did not
+/// start, or a process of another user.
+pub fn steam_app_id(pid: u32) -> Option<u32> {
+    let environ = std::fs::read(format!("/proc/{pid}/environ")).ok()?;
+    app_id_in(&environ)
+}
+
+/// `SteamAppId` in a process environment (`NAME=value` entries ending in NUL); 0 is no game.
+fn app_id_in(environ: &[u8]) -> Option<u32> {
+    environ
+        .split(|b| *b == 0)
+        .find_map(|entry| entry.strip_prefix(b"SteamAppId="))
+        .and_then(|value| std::str::from_utf8(value).ok()?.parse().ok())
+        .filter(|id| *id != 0)
+}
+
 pub fn uid() -> u32 {
     // SAFETY: getuid cannot fail.
     unsafe { libc::getuid() }
@@ -137,4 +154,16 @@ pub fn window_focused(focused: bool) {
 /// Must be called before the window goes away.
 pub fn window_closing() {
     helper::dialog::forget_window();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn steam_app_id_is_read_from_the_environment() {
+        assert_eq!(app_id_in(b"HOME=/home/a\0SteamAppId=2679460\0SteamGameId=2679460\0"), Some(2679460));
+        assert_eq!(app_id_in(b"SteamAppId=0\0"), None, "not a Steam game");
+        assert_eq!(app_id_in(b"HOME=/home/a\0"), None);
+    }
 }

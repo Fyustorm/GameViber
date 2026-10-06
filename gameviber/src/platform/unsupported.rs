@@ -74,3 +74,8 @@ pub fn window_focused(_focused: bool) {}
 
 pub fn window_closing() {}
 
+
+/// The Steam app id of a running process: not read on this system yet.
+pub fn steam_app_id(_pid: u32) -> Option<u32> {
+    None
+}

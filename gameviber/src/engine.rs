@@ -259,6 +259,8 @@ pub struct Shared {
     pub mode_inputs: Option<package::Inputs>,
     /// The executable showing the overlay, and whether no game runs as it.
     pub running_executable: Option<String>,
+    /// Its Steam app id, when Steam started it.
+    pub running_app: Option<u32>,
     pub unlinked_executable: Option<String>,
     pub external: ExternalView,
     pub shortcuts: crate::shortcuts::Status,
@@ -391,6 +393,8 @@ struct Engine {
     mode_inputs: package::Inputs,
     /// The executable showing the overlay, as last seen.
     running: Option<String>,
+    /// Its Steam app id, when Steam started it.
+    running_app: Option<u32>,
     example_centroids: Vec<(String, Embedding)>,
     indicators: IndicatorReader,
     external: ExternalInputs,
@@ -480,6 +484,7 @@ async fn run_async(
         game: None,
         mode_inputs: package::Inputs::default(),
         running: None,
+        running_app: None,
         example_centroids: Vec::new(),
         indicators: IndicatorReader::default(),
         external,
@@ -791,13 +796,17 @@ impl Engine {
                 let mut game = Game::new(&name);
                 let catalog = self.shared.lock().unwrap().catalog.clone();
                 for (id, info) in &catalog {
-                    // The modes already made for it (AI modes are categorized by their game).
-                    if info.as_ref().is_ok_and(|i| i.category.eq_ignore_ascii_case(game.name.trim())) {
+                    // The modes already made for it (AI modes are categorized by their game), not their variants.
+                    let variant = ModeEntry::from_id(id).variant.is_some();
+                    if !variant && info.as_ref().is_ok_and(|i| i.category.eq_ignore_ascii_case(game.name.trim())) {
                         game.modes.push(id.clone());
                     }
                 }
                 if let Some(exe) = executable {
                     self.unlink(&exe);
+                    if self.running.as_ref() == Some(&exe) {
+                        game.steam_app_id = self.running_app;
+                    }
                     game.executables.push(exe);
                 }
                 game.save();
@@ -825,7 +834,11 @@ impl Engine {
             Command::SelectGame(id) => self.select_game(id),
             Command::LinkExecutable { game, executable } => {
                 self.unlink(&executable);
-                self.edit_game_by_id(&game, |g| g.executables.push(executable.clone()));
+                let app = self.running_app.filter(|_| self.running.as_ref() == Some(&executable));
+                self.edit_game_by_id(&game, |g| {
+                    g.executables.push(executable.clone());
+                    g.steam_app_id = app.or(g.steam_app_id);
+                });
                 self.select_game(Some(game));
             }
             Command::Imported { game } => {
@@ -1364,7 +1377,8 @@ impl Engine {
         shared.game = self.game.clone();
         shared.mode_inputs = self.mode_inputs.has_package().then(|| self.mode_inputs.for_gui());
         shared.running_executable = self.running.clone();
-        shared.unlinked_executable = self.running.clone().filter(|exe| !self.games.iter().any(|g| g.runs_as(exe)));
+        shared.running_app = self.running_app;
+        shared.unlinked_executable = self.running.clone().filter(|exe| !self.games.iter().any(|g| g.is_running(exe, self.running_app)));
         shared.external = self.external.view();
         shared.shortcuts = self.shortcuts.as_ref().map(Shortcuts::status).unwrap_or_default();
         shared.capture_phase = self.capture_phase.clone();
@@ -1443,9 +1457,16 @@ impl Engine {
         let running = self.screen_view.game.clone().or_else(|| self.overlay.clients().first().map(|c| c.exe.clone()));
         if running != self.running {
             self.running = running.clone();
-            if let Some(game) = running.and_then(|exe| self.games.iter().find(|g| g.runs_as(&exe))) {
-                if self.game.as_ref().map(|g| &g.id) != Some(&game.id) {
-                    let id = game.id.clone();
+            let pid = self.overlay.clients().into_iter().find(|c| Some(&c.exe) == running.as_ref()).map(|c| c.pid);
+            self.running_app = pid.and_then(platform::steam_app_id);
+            let app = self.running_app;
+            if let Some(game) = running.and_then(|exe| self.games.iter().find(|g| g.is_running(&exe, app))) {
+                let (id, known) = (game.id.clone(), game.steam_app_id.is_some());
+                if let Some(app) = app.filter(|_| !known) {
+                    log::info!("{} is the Steam app {app}", game.name);
+                    self.edit_game_by_id(&id, |g| g.steam_app_id = Some(app));
+                }
+                if self.game.as_ref().map(|g| &g.id) != Some(&id) {
                     self.select_game(Some(id));
                 }
             }

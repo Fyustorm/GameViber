@@ -289,14 +289,17 @@ impl App {
             });
         });
         ui.horizontal_wrapped(|ui| {
-            let running = s.running_executable.as_deref().is_some_and(|exe| game.runs_as(exe));
+            let running = s.running_executable.as_deref().is_some_and(|exe| game.is_running(exe, s.running_app));
             if running {
                 dot(ui, OK);
                 ui.label(RichText::new("Running").color(OK));
             }
-            if game.executables.is_empty() {
+            if let Some(app) = game.steam_app_id {
+                ui.label(muted(format!("Steam app {app}"))).on_hover_text("Recognized by it whenever Steam starts it");
+            }
+            if game.executables.is_empty() && game.steam_app_id.is_none() {
                 ui.label(muted("Linked to no executable: pick it in the top bar when you play it."));
-            } else {
+            } else if !game.executables.is_empty() {
                 ui.label(muted(format!("Runs as {}", game.executables.join(", "))));
                 if ui.small_button("Unlink").on_hover_text("Pick the game by hand instead").clicked() {
                     self.send(Command::SaveGame(Game { executables: Vec::new(), ..game.clone() }));
@@ -501,7 +504,7 @@ fn game_card(ui: &mut egui::Ui, s: &Shared, game: &Game, size: egui::Vec2) -> bo
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| pill(ui, "Playing", ON_ACCENT, ACCENT));
                 }
             });
-            let running = s.running_executable.as_deref().is_some_and(|exe| game.runs_as(exe));
+            let running = s.running_executable.as_deref().is_some_and(|exe| game.is_running(exe, s.running_app));
             let status = match (running, game.executables.first()) {
                 (true, Some(exe)) => RichText::new(format!("● Running · {exe}")).color(OK),
                 (false, Some(exe)) => muted(format!("Runs as {exe}")),

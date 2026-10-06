@@ -21,6 +21,10 @@ pub struct Game {
     /// Executables it runs as, as the in-game overlay reports them
     /// (`METAPHOR.exe`); none: the player picks the game by hand.
     pub executables: Vec<String>,
+    /// Its Steam app id, seen in its environment while it ran (or shared with
+    /// one of its modes): it is recognized by it too.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub steam_app_id: Option<u32>,
     /// Its modes, by id (user mode files, built-in modes).
     pub modes: Vec<String>,
     /// Which sound to listen to while it is played; None: the default (Setup).
@@ -167,6 +171,21 @@ impl Game {
     pub fn runs_as(&self, exe: &str) -> bool {
         self.executables.iter().any(|e| e.eq_ignore_ascii_case(exe))
     }
+
+    /// It is the game running as `exe`, with the Steam app id `app` if Steam started it.
+    pub fn is_running(&self, exe: &str, app: Option<u32>) -> bool {
+        self.runs_as(exe) || app.is_some_and(|app| self.steam_app_id == Some(app))
+    }
+
+    /// The same game as one named `name` with the Steam app id `app`: the
+    /// same app id, or the same name whatever its case and punctuation
+    /// ("ELDEN RING", "Elden Ring").
+    pub fn same_as(&self, name: &str, app: Option<u32>) -> bool {
+        match (self.steam_app_id, app) {
+            (Some(mine), Some(theirs)) => mine == theirs,
+            _ => slug(&self.name) == slug(name),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -194,6 +213,11 @@ mod tests {
         let games = Game::list();
         assert_eq!(games.iter().map(|g| g.name.as_str()).collect::<Vec<_>>(), ["Hades II", "Metaphor: ReFantazio"]);
         assert!(games[1].runs_as("metaphor.exe"));
+        let mut hades = Game::new("Hades II");
+        assert!(hades.same_as("HADES II", None) && hades.same_as("Hades: II", Some(1145350)), "by name without an app id");
+        hades.steam_app_id = Some(1145350);
+        assert!(hades.same_as("Hades 2", Some(1145350)) && !hades.same_as("Hades II", Some(1)), "by app id when both have one");
+        assert!(hades.is_running("whatever.exe", Some(1145350)) && !hades.is_running("whatever.exe", None));
         assert_eq!(games[1], game);
         other.delete();
         assert_eq!(Game::list().len(), 1);

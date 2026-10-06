@@ -5,8 +5,8 @@
 //! (`variants/*.luau`) and the captures (`captures/*.png`): a mode's package
 //! (`package.rs`), with its game.
 //!
-//! Importing one makes a package of the mode, joined to the game of the same
-//! name (or a new game). Files of the first format (0.1.0-alpha.2) held the
+//! Importing one makes a package of the mode, joined to the same game (the
+//! same Steam app id, or the same name: `Game::same_as`), or a new game. Files of the first format (0.1.0-alpha.2) held the
 //! inputs in the game: they become the mode's. Capture embeddings are left
 //! out: they are computed again with the player's image model.
 
@@ -101,7 +101,7 @@ pub fn export(game: &str, mode: &str, path: &Path) -> anyhow::Result<()> {
         }
     });
     // The sound to listen to is set for this computer.
-    let shared_game = serde_json::json!({ "name": game.name, "executables": game.executables });
+    let shared_game = serde_json::json!({ "name": game.name, "executables": game.executables, "steam_app_id": game.steam_app_id });
     let manifest =
         Manifest { format: FORMAT, app_version: env!("CARGO_PKG_VERSION").to_owned(), mode: entry.key.clone(), game: shared_game, inputs: Some(inputs) };
 
@@ -192,10 +192,11 @@ fn import_into(path: &Path, modes_dir: &Path) -> anyhow::Result<Imported> {
         None => (install_mode(modes_dir, &manifest.mode, &source, &variants, inputs, images)?, false),
     };
     let games = Game::list();
-    let existing = games.iter().find(|g| g.name.trim().eq_ignore_ascii_case(shared.name.trim())).cloned();
+    let existing = games.iter().find(|g| g.same_as(&shared.name, shared.steam_app_id)).cloned();
     let new_game = existing.is_none();
     let mut game = existing.unwrap_or_else(|| Game::new(&shared.name));
     let taken: Vec<&String> = games.iter().filter(|g| g.id != game.id).flat_map(|g| &g.executables).collect();
+    game.steam_app_id = game.steam_app_id.or(shared.steam_app_id);
     for exe in &shared.executables {
         if !game.runs_as(exe) && !taken.iter().any(|t| t.eq_ignore_ascii_case(exe)) {
             game.executables.push(exe.clone());
@@ -346,6 +347,7 @@ mod tests {
         inputs.save();
         let mut game = Game::new("Metaphor: ReFantazio");
         game.executables.push("METAPHOR.exe".into());
+        game.steam_app_id = Some(2679460);
         game.audio = Some(config::AudioSource::Everything);
         game.modes.push(mode.clone());
         game.save();
@@ -363,6 +365,7 @@ mod tests {
         let got = Game::load(&imported.game).unwrap();
         assert_eq!((got.name.as_str(), &got.executables, &got.modes), ("Metaphor: ReFantazio", &game.executables, &vec![mode.clone()]));
         assert_eq!(got.audio, None, "the sound to listen to stays on each computer");
+        assert_eq!(got.steam_app_id, Some(2679460));
         let got = Inputs::of(&ModeEntry::from_id(&mode));
         assert_eq!((&got.phases, &got.external), (&inputs.phases, &inputs.external));
         assert_eq!(got.captures.len(), 1, "captures to sort stay home");

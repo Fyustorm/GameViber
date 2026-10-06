@@ -11,7 +11,7 @@ intensity and **STOP ALL**.
 
 | Page | What it is for |
 |---|---|
-| **Games** | Your games, added by name. Each game has its **Modes**, the **Inputs** of the mode being played (what GameViber reads from the game for it, see below) and its recorded **Sessions**. A game linked to its executable becomes the game being played by itself. |
+| **Games** | Your games, added by name. Each game has its **Modes**, the **Inputs** of the mode being played (what GameViber reads from the game for it, see below) and its recorded **Sessions**. A game linked to its executable becomes the game being played by itself, and so does a game Steam starts once GameViber saw its Steam app id. |
 | **Live** | What happens while you play, to keep on a second screen: the mode and its main settings, what goes to the toys, the phase, the sound, the gamepad. |
 | **Toys** | The connection to Intiface Central, the toys it found, a test buzz, and how each toy plays: which mode channels, weakest and strongest intensity, response curve. |
 | **Setup** | What does not depend on the game: the gamepad and how it is captured, the shortcuts (panic stop, mark a moment, capture the screen) on the gamepad or the keyboard, the in-game overlay, the sound listened to by default, other programs. |
