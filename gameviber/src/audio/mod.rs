@@ -1,5 +1,5 @@
 //! Listens to the game's sound (docs/spec-modes.md §6.3): cheap measures
-//! every 20 ms (levels, hits) and, when the active mode describes scenes' sound
+//! every 20 ms (levels, hits) and, when the active mode describes phases' sound
 //! and the model is downloaded, a CLAP embedding of the last 10 s every 2 s.
 //! Everything runs on its own threads; the engine drains `Audio::poll()`
 //! once per tick.
@@ -20,13 +20,13 @@ use crate::config::AudioSource;
 use capture::{Capture, Graph};
 
 pub const SAMPLE_RATE: u32 = 48_000;
-/// A new scene embedding every this many seconds.
+/// A new phase embedding every this many seconds.
 pub const CLIP_STEP_SECS: f64 = 2.0;
 /// How often the playing applications are listed again.
 const RETARGET: Duration = Duration::from_secs(3);
 /// A stream sending nothing this long is paused: silence is analysed instead.
 const STALL: Duration = Duration::from_millis(250);
-/// The scene model is unloaded after this long without clips.
+/// The phase model is unloaded after this long without clips.
 const MODEL_IDLE: Duration = Duration::from_secs(30);
 
 /// What the engine receives, in order.
@@ -53,8 +53,8 @@ pub struct Status {
 struct Control {
     source: AudioSource,
     games: Vec<(u32, String)>,
-    /// The active mode declares audio scenes: compute embeddings.
-    scenes: bool,
+    /// The active mode declares audio phases: compute embeddings.
+    phases: bool,
     stop: bool,
     changed: bool,
     status: Status,
@@ -71,7 +71,7 @@ impl Audio {
         let control = Arc::new(Mutex::new(Control {
             source,
             games: Vec::new(),
-            scenes: false,
+            phases: false,
             stop: false,
             changed: true,
             status: Status::default(),
@@ -101,8 +101,8 @@ impl Audio {
         }
     }
 
-    pub fn set_scenes(&self, wanted: bool) {
-        self.control.lock().unwrap().scenes = wanted;
+    pub fn set_phases(&self, wanted: bool) {
+        self.control.lock().unwrap().phases = wanted;
     }
 
     pub fn poll(&self) -> Vec<Output> {
@@ -125,7 +125,7 @@ fn run(control: Arc<Mutex<Control>>, tx: mpsc::Sender<Output>) {
     let (clips_tx, clips_rx) = mpsc::sync_channel::<Vec<f32>>(1);
     {
         let tx = tx.clone();
-        std::thread::Builder::new().name("audio-scenes".into()).spawn(move || scenes(clips_rx, tx)).expect("spawn the scene thread");
+        std::thread::Builder::new().name("audio-phases".into()).spawn(move || phases(clips_rx, tx)).expect("spawn the phase thread");
     }
     let mut capture: Option<Capture> = None;
     let mut analyzer = features::Analyzer::new();
@@ -140,7 +140,7 @@ fn run(control: Arc<Mutex<Control>>, tx: mpsc::Sender<Output>) {
             if c.stop {
                 break;
             }
-            (c.source.clone(), c.games.clone(), c.scenes, std::mem::take(&mut c.changed))
+            (c.source.clone(), c.games.clone(), c.phases, std::mem::take(&mut c.changed))
         };
         let ended = capture.as_mut().is_some_and(Capture::ended);
         if changed || ended || last_target_check.is_none_or(|t| t.elapsed() >= RETARGET) {
@@ -231,7 +231,7 @@ fn run(control: Arc<Mutex<Control>>, tx: mpsc::Sender<Output>) {
 }
 
 /// Embeds clips with the CLAP audio model, loaded on the first clip.
-fn scenes(clips: mpsc::Receiver<Vec<f32>>, tx: mpsc::Sender<Output>) {
+fn phases(clips: mpsc::Receiver<Vec<f32>>, tx: mpsc::Sender<Output>) {
     let mut encoder: Option<clap::AudioEncoder> = None;
     let mut failed = false;
     loop {
@@ -239,7 +239,7 @@ fn scenes(clips: mpsc::Receiver<Vec<f32>>, tx: mpsc::Sender<Output>) {
             Ok(clip) => clip,
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 if encoder.take().is_some() {
-                    log::debug!("audio scene model unloaded");
+                    log::debug!("audio phase model unloaded");
                 }
                 continue;
             }
@@ -248,11 +248,11 @@ fn scenes(clips: mpsc::Receiver<Vec<f32>>, tx: mpsc::Sender<Output>) {
         if encoder.is_none() && !failed {
             match clap::AudioEncoder::load() {
                 Ok(e) => {
-                    log::info!("audio scene model loaded");
+                    log::info!("audio phase model loaded");
                     encoder = Some(e);
                 }
                 Err(e) => {
-                    log::error!("cannot load the audio scene model: {e:#}");
+                    log::error!("cannot load the audio phase model: {e:#}");
                     failed = true;
                 }
             }
@@ -261,12 +261,12 @@ fn scenes(clips: mpsc::Receiver<Vec<f32>>, tx: mpsc::Sender<Output>) {
         let started = Instant::now();
         match encoder.embed(&clip) {
             Ok(embedding) => {
-                log::trace!("scene embedding in {:?}", started.elapsed());
+                log::trace!("phase embedding in {:?}", started.elapsed());
                 if tx.send(Output::Clip(embedding)).is_err() {
                     break;
                 }
             }
-            Err(e) => log::warn!("scene embedding failed: {e:#}"),
+            Err(e) => log::warn!("phase embedding failed: {e:#}"),
         }
     }
 }

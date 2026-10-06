@@ -1,4 +1,4 @@
-//! CLIP image scene model (OpenAI `clip-vit-base-patch32`, quantized ONNX
+//! CLIP image phase model (OpenAI `clip-vit-base-patch32`, quantized ONNX
 //! export): copies of the game's image and short texts become vectors whose
 //! similarity tells how well a text describes the image. Downloaded on demand
 //! (`models::Model::Image`, about 150 MB) and run on the CPU.
@@ -9,7 +9,7 @@ use ort::value::Tensor;
 use super::Frame;
 use crate::models::{self, Embedding, Model};
 
-/// `exp(logit_scale)` of the model: sharpness of the scene probabilities.
+/// `exp(logit_scale)` of the model: sharpness of the phase probabilities.
 pub const LOGIT_SCALE: f64 = 100.0;
 /// Side of the square the model looks at.
 const SIZE: usize = 224;

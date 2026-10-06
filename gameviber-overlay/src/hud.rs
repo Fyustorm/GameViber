@@ -71,7 +71,7 @@ fn panel(fonts: &mut FontsView<'_>, state: &OverlayState, screen: Vec2) -> Vec<S
     let mut p = Painter { fonts, shapes: Vec::new(), y: PADDING };
     let inner = WIDTH - 2.0 * PADDING;
 
-    // The mode and preset on one short line, so that the scene stands out.
+    // The mode and preset on one short line, so that the phase stands out.
     let fresh = state.mode_age < MODE_HIGHLIGHT_SECS;
     let (size, color) = if fresh { (15.0, ACCENT_TEXT) } else { (12.0, MUTED) };
     let title = match &state.preset {
@@ -79,8 +79,8 @@ fn panel(fonts: &mut FontsView<'_>, state: &OverlayState, screen: Vec2) -> Vec<S
         None => state.mode.clone(),
     };
     p.line(&title, size, color, inner);
-    if let Some(scene) = &state.scene {
-        p.scene(scene);
+    if let Some(phase) = &state.phase {
+        p.phase(phase);
     }
     p.y += 6.0;
 
@@ -150,10 +150,10 @@ impl Painter<'_, '_> {
         self.y += height + 2.0;
     }
 
-    /// The current scene, with a dot, larger than the mode name.
-    fn scene(&mut self, scene: &str) {
-        let mut name: String = scene.chars().take(1).flat_map(char::to_uppercase).collect();
-        name.extend(scene.chars().skip(1).map(|c| if c == '_' { ' ' } else { c }));
+    /// The current phase, with a dot, larger than the mode name.
+    fn phase(&mut self, phase: &str) {
+        let mut name: String = phase.chars().take(1).flat_map(char::to_uppercase).collect();
+        name.extend(phase.chars().skip(1).map(|c| if c == '_' { ' ' } else { c }));
         self.y += 2.0;
         self.shapes.push(Shape::circle_filled(Pos2::new(PADDING + 4.0, self.y + 10.0), 4.0, GAME));
         let mut job = LayoutJob::simple_singleline(name, FontId::proportional(17.0), TEXT);
@@ -201,7 +201,7 @@ mod tests {
         let state = OverlayState {
             mode: "Surge".into(),
             preset: Some("Lost Crown with a very long preset name that cannot fit".into()),
-            scene: Some("battle".into()),
+            phase: Some("battle".into()),
             gauges: vec![Gauge { label: "Surge gauge".into(), value: 40.0, max: 100.0 }],
             events: vec![Event { text: "Parry!".into(), age: 0.5 }],
             alerts: vec!["No toy connected".into()],

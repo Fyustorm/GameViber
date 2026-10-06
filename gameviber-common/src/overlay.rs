@@ -119,8 +119,9 @@ pub struct OverlayState {
     pub preset: Option<String>,
     /// Seconds since the mode or preset changed (the overlay shows them larger for a while).
     pub mode_age: f32,
-    /// Scene the mode recognizes in the game's sound ("battle", "calm"...).
-    pub scene: Option<String>,
+    /// Phase the mode recognizes in the game's sound ("battle", "calm"...).
+    #[serde(alias = "scene")]
+    pub phase: Option<String>,
     pub gauges: Vec<Gauge>,
     pub events: Vec<Event>,
     /// Problems the player should know about (toy lost, mode error...).
@@ -144,7 +145,7 @@ impl Default for OverlayState {
             preset: None,
             // JSON has no infinity.
             mode_age: 1e6,
-            scene: None,
+            phase: None,
             gauges: Vec::new(),
             events: Vec::new(),
             alerts: Vec::new(),

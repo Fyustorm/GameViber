@@ -1,15 +1,16 @@
-//! Zones of the game's screen declared in its profile (`profile::Zone`):
-//! whether an element is shown (its look compared with a reference taken when
-//! the zone was drawn) and how full a bar is (the share of it in the bar's
-//! full color rather than its empty one; with both colors known, the bar is
-//! the longest run of them in the zone, wherever it is). A bar whose colors
+//! Indicators of the game's screen set up for a mode (`package::Zone`), each
+//! read in one or more zones: whether an element is shown (its look compared
+//! with a reference taken when the zone was drawn) and how full a gauge's bar
+//! is (the share of it in the bar's full color rather than its empty one;
+//! with both colors known, the bar is the longest run of them in the zone,
+//! wherever it is). A bar whose colors
 //! do not tell (gradients, segments, hearts) is read by its look instead: the
 //! bar full, and empty, along its length, taken from captures.
 
 use std::collections::BTreeMap;
 
 use super::Frame;
-use crate::mode::ZoneValue;
+use crate::mode::IndicatorValue;
 use crate::package::{Direction, Zone, IndicatorKind};
 
 /// References are compared on a grayscale grid of this size.
@@ -124,8 +125,8 @@ pub fn pick_color(frame: &Frame, x: f32, y: f32) -> [u8; 3] {
     pixel(frame, x, y)
 }
 
-/// A threshold telling the zone's scene apart from the others, from its
-/// similarity on captures of that scene (`shown`) and of the others
+/// A threshold telling the zone's phase apart from the others, from its
+/// similarity on captures of that phase (`shown`) and of the others
 /// (`hidden`): halfway between them when they do not overlap.
 pub fn suggest_threshold(shown: &[f32], hidden: &[f32]) -> Option<f32> {
     let low = shown.iter().copied().fold(f32::INFINITY, f32::min);
@@ -134,7 +135,7 @@ pub fn suggest_threshold(shown: &[f32], hidden: &[f32]) -> Option<f32> {
 }
 
 /// What a zone reads on `frame`: the similarity with its reference (-1..1)
-/// for a visible zone, how full it is (0..1) for a bar; None when the bar is
+/// for a visibility indicator's zone, how full its bar is (0..1) for a gauge's; None when the bar is
 /// not on screen (too little of its colors in the zone, which needs its empty
 /// color to be told from an empty bar).
 pub fn measure(zone: &Zone, frame: &Frame) -> Option<f32> {
@@ -164,21 +165,21 @@ fn bar_reading(zone: &Zone, frame: &Frame) -> Option<(f32, f32)> {
     (found >= FOUND_SHARE && !too_long).then_some((bar.fill, found.min(1.0)))
 }
 
-/// A zone drawn in several places (zones sharing its name: the health bar in
-/// battle and out of it) is shown when one of them shows it; `was_shown`
+/// An indicator read in several zones (the health bar in battle and out of
+/// it) is shown when one of them shows it; `was_shown`
 /// lowers the thresholds a little (hysteresis). Also returns the best similarity.
-pub fn shown_anywhere(places: &[&Zone], frame: &Frame, was_shown: bool) -> (bool, f32) {
+pub fn shown_anywhere(zones: &[&Zone], frame: &Frame, was_shown: bool) -> (bool, f32) {
     let margin = if was_shown { HYSTERESIS } else { 0.0 };
-    places.iter().fold((false, -1.0), |(shown, best), zone| {
+    zones.iter().fold((false, -1.0), |(shown, best), zone| {
         let m = measure(zone, frame).unwrap_or(0.0);
         (shown || m >= zone.threshold - margin, best.max(m))
     })
 }
 
-/// A bar drawn in several places reads where it is found (the most complete
-/// when several find it); None when no place finds it.
-pub fn fill_anywhere(places: &[&Zone], frame: &Frame) -> Option<f32> {
-    places
+/// A gauge read in several zones reads where its bar is found (the most
+/// complete when several find it); None when no zone finds it.
+pub fn fill_anywhere(zones: &[&Zone], frame: &Frame) -> Option<f32> {
+    zones
         .iter()
         .filter_map(|zone| bar_reading(zone, frame))
         .max_by(|a, b| a.1.total_cmp(&b.1))
@@ -444,46 +445,46 @@ fn look_fill_at(zone: &Zone, frame: &Frame, rect: [f32; 4]) -> (f32, f32, f32) {
     (full as f32 / LOOK_LENGTH as f32, far, best)
 }
 
-/// Reads a profile's zones frame after frame and tells which changed.
+/// Reads a mode's indicators frame after frame and tells which changed.
 #[derive(Default)]
-pub struct ZoneReader {
-    values: BTreeMap<String, ZoneValue>,
+pub struct IndicatorReader {
+    values: BTreeMap<String, IndicatorValue>,
     /// Raw measures of the last frame, for the GUI (None: bar not on screen).
     pub measures: BTreeMap<String, Option<f32>>,
     /// Copies in a row each bar was not found on.
     missing: BTreeMap<String, u32>,
 }
 
-impl ZoneReader {
-    pub fn update(&mut self, zones: &[Zone], frame: &Frame) -> Vec<(String, ZoneValue)> {
+impl IndicatorReader {
+    pub fn update(&mut self, zones: &[Zone], frame: &Frame) -> Vec<(String, IndicatorValue)> {
         let mut changed = Vec::new();
         self.measures.clear();
-        self.values.retain(|name, _| zones.iter().any(|z| z.name == *name));
-        // Zones sharing a name are places of one zone.
+        self.values.retain(|name, _| zones.iter().any(|z| z.indicator == *name));
+        // Zones naming the same indicator are read together.
         let mut names: Vec<&str> = Vec::new();
         for zone in zones {
-            if !names.contains(&zone.name.as_str()) {
-                names.push(&zone.name);
+            if !names.contains(&zone.indicator.as_str()) {
+                names.push(&zone.indicator);
             }
         }
         for name in names {
-            let places: Vec<&Zone> = zones.iter().filter(|z| z.name == name).collect();
+            let of_indicator: Vec<&Zone> = zones.iter().filter(|z| z.indicator == name).collect();
             let previous = self.values.get(name).copied();
-            let (measure, value) = match places[0].kind {
+            let (measure, value) = match of_indicator[0].kind {
                 IndicatorKind::Visibility => {
-                    let (shown, best) = shown_anywhere(&places, frame, previous == Some(ZoneValue::Visible(true)));
-                    (Some(best), ZoneValue::Visible(shown))
+                    let (shown, best) = shown_anywhere(&of_indicator, frame, previous == Some(IndicatorValue::Visibility(true)));
+                    (Some(best), IndicatorValue::Visibility(shown))
                 }
                 IndicatorKind::Gauge => {
-                    let measure = fill_anywhere(&places, frame);
+                    let measure = fill_anywhere(&of_indicator, frame);
                     let missing = self.missing.entry(name.to_owned()).or_default();
                     *missing = if measure.is_none() { *missing + 1 } else { 0 };
                     let value = match (measure, previous) {
                         // Briefly lost (a flash, an effect over it): keep the last value.
                         (None, Some(old)) if *missing < UNKNOWN_FRAMES => old,
-                        (None, _) => ZoneValue::Unknown,
-                        (Some(m), Some(ZoneValue::Bar(old))) if (m as f64 - old).abs() < BAR_STEP => ZoneValue::Bar(old),
-                        (Some(m), _) => ZoneValue::Bar((m as f64 * 100.0).round() / 100.0),
+                        (None, _) => IndicatorValue::Unknown,
+                        (Some(m), Some(IndicatorValue::Gauge(old))) if (m as f64 - old).abs() < BAR_STEP => IndicatorValue::Gauge(old),
+                        (Some(m), _) => IndicatorValue::Gauge((m as f64 * 100.0).round() / 100.0),
                     };
                     (measure, value)
                 }
@@ -497,7 +498,7 @@ impl ZoneReader {
         changed
     }
 
-    pub fn values(&self) -> &BTreeMap<String, ZoneValue> {
+    pub fn values(&self) -> &BTreeMap<String, IndicatorValue> {
         &self.values
     }
 
@@ -539,9 +540,9 @@ mod tests {
     }
 
     #[test]
-    fn visible_zones_follow_the_element() {
+    fn visibility_follows_the_element() {
         let rect = [120.0 / 160.0, 60.0 / 90.0, 40.0 / 160.0, 30.0 / 90.0];
-        let zone = Zone { name: "battle_hud".into(), rect, reference: reference(&with_hud(true, 0), rect), ..Zone::default() };
+        let zone = Zone { indicator: "battle_hud".into(), rect, reference: reference(&with_hud(true, 0), rect), ..Zone::default() };
         assert!(measure(&zone, &with_hud(true, 0)).unwrap() > 0.99);
         // The scenery moved behind the element: still recognized; gone: not.
         let moved = measure(&zone, &with_hud(true, 37)).unwrap();
@@ -549,11 +550,11 @@ mod tests {
         assert!(moved > zone.threshold, "{moved}");
         assert!(hidden < zone.threshold, "{hidden}");
 
-        let mut reader = ZoneReader::default();
+        let mut reader = IndicatorReader::default();
         let zones = [zone];
-        assert_eq!(reader.update(&zones, &with_hud(true, 0)), vec![("battle_hud".to_owned(), ZoneValue::Visible(true))]);
+        assert_eq!(reader.update(&zones, &with_hud(true, 0)), vec![("battle_hud".to_owned(), IndicatorValue::Visibility(true))]);
         assert_eq!(reader.update(&zones, &with_hud(true, 10)), vec![], "no change, nothing reported");
-        assert_eq!(reader.update(&zones, &with_hud(false, 10)), vec![("battle_hud".to_owned(), ZoneValue::Visible(false))]);
+        assert_eq!(reader.update(&zones, &with_hud(false, 10)), vec![("battle_hud".to_owned(), IndicatorValue::Visibility(false))]);
     }
 
     /// Low on health the bar blinks: its full part turns lighter, then back.
@@ -567,7 +568,7 @@ mod tests {
         };
         let rect = [5.0 / 160.0, 9.0 / 90.0, 150.0 / 160.0, 8.0 / 90.0];
         let zone = Zone {
-            name: "hp".into(),
+            indicator: "hp".into(),
             kind: IndicatorKind::Gauge,
             rect,
             color: [40, 200, 60],
@@ -601,7 +602,7 @@ mod tests {
         };
         let rect = [5.0 / 160.0, 9.0 / 90.0, 150.0 / 160.0, 8.0 / 90.0];
         let zone = Zone {
-            name: "hp".into(),
+            indicator: "hp".into(),
             kind: IndicatorKind::Gauge,
             rect,
             color: [40, 200, 60],
@@ -618,13 +619,13 @@ mod tests {
         assert!((drawn.length - 0.4).abs() < 0.02, "60 px of 150: {}", drawn.length);
         assert_eq!(measure(&drawn, &menu), None);
         assert_eq!(measure(&drawn, &bar(85, 0.0)), Some(0.0), "an empty bar is still a bar");
-        let mut reader = ZoneReader::default();
+        let mut reader = IndicatorReader::default();
         let zones = [drawn];
         let first = reader.update(&zones, &bar(30, 0.5));
-        assert!(matches!(first[..], [(_, ZoneValue::Bar(v))] if (v - 0.5).abs() < 0.02), "{first:?}");
+        assert!(matches!(first[..], [(_, IndicatorValue::Gauge(v))] if (v - 0.5).abs() < 0.02), "{first:?}");
         assert_eq!(reader.update(&zones, &menu), vec![], "briefly lost: the last value stays");
         reader.update(&zones, &menu);
-        assert_eq!(reader.update(&zones, &menu), vec![("hp".to_owned(), ZoneValue::Unknown)]);
+        assert_eq!(reader.update(&zones, &menu), vec![("hp".to_owned(), IndicatorValue::Unknown)]);
         // Where it was found, for the editor: 60 px from x = 30 in a zone from x = 5, 150 px long.
         let ((start, full_end), (_, end)) = bar_extent(&zone, &bar(30, 0.5));
         let near = |a: f32, px: f32| (a - px / 150.0).abs() < 0.02;
@@ -650,7 +651,7 @@ mod tests {
         // Drawn exactly on the bar, and larger with the number in it; the color picked on the darkest line.
         for rect in [[20.0 / 160.0, 20.0 / 90.0, 60.0 / 160.0, 3.0 / 90.0], [18.0 / 160.0, 10.0 / 90.0, 70.0 / 160.0, 14.0 / 90.0]] {
             let zone = Zone {
-                name: "hp".into(),
+                indicator: "hp".into(),
                 kind: IndicatorKind::Gauge,
                 rect,
                 color: pick_color(&bar(1.0), 30.0 / 160.0, 22.5 / 90.0),
@@ -668,7 +669,7 @@ mod tests {
 
     /// The health bar is in one place in battle and in another out of it.
     #[test]
-    fn a_zone_drawn_in_two_places_reads_where_it_is_found() {
+    fn an_indicator_read_in_two_zones_reads_where_it_is_found() {
         let bar_at = |top: u32, level: f32| {
             frame(move |x, y| match (x, y) {
                 (20..=79, _) if (top..top + 6).contains(&y) => {
@@ -677,8 +678,8 @@ mod tests {
                 _ => [25, 25, 35],
             })
         };
-        let place = |top: u32| Zone {
-            name: "hp".into(),
+        let zone_at = |top: u32| Zone {
+            indicator: "hp".into(),
             kind: IndicatorKind::Gauge,
             rect: [15.0 / 160.0, (top as f32 - 1.0) / 90.0, 70.0 / 160.0, 8.0 / 90.0],
             color: [40, 200, 60],
@@ -686,15 +687,15 @@ mod tests {
             length: 60.0 / 70.0,
             ..Zone::default()
         };
-        let (battle, field) = (place(10), place(60));
+        let (battle, field) = (zone_at(10), zone_at(60));
         assert!((fill_anywhere(&[&battle, &field], &bar_at(10, 0.75)).unwrap() - 0.75).abs() < 0.04);
         assert!((fill_anywhere(&[&battle, &field], &bar_at(60, 0.25)).unwrap() - 0.25).abs() < 0.04);
         assert_eq!(fill_anywhere(&[&battle, &field], &frame(|_, _| [25, 25, 35])), None, "in no place: unknown");
 
-        let mut reader = ZoneReader::default();
+        let mut reader = IndicatorReader::default();
         let zones = [battle, field];
         let first = reader.update(&zones, &bar_at(60, 0.25));
-        assert!(matches!(first[..], [(ref n, ZoneValue::Bar(v))] if n == "hp" && (v - 0.25).abs() < 0.04), "one value for both places: {first:?}");
+        assert!(matches!(first[..], [(ref n, IndicatorValue::Gauge(v))] if n == "hp" && (v - 0.25).abs() < 0.04), "one value for both places: {first:?}");
     }
 
     /// A bar in `rect` filled up to `level` from its left end (its right end: `from_right`).
@@ -727,7 +728,7 @@ mod tests {
         let full = move |x: u32, _| if gap(x) { [25, 25, 35] } else { [(220 - (x - 16) * 2) as u8, (40 + (x - 16) * 2) as u8, 40] };
         let empty = move |x: u32, _| if gap(x) { [25, 25, 35] } else { [30, 40, 90] };
         let bar = look_bar(rect, false, full, empty);
-        let mut zone = Zone { name: "hp".into(), kind: IndicatorKind::Gauge, rect, full_look: look(&bar(1.0), rect, Direction::Right), ..Zone::default() };
+        let mut zone = Zone { indicator: "hp".into(), kind: IndicatorKind::Gauge, rect, full_look: look(&bar(1.0), rect, Direction::Right), ..Zone::default() };
         assert!(has_look(&zone));
         for level in [1.0, 0.75, 0.5, 0.25, 0.0] {
             let got = measure(&zone, &bar(level)).unwrap();
@@ -763,7 +764,7 @@ mod tests {
         let full = move |x, y| if inside(x, y) { [220, 30, 40] } else { [25, 25, 35] };
         let empty = move |x, y| if inside(x, y) { [50, 50, 50] } else { [25, 25, 35] };
         let bar = look_bar(rect, false, full, empty);
-        let mut zone = Zone { name: "hp".into(), kind: IndicatorKind::Gauge, rect, full_look: look(&bar(1.0), rect, Direction::Right), ..Zone::default() };
+        let mut zone = Zone { indicator: "hp".into(), kind: IndicatorKind::Gauge, rect, full_look: look(&bar(1.0), rect, Direction::Right), ..Zone::default() };
         // Without the empty look, the edges of an empty heart (mostly
         // background) look full too: the reading is within a heart.
         for level in [1.0, 0.75, 0.45, 0.1] {
@@ -801,7 +802,7 @@ mod tests {
         let rect = [20.0 / 160.0, 10.0 / 90.0, 80.0 / 160.0, 6.0 / 90.0];
         let color = bar_color(&bar(1.0), rect);
         assert!(color[0] > 180 && color[1] < 60, "{color:?}");
-        let zone = Zone { name: "hp".into(), kind: IndicatorKind::Gauge, rect, color, ..Zone::default() };
+        let zone = Zone { indicator: "hp".into(), kind: IndicatorKind::Gauge, rect, color, ..Zone::default() };
         for level in [1.0, 0.75, 0.3, 0.0] {
             let got = measure(&zone, &bar(level)).unwrap();
             assert!((got - level).abs() < 0.04, "{level}: {got}");
@@ -823,10 +824,10 @@ mod tests {
         let picked = Zone { empty_color: Some(empty), ..zone.clone() };
         assert!((measure(&picked, &close(0.5)).unwrap() - 0.5).abs() < 0.04);
 
-        let mut reader = ZoneReader::default();
+        let mut reader = IndicatorReader::default();
         let zones = [zone];
-        assert_eq!(reader.update(&zones, &bar(1.0)), vec![("hp".to_owned(), ZoneValue::Bar(1.0))]);
+        assert_eq!(reader.update(&zones, &bar(1.0)), vec![("hp".to_owned(), IndicatorValue::Gauge(1.0))]);
         assert_eq!(reader.update(&zones, &bar(0.99)), vec![], "small moves are not reported");
-        assert_eq!(reader.update(&zones, &bar(0.5)), vec![("hp".to_owned(), ZoneValue::Bar(0.5))]);
+        assert_eq!(reader.update(&zones, &bar(0.5)), vec![("hp".to_owned(), IndicatorValue::Gauge(0.5))]);
     }
 }

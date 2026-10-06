@@ -1,7 +1,7 @@
-//! A game's Signals (Games › game › Signals): what GameViber reads from the
+//! The active mode's Inputs (Games › game › Inputs): what GameViber reads from the
 //! game for the active mode (the inputs in its package), as guided steps —
-//! what signals are, naming the scenes, showing what each looks like
-//! (captures, `screen.rs`), reading exact values on screen (zones), the
+//! what inputs are, naming the phases, showing what each looks like
+//! (captures, `screen.rs`), reading exact values on screen (indicators), the
 //! game's sound, and for experts the values other programs send — with, on
 //! the side, what the mode knows right now.
 
@@ -15,9 +15,9 @@ use super::{App, GameView, Route};
 use crate::config::AudioSource;
 use crate::engine::{Command, Shared};
 use crate::game::Game;
-use crate::package::{valid_name, ExternalInput, ExternalKind, Inputs, PhaseDef, MAX_SCENES};
+use crate::package::{valid_name, ExternalInput, ExternalKind, Inputs, PhaseDef, MAX_PHASES};
 use crate::mode::prompt::Depth;
-use crate::mode::ZoneValue;
+use crate::mode::IndicatorValue;
 use crate::models::Model;
 
 const SURE_SIGN_HELP: &str = "An indicator shown only in this phase (the battle menu, drawn on the captures page): \
@@ -25,18 +25,18 @@ const SURE_SIGN_HELP: &str = "An indicator shown only in this phase (the battle 
 const HOLD_HELP: &str = "How long the phase is kept after its last sign (its indicator gone, or another phase sounding \
     or looking more likely). Longer for signs that come and go, like a battle menu hidden during attacks.";
 
-/// Captures per scene that make its recognition reliable.
+/// Captures per phase that make its recognition reliable.
 const CAPTURES_WANTED: usize = 5;
 /// Below this width the side column goes under the steps.
 const TWO_COLUMNS_WIDTH: f32 = 900.0;
-const SUGGESTED_SCENES: [&str; 5] = ["battle", "exploration", "story", "menu", "boss"];
+const SUGGESTED_PHASES: [&str; 5] = ["battle", "exploration", "story", "menu", "boss"];
 
 #[derive(Default)]
 pub struct State {
-    new_scene: String,
-    /// Sound descriptions being typed, by scene.
+    new_phase: String,
+    /// Sound descriptions being typed, by phase.
     sounds: HashMap<String, String>,
-    /// Holds being dragged, by scene.
+    /// Holds being dragged, by phase.
     holds: HashMap<String, f64>,
     new_input: ExternalInput,
 }
@@ -48,17 +48,17 @@ enum Status {
 }
 
 impl App {
-    pub(super) fn signals_page(&mut self, ui: &mut egui::Ui, s: &Shared, game: &Game) {
+    pub(super) fn inputs_page(&mut self, ui: &mut egui::Ui, s: &Shared, game: &Game) {
         let Some(inputs) = self.inputs_of(ui, s, game) else { return };
         let playing = s.game.as_ref().is_some_and(|g| g.id == game.id);
         let steps = |app: &mut Self, ui: &mut egui::Ui| {
-            app.signals_intro(ui);
+            app.inputs_intro(ui);
             ui.add_space(10.0);
-            app.scenes_step(ui, s, game, inputs);
+            app.phases_step(ui, s, game, inputs);
             ui.add_space(10.0);
             app.looks_step(ui, s, game, inputs);
             ui.add_space(10.0);
-            app.zones_step(ui, s, game, inputs, playing);
+            app.indicators_step(ui, s, game, inputs, playing);
             ui.add_space(10.0);
             app.sound_step(ui, s, game);
             ui.add_space(10.0);
@@ -109,7 +109,7 @@ impl App {
         None
     }
 
-    fn signals_intro(&mut self, ui: &mut egui::Ui) {
+    fn inputs_intro(&mut self, ui: &mut egui::Ui) {
         card(SELECTED_BG).stroke(egui::Stroke::new(1.0, LINE)).inner_margin(Margin::symmetric(18, 14)).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.label(RichText::new("What are inputs?").strong().size(16.0));
@@ -125,7 +125,7 @@ impl App {
         });
     }
 
-    fn scenes_step(&mut self, ui: &mut egui::Ui, s: &Shared, game: &Game, inputs: &Inputs) {
+    fn phases_step(&mut self, ui: &mut egui::Ui, s: &Shared, game: &Game, inputs: &Inputs) {
         let status = if inputs.phases.len() >= 2 {
             Status::Done(format!("Done · {} phases", inputs.phases.len()))
         } else {
@@ -141,14 +141,14 @@ impl App {
             ui.add_space(4.0);
             if !inputs.phases.is_empty() {
                 let live: HashMap<&str, f64> = if s.game.as_ref().is_some_and(|g| g.id == game.id) {
-                    s.scenes.scenes.iter().map(|(n, p)| (n.as_str(), *p)).collect()
+                    s.phases.phases.iter().map(|(n, p)| (n.as_str(), *p)).collect()
                 } else {
                     HashMap::new()
                 };
-                let mut zone_names: Vec<&str> = inputs.zones.iter().map(|z| z.name.as_str()).collect();
-                zone_names.dedup();
-                zone_names.sort();
-                zone_names.dedup();
+                let mut indicator_names: Vec<&str> = inputs.zones.iter().map(|z| z.indicator.as_str()).collect();
+                indicator_names.dedup();
+                indicator_names.sort();
+                indicator_names.dedup();
                 egui::Grid::new("game-phases").num_columns(6).spacing([12.0, 6.0]).show(ui, |ui| {
                     ui.label(muted("Phase").size(12.0));
                     ui.label(muted("How it sounds (optional, for the sound model)").size(12.0));
@@ -157,49 +157,49 @@ impl App {
                     ui.label(muted("Right now").size(12.0));
                     ui.label("");
                     ui.end_row();
-                    for (i, scene) in inputs.phases.iter().enumerate() {
-                        let current = s.scenes.scene.as_deref() == Some(scene.name.as_str()) && !live.is_empty();
-                        let name = RichText::new(&scene.name).strong();
+                    for (i, phase) in inputs.phases.iter().enumerate() {
+                        let current = s.phases.phase.as_deref() == Some(phase.name.as_str()) && !live.is_empty();
+                        let name = RichText::new(&phase.name).strong();
                         ui.label(if current { name.color(ACCENT_TEXT) } else { name });
-                        let text = self.signals.sounds.entry(scene.name.clone()).or_insert_with(|| scene.sound.clone().unwrap_or_default());
+                        let text = self.inputs.sounds.entry(phase.name.clone()).or_insert_with(|| phase.sound.clone().unwrap_or_default());
                         let edit = ui.add(egui::TextEdit::singleline(text).hint_text("e.g. aggressive battle music with heavy drums").desired_width(260.0));
                         let typed = text.trim().to_owned();
-                        if edit.lost_focus() && Some(typed.as_str()) != scene.sound.as_deref().or(Some("")) {
+                        if edit.lost_focus() && Some(typed.as_str()) != phase.sound.as_deref().or(Some("")) {
                             let mut g = inputs.clone();
                             g.phases[i].sound = (!typed.is_empty()).then_some(typed);
                             changed = Some(g);
                         }
-                        // A zone shown only in this scene.
-                        let mut zone = scene.indicator.clone().filter(|z| zone_names.contains(&z.as_str()));
-                        let label = zone.clone().unwrap_or_else(|| if zone_names.is_empty() { "no indicator yet".to_owned() } else { "none".to_owned() });
-                        ui.add_enabled_ui(!zone_names.is_empty(), |ui| {
+                        // An indicator shown only in this phase.
+                        let mut indicator = phase.indicator.clone().filter(|z| indicator_names.contains(&z.as_str()));
+                        let label = indicator.clone().unwrap_or_else(|| if indicator_names.is_empty() { "no indicator yet".to_owned() } else { "none".to_owned() });
+                        ui.add_enabled_ui(!indicator_names.is_empty(), |ui| {
                             egui::ComboBox::from_id_salt(("phase-indicator", i)).selected_text(label).width(120.0).show_ui(ui, |ui| {
-                                ui.selectable_value(&mut zone, None, "none");
-                                for name in &zone_names {
-                                    ui.selectable_value(&mut zone, Some((*name).to_owned()), *name);
+                                ui.selectable_value(&mut indicator, None, "none");
+                                for name in &indicator_names {
+                                    ui.selectable_value(&mut indicator, Some((*name).to_owned()), *name);
                                 }
                             })
                             .response
                             .on_hover_text(SURE_SIGN_HELP);
                         });
-                        if zone != scene.indicator.clone().filter(|z| zone_names.contains(&z.as_str())) {
+                        if indicator != phase.indicator.clone().filter(|z| indicator_names.contains(&z.as_str())) {
                             let mut g = inputs.clone();
-                            g.phases[i].indicator = zone;
+                            g.phases[i].indicator = indicator;
                             changed = Some(g);
                         }
-                        let hold = self.signals.holds.entry(scene.name.clone()).or_insert(scene.hold);
+                        let hold = self.inputs.holds.entry(phase.name.clone()).or_insert(phase.hold);
                         let drag = ui.add(egui::DragValue::new(hold).range(0.0..=60.0).speed(0.2).max_decimals(1).suffix(" s")).on_hover_text(HOLD_HELP);
                         // Saved once let go (or typed).
                         let done = drag.drag_stopped() || drag.lost_focus() || (drag.changed() && !drag.dragged() && !drag.has_focus());
-                        if done && *hold != scene.hold && changed.is_none() {
+                        if done && *hold != phase.hold && changed.is_none() {
                             let mut g = inputs.clone();
                             g.phases[i].hold = *hold;
                             changed = Some(g);
                         }
                         if !drag.dragged() && !drag.has_focus() && !done {
-                            *hold = scene.hold;
+                            *hold = phase.hold;
                         }
-                        match live.get(scene.name.as_str()) {
+                        match live.get(phase.name.as_str()) {
                             Some(p) => {
                                 meter(ui, 110.0, *p, if current { ACCENT } else { GAME });
                             }
@@ -217,22 +217,22 @@ impl App {
                 });
             }
             ui.horizontal_wrapped(|ui| {
-                let room = inputs.phases.len() < MAX_SCENES;
-                for suggestion in SUGGESTED_SCENES.iter().filter(|n| !inputs.phases.iter().any(|s| s.name == **n)) {
+                let room = inputs.phases.len() < MAX_PHASES;
+                for suggestion in SUGGESTED_PHASES.iter().filter(|n| !inputs.phases.iter().any(|s| s.name == **n)) {
                     if ui.add_enabled(room, egui::Button::new(format!("+ {suggestion}"))).clicked() {
                         let mut g = inputs.clone();
                         g.phases.push(PhaseDef { name: (*suggestion).to_owned(), ..PhaseDef::default() });
                         changed = Some(g);
                     }
                 }
-                ui.add(egui::TextEdit::singleline(&mut self.signals.new_scene).hint_text("another phase").desired_width(120.0));
-                let name = self.signals.new_scene.trim().to_owned();
+                ui.add(egui::TextEdit::singleline(&mut self.inputs.new_phase).hint_text("another phase").desired_width(120.0));
+                let name = self.inputs.new_phase.trim().to_owned();
                 let ok = room && valid_name(&name) && !inputs.phases.iter().any(|s| s.name == name);
                 if ui.add_enabled(ok, egui::Button::new("Add")).clicked() {
                     let mut g = inputs.clone();
                     g.phases.push(PhaseDef { name, ..PhaseDef::default() });
                     changed = Some(g);
-                    self.signals.new_scene.clear();
+                    self.inputs.new_phase.clear();
                 }
             });
         });
@@ -260,8 +260,8 @@ impl App {
             ));
             if !counts.is_empty() {
                 egui::Grid::new("phase-captures").num_columns(3).spacing([12.0, 6.0]).show(ui, |ui| {
-                    for (scene, n) in &counts {
-                        ui.label(scene);
+                    for (phase, n) in &counts {
+                        ui.label(phase);
                         let color = if *n >= CAPTURES_WANTED { OK } else { WARN };
                         meter(ui, 220.0, (*n as f64 / CAPTURES_WANTED as f64).min(1.0), color);
                         ui.label(muted(format!("{n} of {CAPTURES_WANTED}")));
@@ -303,8 +303,8 @@ impl App {
         }
     }
 
-    fn zones_step(&mut self, ui: &mut egui::Ui, s: &Shared, game: &Game, inputs: &Inputs, playing: bool) {
-        let mut names: Vec<&str> = inputs.zones.iter().map(|z| z.name.as_str()).collect();
+    fn indicators_step(&mut self, ui: &mut egui::Ui, s: &Shared, game: &Game, inputs: &Inputs, playing: bool) {
+        let mut names: Vec<&str> = inputs.zones.iter().map(|z| z.indicator.as_str()).collect();
         names.sort();
         names.dedup();
         let status = Status::Optional(if names.is_empty() { "Optional".to_owned() } else { format!("Optional · {} indicators", names.len()) });
@@ -317,12 +317,12 @@ impl App {
             ));
             ui.horizontal_wrapped(|ui| {
                 for name in &names {
-                    let value = if playing { s.screen.zones.iter().find(|(n, _, _)| n == name).and_then(|(_, _, v)| *v) } else { None };
+                    let value = if playing { s.screen.indicators.iter().find(|(n, _, _)| n == name).and_then(|(_, _, v)| *v) } else { None };
                     let text = match value {
-                        Some(ZoneValue::Visible(true)) => format!("{name} · shown"),
-                        Some(ZoneValue::Visible(false)) => format!("{name} · hidden"),
-                        Some(ZoneValue::Bar(v)) => format!("{name} · {:.0}%", v * 100.0),
-                        Some(ZoneValue::Unknown) => format!("{name} · unknown"),
+                        Some(IndicatorValue::Visibility(true)) => format!("{name} · shown"),
+                        Some(IndicatorValue::Visibility(false)) => format!("{name} · hidden"),
+                        Some(IndicatorValue::Gauge(v)) => format!("{name} · {:.0}%", v * 100.0),
+                        Some(IndicatorValue::Unknown) => format!("{name} · unknown"),
                         None => (*name).to_owned(),
                     };
                     pill(ui, &text, TEXT, RAISED);
@@ -392,7 +392,7 @@ impl App {
                 ui.label(muted(format!(
                     "A game's mod or a script reading its API can send exact values (health, ammo) and events (a kill) \
                      to {} (Setup › Other programs). Declare them here so that AI assistants know them.",
-                    s.inputs.address.as_deref().unwrap_or("GameViber")
+                    s.external.address.as_deref().unwrap_or("GameViber")
                 )));
                 for (i, input) in inputs.external.iter().enumerate() {
                     ui.horizontal(|ui| {
@@ -409,7 +409,7 @@ impl App {
                         }
                     });
                 }
-                let new = &mut self.signals.new_input;
+                let new = &mut self.inputs.new_input;
                 ui.horizontal(|ui| {
                     egui::ComboBox::from_id_salt("input-kind")
                         .selected_text(if new.kind == ExternalKind::Value { "Value" } else { "Event" })
@@ -445,17 +445,17 @@ impl App {
             } else {
                 ui.label(muted("Live, while the game runs."));
                 ui.add_space(4.0);
-                match (&s.scenes.scene, s.scenes.scenes.iter().find(|(n, _)| Some(n) == s.scenes.scene.as_ref())) {
-                    (Some(scene), Some((_, p))) => known(ui, &capitalized(scene), &format!("phase, {:.0}% sure", p * 100.0), ACCENT_TEXT),
+                match (&s.phases.phase, s.phases.phases.iter().find(|(n, _)| Some(n) == s.phases.phase.as_ref())) {
+                    (Some(phase), Some((_, p))) => known(ui, &capitalized(phase), &format!("phase, {:.0}% sure", p * 100.0), ACCENT_TEXT),
                     _ if !inputs.phases.is_empty() => known(ui, "No phase yet", "it takes a few seconds of the game", MUTED),
                     _ => {}
                 }
-                for (name, _, value) in &s.screen.zones {
+                for (name, _, value) in &s.screen.indicators {
                     let text = match value {
-                        Some(ZoneValue::Visible(true)) => format!("{name}: shown"),
-                        Some(ZoneValue::Visible(false)) => format!("{name}: hidden"),
-                        Some(ZoneValue::Bar(v)) => format!("{name}: {:.0}%", v * 100.0),
-                        Some(ZoneValue::Unknown) | None => format!("{name}: unknown"),
+                        Some(IndicatorValue::Visibility(true)) => format!("{name}: shown"),
+                        Some(IndicatorValue::Visibility(false)) => format!("{name}: hidden"),
+                        Some(IndicatorValue::Gauge(v)) => format!("{name}: {:.0}%", v * 100.0),
+                        Some(IndicatorValue::Unknown) | None => format!("{name}: unknown"),
                     };
                     known(ui, &text, "zone", TEXT);
                 }

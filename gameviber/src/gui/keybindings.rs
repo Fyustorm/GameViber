@@ -45,7 +45,7 @@ impl App {
                 if let Some(combo) = combo_card(ui, "⚑ Mark a moment", &text, mark, &[panic, capture]) {
                     self.send(Command::SetMarkCombo(combo));
                 }
-                let target = if s.capture_scene.is_empty() { "to sort later".to_owned() } else { format!("as {}", s.capture_scene) };
+                let target = if s.capture_phase.is_empty() { "to sort later".to_owned() } else { format!("as {}", s.capture_phase) };
                 let text = format!(
                     "Hold {} in game to capture its image into the game being played ({target}; change it on its captures \
                      page). The in-game overlay confirms. Captures teach GameViber the game's phases, and indicators are \

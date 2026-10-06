@@ -16,19 +16,19 @@ use crate::audio::{self, Audio, AudioHit, AudioLevels, Embedding};
 pub use crate::config::SourceChoice;
 use crate::config::{self, AudioSource, ModeEntry, OverlaySettings, Presets, Settings, ToySettings};
 use crate::gamepad::{self, PadState, BUTTONS};
-use crate::inputs::{self, Inputs, InputsView};
+use crate::external::{self, ExternalInputs, ExternalView};
 use crate::intiface::{Intiface, IntifaceStatus, Toy, ToyOutputs};
 use crate::mode::rumble_events::RumbleLevels;
-use crate::mode::scenes::Sense;
+use crate::mode::phases::Sense;
 use crate::mode::{HudGauge, ModeEvent, ModeInfo, ModeRuntime, ParamValue};
 use crate::models::{self, Model, ModelState};
 use crate::overlay;
 use crate::platform;
 use crate::game::Game;
 use crate::package;
-use crate::screen::zones::ZoneReader;
+use crate::screen::indicators::IndicatorReader;
 use crate::shortcuts::{Action, Shortcuts};
-use crate::screen::{self, Frame, ImageScenes, ScreenLevels, ScreenView};
+use crate::screen::{self, Frame, ImagePhases, ScreenLevels, ScreenView};
 use crate::rumble::RumbleState;
 use crate::session::{self, Player, Recorder, RecordingInfo, Senses};
 pub use crate::source::SourceHealth;
@@ -48,8 +48,8 @@ const SOURCE_RETRY: Duration = Duration::from_secs(2);
 pub const RECENT_SECS: f64 = 120.0;
 /// A marked moment is saved this long after the (last) mark, to include what followed.
 pub const MARK_SAVE_DELAY: f64 = 15.0;
-/// The game's image is compared with the scenes this often.
-const IMAGE_SCENE_STEP: f64 = 1.0;
+/// The game's image is compared with the phases this often.
+const IMAGE_PHASE_STEP: f64 = 1.0;
 
 #[derive(Debug, Clone)]
 pub struct EngineOptions {
@@ -119,7 +119,7 @@ pub enum Command {
     DeleteRecording(PathBuf),
     /// Where the game's sound is captured from.
     SetAudio(AudioSource),
-    /// Downloads a scene model.
+    /// Downloads a phase model.
     DownloadModel(Model),
     /// Whether the GUI shows the game's image (the overlay copies it meanwhile).
     WatchScreen(bool),
@@ -127,7 +127,7 @@ pub enum Command {
     SetScreen(bool),
     /// Adds a game, linked to an executable or not, and makes it the active game.
     CreateGame { name: String, executable: Option<String> },
-    /// Replaces a game (scenes, zones, inputs, name...).
+    /// Replaces a game (its name, executables, modes, sound).
     SaveGame(Game),
     DeleteGame(String),
     /// The game being played, by id; None: no game.
@@ -140,19 +140,19 @@ pub enum Command {
     AddGameMode { game: String, mode: String },
     RemoveGameMode { game: String, mode: String },
     /// Captures the game's current image into the active game, as an example
-    /// of a scene ("" for captures to sort later).
-    CaptureScene(String),
-    /// The scene the capture combo files images under ("" to sort them later).
-    SetCaptureScene(String),
-    /// Replaces the inputs a mode reads (scenes, zones, values from other
+    /// of a phase ("" for captures to sort later).
+    CapturePhase(String),
+    /// The phase the capture combo files images under ("" to sort them later).
+    SetCapturePhase(String),
+    /// Replaces the inputs a mode reads (phases, indicators, values from other
     /// programs), in its package (`Inputs::dir`); its captures change through their own commands.
     SaveInputs(package::Inputs),
-    /// Adds images (from files) to the captures of a mode (by package), under a scene ("" to sort them later).
-    AddCaptures { dir: PathBuf, scene: String, frames: Vec<Frame> },
+    /// Adds images (from files) to the captures of a mode (by package), under a phase ("" to sort them later).
+    AddCaptures { dir: PathBuf, phase: String, frames: Vec<Frame> },
     /// Deletes a capture of a mode (by file name).
     DeleteCapture { dir: PathBuf, file: String },
-    /// Files a capture under another scene.
-    MoveCapture { dir: PathBuf, file: String, scene: String },
+    /// Files a capture under another phase.
+    MoveCapture { dir: PathBuf, file: String, phase: String },
     /// Keyboard shortcuts for the combos' actions (through the desktop), on or off.
     SetKeyboardShortcuts(bool),
     /// Opens the desktop's settings of the keyboard shortcuts.
@@ -160,7 +160,7 @@ pub enum Command {
     /// New versions are looked for automatically, or not.
     SetCheckUpdates(bool),
     /// Port other programs send values and events to; 0 turns the WebSocket off.
-    SetInputsPort(u16),
+    SetExternalPort(u16),
     Shutdown,
 }
 
@@ -193,14 +193,14 @@ pub struct AudioView {
     pub model: ModelState,
 }
 
-/// The active mode's scenes (§6.3), for the GUI.
+/// The active mode's phases (§6.3), for the GUI.
 #[derive(Debug, Clone, Default)]
-pub struct SceneView {
-    /// The current scene...
-    pub scene: Option<String>,
+pub struct PhaseView {
+    /// The current phase...
+    pub phase: Option<String>,
     /// ...and the average probability of each, sorted by name.
-    pub scenes: Vec<(String, f64)>,
-    /// Which senses the mode's scenes use, and which do compare.
+    pub phases: Vec<(String, f64)>,
+    /// Which senses the mode's phases use, and which do compare.
     pub sound: (bool, bool),
     pub screen: (bool, bool),
 }
@@ -250,7 +250,7 @@ pub struct Shared {
     pub recordings: Vec<RecordingInfo>,
     pub audio: AudioView,
     pub screen: ScreenView,
-    pub scenes: SceneView,
+    pub phases: PhaseView,
     /// Every game, and the one being played.
     pub games: Vec<Game>,
     pub game: Option<Game>,
@@ -260,10 +260,10 @@ pub struct Shared {
     /// The executable showing the overlay, and whether no game runs as it.
     pub running_executable: Option<String>,
     pub unlinked_executable: Option<String>,
-    pub inputs: InputsView,
+    pub external: ExternalView,
     pub shortcuts: crate::shortcuts::Status,
-    /// The scene the capture combo files images under ("": to sort).
-    pub capture_scene: String,
+    /// The phase the capture combo files images under ("": to sort).
+    pub capture_phase: String,
     pub time: f64,
     pub stopped: bool,
 }
@@ -368,37 +368,37 @@ struct Engine {
     audio: Option<Audio>,
     audio_levels: Option<AudioLevels>,
     last_hit: Option<(f64, AudioHit)>,
-    /// Text embeddings of scene descriptions, computed off the engine thread.
-    scene_texts: (std_mpsc::Sender<SceneTexts>, std_mpsc::Receiver<SceneTexts>),
+    /// Text embeddings of phase descriptions, computed off the engine thread.
+    phase_texts: (std_mpsc::Sender<PhaseTexts>, std_mpsc::Receiver<PhaseTexts>),
     /// Descriptions being encoded, per sense.
-    scene_request: HashMap<Sense, Vec<(String, String)>>,
+    phase_request: HashMap<Sense, Vec<(String, String)>>,
     /// Descriptions that could not be encoded (not tried again).
-    scene_failed: HashMap<Sense, Vec<(String, String)>>,
+    phase_failed: HashMap<Sense, Vec<(String, String)>>,
     /// The GUI shows the game's image: the overlay copies it even when modes do not see it.
     screen_watch: bool,
     screen: screen::Analyzer,
     screen_levels: Option<ScreenLevels>,
     screen_view: ScreenView,
-    image_scenes: ImageScenes,
+    image_phases: ImagePhases,
     /// When the last image was submitted for its embedding.
     last_image_submit: f64,
     /// Embeddings of the active mode's captures being computed: its package, then (file, embedding) as they come.
     capture_job: Option<(std::path::PathBuf, std_mpsc::Receiver<(String, Embedding)>)>,
-    capture_scene: String,
-    /// Every game, the one being played, the inputs of the active mode and the mean of its captures per scene.
+    capture_phase: String,
+    /// Every game, the one being played, the inputs of the active mode and the mean of its captures per phase.
     games: Vec<Game>,
     game: Option<Game>,
     mode_inputs: package::Inputs,
     /// The executable showing the overlay, as last seen.
     running: Option<String>,
     example_centroids: Vec<(String, Embedding)>,
-    zones: ZoneReader,
-    inputs: Inputs,
+    indicators: IndicatorReader,
+    external: ExternalInputs,
     shortcuts: Option<Shortcuts>,
     ticks: u64,
 }
 
-type SceneTexts = (Sense, Vec<(String, String)>, Result<Vec<Embedding>, String>);
+type PhaseTexts = (Sense, Vec<(String, String)>, Result<Vec<Embedding>, String>);
 
 /// Runs the engine until `Command::Shutdown` or SIGINT/SIGTERM.
 pub fn run(opts: EngineOptions, shared: SharedHandle, commands: mpsc::UnboundedReceiver<Command>) -> anyhow::Result<()> {
@@ -428,7 +428,7 @@ async fn run_async(
     let (source_tx, mut rx) = mpsc::unbounded_channel::<SourceEvent>();
     let intiface = opts.intiface.then(|| Intiface::spawn(settings.url.clone()));
     let audio = Audio::start(settings.audio.clone());
-    let inputs = Inputs::start(settings.inputs_port);
+    let external = ExternalInputs::start(settings.external_port);
     let now = Instant::now();
     let mut engine = Engine {
         opts,
@@ -465,24 +465,24 @@ async fn run_async(
         audio: Some(audio),
         audio_levels: None,
         last_hit: None,
-        scene_texts: std_mpsc::channel(),
-        scene_request: HashMap::new(),
-        scene_failed: HashMap::new(),
+        phase_texts: std_mpsc::channel(),
+        phase_request: HashMap::new(),
+        phase_failed: HashMap::new(),
         screen_watch: false,
         screen: screen::Analyzer::default(),
         screen_levels: None,
         screen_view: ScreenView::default(),
-        image_scenes: ImageScenes::start(),
+        image_phases: ImagePhases::start(),
         last_image_submit: f64::NEG_INFINITY,
         capture_job: None,
-        capture_scene: String::new(),
+        capture_phase: String::new(),
         games: Game::list(),
         game: None,
         mode_inputs: package::Inputs::default(),
         running: None,
         example_centroids: Vec::new(),
-        zones: ZoneReader::default(),
-        inputs,
+        indicators: IndicatorReader::default(),
+        external,
         shortcuts,
         ticks: 0,
     };
@@ -724,7 +724,7 @@ impl Engine {
                     self.settings.save();
                 }
             }
-            Command::SetCaptureScene(scene) => self.capture_scene = scene,
+            Command::SetCapturePhase(phase) => self.capture_phase = phase,
             Command::SetMarkCombo(combo) => {
                 let taken = [&self.settings.panic_combo, &self.settings.capture_combo].map(|c| gamepad::parse_combo(c));
                 if gamepad::parse_combo(&combo).is_some_and(|c| !taken.contains(&Some(c))) {
@@ -838,7 +838,7 @@ impl Engine {
                 }
             }),
             Command::RemoveGameMode { game, mode } => self.edit_game_by_id(&game, |g| g.modes.retain(|m| *m != mode)),
-            Command::CaptureScene(scene) => self.capture(scene, self.time()),
+            Command::CapturePhase(phase) => self.capture(phase, self.time()),
             Command::SaveInputs(mut inputs) => {
                 // The GUI's copy has no capture embeddings: captures change through their own commands.
                 inputs.captures = package::Inputs::load(&inputs.dir).captures;
@@ -847,17 +847,17 @@ impl Engine {
                     self.set_mode_inputs(inputs);
                 }
             }
-            Command::AddCaptures { dir, scene, frames } => self.edit_inputs(&dir, |i| {
+            Command::AddCaptures { dir, phase, frames } => self.edit_inputs(&dir, |i| {
                 for frame in &frames {
-                    if let Err(e) = i.add_capture(&scene, frame) {
+                    if let Err(e) = i.add_capture(&phase, frame) {
                         log::error!("cannot save the capture: {e}");
                     }
                 }
             }),
             Command::DeleteCapture { dir, file } => self.edit_inputs(&dir, |i| i.remove_capture(&file)),
-            Command::MoveCapture { dir, file, scene } => self.edit_inputs(&dir, |p| {
+            Command::MoveCapture { dir, file, phase } => self.edit_inputs(&dir, |p| {
                 if let Some(capture) = p.captures.iter_mut().find(|c| c.file == file) {
-                    capture.phase = scene;
+                    capture.phase = phase;
                 }
             }),
             Command::SetKeyboardShortcuts(on) => {
@@ -874,11 +874,11 @@ impl Engine {
                     shortcuts.configure();
                 }
             }
-            Command::SetInputsPort(port) => {
-                self.settings.inputs_port = port;
+            Command::SetExternalPort(port) => {
+                self.settings.external_port = port;
                 self.settings.save();
-                self.inputs.stop();
-                self.inputs = Inputs::start(port);
+                self.external.stop();
+                self.external = ExternalInputs::start(port);
             }
             Command::Shutdown => {}
         }
@@ -1177,14 +1177,14 @@ impl Engine {
         }
         let audio_levels = self.poll_audio(time);
         self.poll_screen(time);
-        for message in self.inputs.poll(time) {
+        for message in self.external.poll(time) {
             // While replaying, the recording is what other programs sent.
             if self.player.is_some() {
                 continue;
             }
             self.events.push(match message {
-                inputs::Message::Set(name, value) => ModeEvent::Custom { name, value },
-                inputs::Message::Event(name, data) => ModeEvent::External { name, data },
+                external::Message::Set(name, value) => ModeEvent::ExternalValue { name, value },
+                external::Message::Event(name, data) => ModeEvent::ExternalEvent { name, data },
             });
         }
         // While replaying, the recording is the source.
@@ -1230,7 +1230,7 @@ impl Engine {
         for action in self.shortcuts.as_ref().map(Shortcuts::poll).unwrap_or_default() {
             match action {
                 Action::Panic => self.trigger_panic("keyboard"),
-                Action::Capture if self.player.is_none() => self.capture(self.capture_scene.clone(), time),
+                Action::Capture if self.player.is_none() => self.capture(self.capture_phase.clone(), time),
                 Action::Mark if self.player.is_none() => self.mark_moment(time),
                 _ => {}
             }
@@ -1239,7 +1239,7 @@ impl Engine {
             self.trigger_panic(&gamepad::combo_text(&self.settings.panic_combo));
         }
         if self.pad.take_capture(time) && self.player.is_none() {
-            self.capture(self.capture_scene.clone(), time);
+            self.capture(self.capture_phase.clone(), time);
         }
         if self.pad.take_mark(time) && self.player.is_none() {
             self.mark_moment(time);
@@ -1268,7 +1268,7 @@ impl Engine {
         let mut hud = Vec::new();
         let events = std::mem::take(&mut self.events);
         let input_idle = self.pad.input_idle(time);
-        self.update_scenes();
+        self.update_phases();
         if let Some(active) = self.mode.as_mut() {
             if let Some(rt) = active.runtime.as_mut() {
                 rt.set_audio(audio_levels);
@@ -1356,15 +1356,15 @@ impl Engine {
         shared.overlay_clients = self.overlay.clients();
         shared.audio = self.audio_view(audio_levels);
         shared.screen = self.screen_view.clone();
-        shared.scenes = self.scene_view();
+        shared.phases = self.phase_view();
         shared.games = self.games.clone();
         shared.game = self.game.clone();
         shared.mode_inputs = self.mode_inputs.has_package().then(|| self.mode_inputs.for_gui());
         shared.running_executable = self.running.clone();
         shared.unlinked_executable = self.running.clone().filter(|exe| !self.games.iter().any(|g| g.runs_as(exe)));
-        shared.inputs = self.inputs.view();
+        shared.external = self.external.view();
         shared.shortcuts = self.shortcuts.as_ref().map(Shortcuts::status).unwrap_or_default();
-        shared.capture_scene = self.capture_scene.clone();
+        shared.capture_phase = self.capture_phase.clone();
         shared.overlay_unavailable = self.overlay.unavailable();
         shared.history.push_back(Sample { t: time, strong: levels.strong, weak: levels.weak, channels });
         while shared.history.front().is_some_and(|s| time - s.t > HISTORY_SECS) {
@@ -1423,7 +1423,7 @@ impl Engine {
             mode: name,
             preset,
             mode_age: (time - self.overlay_title.2) as f32,
-            scene: self.mode.as_ref().and_then(|m| m.runtime.as_ref()).and_then(|rt| rt.scene_state().0),
+            phase: self.mode.as_ref().and_then(|m| m.runtime.as_ref()).and_then(|rt| rt.phase_state().0),
             gauges: hud.into_iter().map(|g| Gauge { label: g.label, value: g.value as f32, max: g.max as f32 }).collect(),
             events: self.overlay_events.iter().map(|(text, t)| Event { text: text.clone(), age: (time - t) as f32 }).collect(),
             alerts,
@@ -1432,8 +1432,8 @@ impl Engine {
         }
     }
 
-    /// Reads the newest copy of the game's image: measures, flashes, zones,
-    /// and an embedding now and then when scenes or examples need one.
+    /// Reads the newest copy of the game's image: measures, flashes, indicators,
+    /// and an embedding now and then when phases or examples need one.
     fn poll_screen(&mut self, time: f64) {
         const STALE_SECS: f64 = 2.0;
         // A game linked to the executable now showing the overlay becomes the active game.
@@ -1457,18 +1457,18 @@ impl Engine {
                 if let Some(strength) = flash {
                     self.events.push(ModeEvent::ScreenFlash(strength));
                 }
-                for (name, value) in self.zones.update(&self.mode_inputs.zones, &frame) {
-                    self.events.push(ModeEvent::Zone { name, value });
+                for (name, value) in self.indicators.update(&self.mode_inputs.zones, &frame) {
+                    self.events.push(ModeEvent::Indicator { name, value });
                 }
             } else {
-                // Zones are still measured for the editor.
-                self.zones.update(&self.mode_inputs.zones, &frame);
+                // Indicators are still measured for the editor.
+                self.indicators.update(&self.mode_inputs.zones, &frame);
             }
             let rt = self.mode.as_ref().and_then(|m| m.runtime.as_ref());
-            let scenes_use_image = self.settings.screen && rt.is_some_and(|rt| rt.scene_sense(Sense::Screen) || rt.scene_sense(Sense::Examples));
-            if scenes_use_image && Model::Image.ready() && time - self.last_image_submit >= IMAGE_SCENE_STEP {
+            let phases_use_image = self.settings.screen && rt.is_some_and(|rt| rt.phase_sense(Sense::Screen) || rt.phase_sense(Sense::Examples));
+            if phases_use_image && Model::Image.ready() && time - self.last_image_submit >= IMAGE_PHASE_STEP {
                 self.last_image_submit = time;
-                self.image_scenes.submit(frame.clone());
+                self.image_phases.submit(frame.clone());
             }
             self.screen_view.levels = Some(levels);
             self.screen_view.game = Some(hello.exe);
@@ -1479,7 +1479,7 @@ impl Engine {
             if self.screen.last().is_some() || self.screen_levels.is_some() {
                 self.screen.reset();
                 self.screen_levels = None;
-                self.zones.clear();
+                self.indicators.clear();
                 self.screen_view = ScreenView::default();
             }
         }
@@ -1487,27 +1487,27 @@ impl Engine {
             // The recording is the image (its events come with the sound's).
             self.screen_levels = player.screen;
         }
-        for image in self.image_scenes.poll() {
+        for image in self.image_phases.poll() {
             if self.screen_levels.is_some() && !replaying {
                 self.events.push(ModeEvent::ScreenClip(image));
             }
         }
         self.embed_captures();
         self.screen_view.model = Model::Image.state();
-        // One entry per zone, whatever the number of places it is drawn in.
-        let mut names: Vec<&String> = self.mode_inputs.zones.iter().map(|z| &z.name).collect();
+        // One entry per indicator, whatever the number of zones it is read in.
+        let mut names: Vec<&String> = self.mode_inputs.zones.iter().map(|z| &z.indicator).collect();
         names.dedup();
         names.sort();
         names.dedup();
-        self.screen_view.zones = names
+        self.screen_view.indicators = names
             .into_iter()
-            .map(|n| (n.clone(), self.zones.measures.get(n).copied().flatten(), self.zones.values().get(n).copied()))
+            .map(|n| (n.clone(), self.indicators.measures.get(n).copied().flatten(), self.indicators.values().get(n).copied()))
             .collect();
     }
 
     /// Captures the game's current image into the active mode's inputs under
-    /// `scene` ("": to sort), and says so in the in-game overlay.
-    fn capture(&mut self, scene: String, time: f64) {
+    /// `phase` ("": to sort), and says so in the in-game overlay.
+    fn capture(&mut self, phase: String, time: f64) {
         let Some(frame) = &self.screen_view.frame else {
             log::warn!("no image of the game to capture");
             self.overlay_events.push(("No image to capture".to_owned(), time));
@@ -1519,11 +1519,11 @@ impl Engine {
             return;
         }
         let mut inputs = self.mode_inputs.clone();
-        match inputs.add_capture(&scene, frame) {
+        match inputs.add_capture(&phase, frame) {
             Ok(()) => {
                 inputs.save();
-                let count = inputs.captures.iter().filter(|c| c.phase == scene).count();
-                let what = if scene.is_empty() { "to sort".to_owned() } else { scene.clone() };
+                let count = inputs.captures.iter().filter(|c| c.phase == phase).count();
+                let what = if phase.is_empty() { "to sort".to_owned() } else { phase.clone() };
                 log::info!("capture ({what}) added to {}", self.mode_name());
                 self.overlay_events.push((format!("📸 Captured: {what} ({count})"), time));
                 self.set_mode_inputs(inputs);
@@ -1548,14 +1548,14 @@ impl Engine {
     /// The active mode's inputs changed, or another mode became active.
     fn set_mode_inputs(&mut self, inputs: package::Inputs) {
         if inputs.dir != self.mode_inputs.dir {
-            self.zones.clear();
+            self.indicators.clear();
             self.capture_job = None;
         }
         self.example_centroids = inputs.example_centroids();
         self.mode_inputs = inputs;
         // The active mode compares with the new examples.
         if let Some(rt) = self.mode.as_mut().and_then(|m| m.runtime.as_mut()) {
-            rt.set_scene_references(Sense::Examples, self.example_centroids.clone());
+            rt.set_phase_references(Sense::Examples, self.example_centroids.clone());
         }
     }
 
@@ -1592,7 +1592,7 @@ impl Engine {
         self.set_game(game);
     }
 
-    /// Computes the embeddings of the profile's captures that have none, in a
+    /// Computes the embeddings of the active mode's captures that have none, in a
     /// thread of its own, once the image model is downloaded.
     fn embed_captures(&mut self) {
         if let Some((dir, rx)) = &self.capture_job {
@@ -1630,7 +1630,7 @@ impl Engine {
         std::thread::spawn(move || {
             let mut encoder = match screen::clip::ImageEncoder::load() {
                 Ok(e) => e,
-                Err(e) => return log::error!("cannot load the image scene model: {e:#}"),
+                Err(e) => return log::error!("cannot load the image phase model: {e:#}"),
             };
             for file in missing {
                 let embedded = package::load_capture(&dir, &file).map(|frame| encoder.embed(&frame));
@@ -1694,51 +1694,51 @@ impl Engine {
         self.audio_levels
     }
 
-    /// Gets the active mode's scene descriptions encoded for each sense whose
+    /// Gets the active mode's phase descriptions encoded for each sense whose
     /// model is downloaded (off the engine thread: a text model takes a moment
-    /// to load), hands it the profile's examples, and asks the audio service
+    /// to load), hands it its examples, and asks the audio service
     /// for embeddings only while the mode can use them.
-    fn update_scenes(&mut self) {
-        while let Ok((sense, descriptions, result)) = self.scene_texts.1.try_recv() {
-            self.scene_request.remove(&sense);
+    fn update_phases(&mut self) {
+        while let Ok((sense, descriptions, result)) = self.phase_texts.1.try_recv() {
+            self.phase_request.remove(&sense);
             match result {
                 Ok(texts) => {
                     let rt = self.mode.as_mut().and_then(|m| m.runtime.as_mut());
-                    if let Some(rt) = rt.filter(|rt| rt.scene_descriptions(sense) == descriptions) {
-                        log::info!("{sense:?} scenes of '{}' ready", rt.info().name);
-                        rt.set_scene_references(sense, descriptions.into_iter().map(|(name, _)| name).zip(texts).collect());
+                    if let Some(rt) = rt.filter(|rt| rt.phase_descriptions(sense) == descriptions) {
+                        log::info!("{sense:?} phases of '{}' ready", rt.info().name);
+                        rt.set_phase_references(sense, descriptions.into_iter().map(|(name, _)| name).zip(texts).collect());
                     }
                 }
                 Err(e) => {
-                    log::error!("cannot prepare the {sense:?} scenes: {e}");
-                    self.scene_failed.insert(sense, descriptions);
+                    log::error!("cannot prepare the {sense:?} phases: {e}");
+                    self.phase_failed.insert(sense, descriptions);
                 }
             }
         }
         let Some(rt) = self.mode.as_mut().and_then(|m| m.runtime.as_mut()) else {
             if let Some(audio) = &self.audio {
-                audio.set_scenes(false);
+                audio.set_phases(false);
             }
             return;
         };
-        // The scenes the player set up replace the mode's own.
-        rt.set_game_scenes(&self.mode_inputs.scene_decls());
-        if !rt.scene_sense(Sense::Examples) && !self.example_centroids.is_empty() {
-            rt.set_scene_references(Sense::Examples, self.example_centroids.clone());
+        // The phases the player set up replace the mode's own.
+        rt.set_game_phases(&self.mode_inputs.phase_decls());
+        if !rt.phase_sense(Sense::Examples) && !self.example_centroids.is_empty() {
+            rt.set_phase_references(Sense::Examples, self.example_centroids.clone());
         }
         if let Some(audio) = &self.audio {
-            audio.set_scenes(rt.uses_sound_scenes() && Model::Sound.ready());
+            audio.set_phases(rt.uses_sound_phases() && Model::Sound.ready());
         }
         for (sense, model) in [(Sense::Sound, Model::Sound), (Sense::Screen, Model::Image)] {
-            let descriptions = rt.scene_descriptions(sense);
-            if descriptions.is_empty() || !model.ready() || rt.scene_sense(sense) {
+            let descriptions = rt.phase_descriptions(sense);
+            if descriptions.is_empty() || !model.ready() || rt.phase_sense(sense) {
                 continue;
             }
-            if self.scene_request.contains_key(&sense) || self.scene_failed.get(&sense) == Some(&descriptions) {
+            if self.phase_request.contains_key(&sense) || self.phase_failed.get(&sense) == Some(&descriptions) {
                 continue;
             }
-            self.scene_request.insert(sense, descriptions.clone());
-            let tx = self.scene_texts.0.clone();
+            self.phase_request.insert(sense, descriptions.clone());
+            let tx = self.phase_texts.0.clone();
             std::thread::spawn(move || {
                 let texts: Vec<String> = descriptions.iter().map(|(_, d)| d.clone()).collect();
                 let result = models::text_embeddings(model, &texts).map_err(|e| format!("{e:#}"));
@@ -1756,16 +1756,16 @@ impl Engine {
         }
     }
 
-    fn scene_view(&self) -> SceneView {
-        let Some(rt) = self.mode.as_ref().and_then(|m| m.runtime.as_ref()).filter(|rt| !rt.scene_decls().is_empty()) else {
-            return SceneView::default();
+    fn phase_view(&self) -> PhaseView {
+        let Some(rt) = self.mode.as_ref().and_then(|m| m.runtime.as_ref()).filter(|rt| !rt.phase_decls().is_empty()) else {
+            return PhaseView::default();
         };
-        let (scene, scenes) = rt.scene_state();
-        SceneView {
-            scene,
-            scenes,
-            sound: (rt.uses_sound_scenes(), rt.scene_sense(Sense::Sound)),
-            screen: (rt.uses_screen_scenes(!self.example_centroids.is_empty()), rt.scene_sense(Sense::Screen) || rt.scene_sense(Sense::Examples)),
+        let (phase, phases) = rt.phase_state();
+        PhaseView {
+            phase,
+            phases,
+            sound: (rt.uses_sound_phases(), rt.phase_sense(Sense::Sound)),
+            screen: (rt.uses_screen_phases(!self.example_centroids.is_empty()), rt.phase_sense(Sense::Screen) || rt.phase_sense(Sense::Examples)),
         }
     }
 
@@ -1796,7 +1796,7 @@ impl Engine {
                 let _ = rt.stop();
             }
         }
-        self.inputs.stop();
+        self.external.stop();
         if let Some(i) = self.intiface.take() {
             i.shutdown().await;
         }

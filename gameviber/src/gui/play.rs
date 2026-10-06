@@ -117,8 +117,8 @@ impl App {
             return;
         };
         let missing = [
-            (s.scenes.sound.0 && !Model::Sound.ready(), "music"),
-            (s.scenes.screen.0 && !Model::Image.ready(), "image"),
+            (s.phases.sound.0 && !Model::Sound.ready(), "music"),
+            (s.phases.screen.0 && !Model::Image.ready(), "image"),
         ];
         for (_, what) in missing.into_iter().filter(|m| m.0) {
             card(RAISED).inner_margin(Margin::same(12)).show(ui, |ui| {
@@ -127,7 +127,7 @@ impl App {
                     ui.label(format!("Phases are recognized from the game's {what}. It needs a phase model:"));
                     if let Some(game) = &s.game {
                         if ui.button("Get it in the mode's Inputs").clicked() {
-                            self.route = Route::Game { id: game.id.clone(), view: GameView::Signals };
+                            self.route = Route::Game { id: game.id.clone(), view: GameView::Inputs };
                         }
                     }
                 });

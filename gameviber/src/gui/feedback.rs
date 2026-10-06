@@ -407,7 +407,7 @@ impl App {
         }
         let mut history = entry.load_feedback();
         let earlier = history.lines();
-        let profile = s.mode_inputs.as_ref().map(|i| i.describe());
+        let described = s.mode_inputs.as_ref().map(|i| i.describe());
         let request = prompt::feel_prompt(&prompt::Templates::load(), &prompt::FeelReport {
             name: &info.name,
             game: &f.game,
@@ -419,7 +419,7 @@ impl App {
             session: session.as_deref(),
             full: !f.short,
             language: &s.settings.language,
-            profile: profile.as_deref(),
+            inputs: described.as_deref(),
         });
         history.push(FeedbackRound::Request {
             date: crate::platform::local_time(),

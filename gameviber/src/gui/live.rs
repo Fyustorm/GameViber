@@ -1,6 +1,6 @@
 //! Live page: what is going on while playing, to keep on a second screen —
 //! the mode (to switch it, its preset and main settings, what it tracks),
-//! what goes to the toys, what the game's signals say right now, and the
+//! what goes to the toys, what the mode's inputs say right now, and the
 //! gamepad with its combos.
 
 use eframe::egui::{self, Margin, RichText, Vec2};
@@ -9,7 +9,7 @@ use super::theme::*;
 use super::{gamepad_inputs, App, GameView, Page, Route};
 use crate::engine::{Command, Shared, HISTORY_SECS};
 use crate::gamepad::combo_text;
-use crate::mode::{ParamDef, ZoneValue};
+use crate::mode::{ParamDef, IndicatorValue};
 use crate::shortcuts::{Action, Status as ShortcutStatus};
 
 /// From this width the page shows three columns, else two.
@@ -29,7 +29,7 @@ impl App {
                     // Straight to the game's pages.
                     if let Some(game) = &s.game {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            for (label, view) in [("Captures and indicators ›", GameView::Screen), ("Inputs ›", GameView::Signals), ("Game ›", GameView::Modes)] {
+                            for (label, view) in [("Captures and indicators ›", GameView::Screen), ("Inputs ›", GameView::Inputs), ("Game ›", GameView::Modes)] {
                                 if ui.button(label).clicked() {
                                     self.page = Page::Games;
                                     self.route = Route::Game { id: game.id.clone(), view };
@@ -45,11 +45,11 @@ impl App {
                     self.mode_card(&mut columns[0], s);
                     if three {
                         output_card(&mut columns[1], self, s);
-                        signals_card(&mut columns[2], s);
+                        inputs_card(&mut columns[2], s);
                     } else {
                         output_card(&mut columns[1], self, s);
                         columns[1].add_space(12.0);
-                        signals_card(&mut columns[1], s);
+                        inputs_card(&mut columns[1], s);
                     }
                 });
                 ui.add_space(12.0);
@@ -201,44 +201,44 @@ fn output_card(ui: &mut egui::Ui, app: &mut App, s: &Shared) {
     });
 }
 
-/// What the game's signals say right now.
-fn signals_card(ui: &mut egui::Ui, s: &Shared) {
+/// What the mode's inputs say right now.
+fn inputs_card(ui: &mut egui::Ui, s: &Shared) {
     card(PANEL).show(ui, |ui| {
         ui.set_width(ui.available_width());
         eyebrow(ui, "Inputs");
-        // The scene, and how likely each is.
-        match &s.scenes.scene {
-            Some(scene) => ui.label(RichText::new(scene).size(22.0).strong().color(ACCENT_TEXT)),
-            None if s.scenes.scenes.is_empty() => ui.label(muted("No phases: name them in the mode's Inputs.")),
+        // The phase, and how likely each is.
+        match &s.phases.phase {
+            Some(phase) => ui.label(RichText::new(phase).size(22.0).strong().color(ACCENT_TEXT)),
+            None if s.phases.phases.is_empty() => ui.label(muted("No phases: name them in the mode's Inputs.")),
             None => ui.label(RichText::new("No phase yet").size(18.0).color(MUTED)),
         };
-        for (name, p) in &s.scenes.scenes {
-            let current = s.scenes.scene.as_ref() == Some(name);
+        for (name, p) in &s.phases.phases {
+            let current = s.phases.phase.as_ref() == Some(name);
             row(ui, name, |ui| {
                 meter(ui, (ui.available_width() - 44.0).max(40.0), *p, if current { ACCENT } else { GAME });
                 ui.label(RichText::new(format!("{:.0}%", p * 100.0)).size(12.0));
             });
         }
-        // Zones on screen.
-        if !s.screen.zones.is_empty() {
+        // Indicators on screen.
+        if !s.screen.indicators.is_empty() {
             ui.add_space(6.0);
             eyebrow(ui, "Indicators");
             if s.screen.frame.is_none() {
                 ui.label(muted("Read on the game's image, through the in-game overlay.").size(12.0));
             }
-            for (name, _, value) in &s.screen.zones {
+            for (name, _, value) in &s.screen.indicators {
                 row(ui, name, |ui| match value {
-                    Some(ZoneValue::Bar(x)) => {
+                    Some(IndicatorValue::Gauge(x)) => {
                         meter(ui, (ui.available_width() - 44.0).max(40.0), *x, OK);
                         ui.label(RichText::new(format!("{:.0}%", x * 100.0)).size(12.0));
                     }
-                    Some(ZoneValue::Visible(true)) => {
+                    Some(IndicatorValue::Visibility(true)) => {
                         ui.label(RichText::new("shown").color(ACCENT_TEXT));
                     }
-                    Some(ZoneValue::Visible(false)) => {
+                    Some(IndicatorValue::Visibility(false)) => {
                         ui.label(muted("hidden"));
                     }
-                    Some(ZoneValue::Unknown) => {
+                    Some(IndicatorValue::Unknown) => {
                         ui.label(RichText::new("unknown").color(WARN));
                     }
                     None => {
@@ -264,7 +264,7 @@ fn signals_card(ui: &mut egui::Ui, s: &Shared) {
             }
         }
         // Values from other programs.
-        if !s.inputs.values.is_empty() || !s.inputs.events.is_empty() {
+        if !s.external.values.is_empty() || !s.external.events.is_empty() {
             ui.add_space(6.0);
             eyebrow(ui, "From other programs");
             super::setup::received(ui, s);
@@ -292,7 +292,7 @@ fn gamepad_card(ui: &mut egui::Ui, s: &Shared) {
         eyebrow(ui, "Gamepad");
         ui.horizontal_wrapped(|ui| gamepad_inputs(ui, s));
         ui.add_space(6.0);
-        let target = if s.capture_scene.is_empty() { "to sort later".to_owned() } else { format!("into {}", s.capture_scene) };
+        let target = if s.capture_phase.is_empty() { "to sort later".to_owned() } else { format!("into {}", s.capture_phase) };
         let capture = format!("Capture the screen ({target})");
         let combos = [
             ("⛔", "Stop every toy", combo_text(&s.settings.panic_combo), Action::Panic),

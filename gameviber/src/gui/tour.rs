@@ -27,8 +27,8 @@ enum Stop {
     Setup(setup::Tab),
     AddGame,
     Generator,
-    /// The captures and zones page, editing a bar zone (else the first zone).
-    ZoneEdit,
+    /// The captures and indicators page, editing a bar indicator (else the first indicator).
+    IndicatorEdit,
 }
 
 const STOPS: [(&str, Stop); 19] = [
@@ -38,9 +38,9 @@ const STOPS: [(&str, Stop); 19] = [
     ("game-modes", Stop::Games(|s| game(s, GameView::Modes))),
     ("generator", Stop::Generator),
     ("mode", Stop::Games(|s| game(s, GameView::Mode))),
-    ("inputs", Stop::Games(|s| game(s, GameView::Signals))),
+    ("inputs", Stop::Games(|s| game(s, GameView::Inputs))),
     ("captures-indicators", Stop::Games(|s| game(s, GameView::Screen))),
-    ("zone-edit", Stop::ZoneEdit),
+    ("zone-edit", Stop::IndicatorEdit),
     ("sessions", Stop::Games(|s| game(s, GameView::Sessions))),
     ("live", Stop::Page(Page::Live)),
     ("toys", Stop::Page(Page::Toys)),
@@ -117,7 +117,7 @@ impl App {
                 self.route = Route::Library;
                 self.games.open_dialog();
             }
-            Stop::ZoneEdit => {
+            Stop::IndicatorEdit => {
                 self.page = Page::Games;
                 if let Some(game) = s.game.as_ref().or(s.games.first()).cloned() {
                     self.route = Route::Game { id: game.id.clone(), view: GameView::Screen };

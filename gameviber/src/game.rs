@@ -80,7 +80,7 @@ pub(crate) fn migrate_legacy() {
         if !exe.starts_with("wine") {
             map.insert("executables".into(), serde_json::json!([exe]));
         }
-        let mut scenes: Vec<String> = map
+        let mut phases: Vec<String> = map
             .get("captures")
             .and_then(|c| c.as_array())
             .into_iter()
@@ -89,9 +89,9 @@ pub(crate) fn migrate_legacy() {
             .filter(|s| !s.is_empty())
             .map(str::to_owned)
             .collect();
-        scenes.sort();
-        scenes.dedup();
-        map.insert("scenes".into(), scenes.into_iter().map(|name| serde_json::json!({ "name": name })).collect());
+        phases.sort();
+        phases.dedup();
+        map.insert("scenes".into(), phases.into_iter().map(|name| serde_json::json!({ "name": name })).collect());
         // The old file goes first: the game may take its name.
         let _ = fs::remove_file(&path);
         let id = unused_id(&slug(&name));

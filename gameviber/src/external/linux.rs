@@ -8,9 +8,9 @@ use tokio::sync::mpsc;
 
 use super::{parse, reject, Message, Status};
 
-/// `$XDG_RUNTIME_DIR/gameviber/inputs`: `echo '{"event":"kill"}' > $XDG_RUNTIME_DIR/gameviber/inputs`.
+/// `$XDG_RUNTIME_DIR/gameviber/external`: `echo '{"event":"kill"}' > $XDG_RUNTIME_DIR/gameviber/external`.
 fn pipe_path() -> PathBuf {
-    crate::platform::linux::runtime_dir().join("gameviber").join("inputs")
+    crate::platform::linux::runtime_dir().join("gameviber").join("external")
 }
 
 pub fn start_pipe(tx: mpsc::UnboundedSender<Message>, status: Arc<Mutex<Status>>) {

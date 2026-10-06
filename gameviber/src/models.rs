@@ -1,5 +1,5 @@
 //! Models downloaded on demand and run on the CPU with ONNX Runtime: the
-//! sound scene model (CLAP, `audio::clap`) and the image scene model (CLIP,
+//! sound phase model (CLAP, `audio::clap`) and the image phase model (CLIP,
 //! `screen::clip`). Each is fetched from a pinned revision of its repository,
 //! so the files never change under us.
 

@@ -79,7 +79,7 @@ pub struct Settings {
     pub panic_combo: Vec<String>,
     /// Gamepad buttons held together to mark a moment that felt wrong (at least two).
     pub mark_combo: Vec<String>,
-    /// Gamepad buttons held together to capture the game's image into its profile.
+    /// Gamepad buttons held together to capture the game's image into the active mode's captures.
     pub capture_combo: Vec<String>,
     /// Toy name -> how it renders intensities (missing: `ToySettings::default()`).
     pub toys: BTreeMap<String, ToySettings>,
@@ -91,7 +91,8 @@ pub struct Settings {
     /// Modes see the game's image, copied by the in-game overlay (§6.3, §6.4).
     pub screen: bool,
     /// Local port other programs send values and events to (§6.5); 0 turns it off.
-    pub inputs_port: u16,
+    #[serde(alias = "inputs_port")]
+    pub external_port: u16,
     /// Keyboard shortcuts for the combos' actions, through the desktop's portal.
     pub keyboard_shortcuts: bool,
     /// New GameViber versions are looked for on GitHub (`update`).
@@ -104,7 +105,7 @@ pub struct Settings {
 }
 
 /// Port of the local server other programs send values and events to.
-pub const DEFAULT_INPUTS_PORT: u16 = 12350;
+pub const DEFAULT_EXTERNAL_PORT: u16 = 12350;
 
 /// Which sound the audio analysis listens to.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -193,7 +194,7 @@ impl Default for Settings {
             overlay: OverlaySettings::default(),
             audio: AudioSource::Auto,
             screen: true,
-            inputs_port: DEFAULT_INPUTS_PORT,
+            external_port: DEFAULT_EXTERNAL_PORT,
             keyboard_shortcuts: false,
             check_updates: true,
             active_game: None,

@@ -97,7 +97,7 @@ pub const DEFAULT_PANIC_COMBO: [&str; 2] = ["BACK", "START"];
 pub const MARK_HOLD_SECS: f64 = 0.3;
 /// Default combo marking a moment that felt wrong.
 pub const DEFAULT_MARK_COMBO: [&str; 2] = ["BACK", "RS"];
-/// Default combo capturing the game's image into its profile.
+/// Default combo capturing the game's image into the active mode's captures.
 pub const DEFAULT_CAPTURE_COMBO: [&str; 2] = ["BACK", "LS"];
 /// A combo needs at least this many buttons, so that no single press triggers it.
 pub const PANIC_COMBO_MIN: usize = 2;

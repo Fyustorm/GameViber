@@ -1,6 +1,6 @@
 //! Recorded play sessions: the game's rumble, the player's buttons and axes,
 //! what was heard of the game's sound and seen of its image (levels, hits,
-//! flashes, zones, scene embeddings — never the sound or the images), and the
+//! flashes, indicators, phase embeddings — never the sound or the images), and the
 //! values other programs sent, as the mode saw them, so that a mode can be
 //! tuned on a real session without playing it again.
 //!
@@ -19,12 +19,14 @@ use crate::audio::{AudioHit, AudioLevels, Band, Embedding};
 use crate::config;
 use crate::gamepad::{ButtonEvent, PadState, AXES, BUTTONS};
 use crate::mode::rumble_events::RumbleLevels;
-use crate::mode::{ModeEvent, ZoneValue};
+use crate::mode::{ModeEvent, IndicatorValue};
 use crate::platform::local_time;
 use crate::screen::ScreenLevels;
 
-/// 2: audio changes. 3: image, zones, values from other programs.
-const FORMAT_VERSION: u32 = 3;
+/// 2: audio changes. 3: image, indicators, values from other programs. 4: the
+/// names of the modes' Inputs (indicator, external values and events); the
+/// older names are still read.
+const FORMAT_VERSION: u32 = 4;
 const EXTENSION: &str = "jsonl";
 /// Recording stops by itself after this long.
 pub const MAX_SECS: f64 = 60.0 * 60.0;
@@ -61,24 +63,27 @@ pub enum Change {
     /// The sound stopped being captured.
     NoAudio,
     AudioHit { strength: f64, band: Band },
-    /// Embedding of the last 10 s of sound, for the mode's scenes.
+    /// Embedding of the last 10 s of sound, for the mode's phases.
     AudioClip { embedding: Vec<f32> },
     /// Measures of the game's image.
     Screen { brightness: f64, motion: f64, action: f64 },
     /// The image stopped being copied.
     NoScreen,
     Flash { strength: f64 },
-    /// Embedding of the game's image, for the mode's scenes.
+    /// Embedding of the game's image, for the mode's phases.
     ScreenClip { embedding: Vec<f32> },
-    Zone { name: String, value: ZoneValue },
-    /// A value another program sent (`input.custom`).
-    Custom { name: String, value: serde_json::Value },
+    #[serde(alias = "zone")]
+    Indicator { name: String, value: IndicatorValue },
+    /// A value another program sent (`input.external`).
+    #[serde(alias = "custom")]
+    ExternalValue { name: String, value: serde_json::Value },
     /// An event another program sent (`on_event`).
-    External { name: String, data: serde_json::Value },
+    #[serde(alias = "external")]
+    ExternalEvent { name: String, data: serde_json::Value },
 }
 
 /// The game's sound and image during one tick; their events (hits, clips,
-/// flashes, zones) and the values other programs sent come with the tick's events.
+/// flashes, indicators) and the values other programs sent come with the tick's events.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Senses {
     pub audio: Option<AudioLevels>,
@@ -241,14 +246,14 @@ impl Recorder {
                     Change::Axis { name, .. } => format!("axis {name}"),
                     Change::Audio { .. } | Change::NoAudio => "audio".to_owned(),
                     Change::Screen { .. } | Change::NoScreen => "screen".to_owned(),
-                    Change::Zone { name, .. } => format!("zone {name}"),
-                    Change::Custom { name, .. } => format!("custom {name}"),
+                    Change::Indicator { name, .. } => format!("zone {name}"),
+                    Change::ExternalValue { name, .. } => format!("external {name}"),
                     Change::Mark
                     | Change::AudioHit { .. }
                     | Change::AudioClip { .. }
                     | Change::Flash { .. }
                     | Change::ScreenClip { .. }
-                    | Change::External { .. } => continue,
+                    | Change::ExternalEvent { .. } => continue,
                 };
                 self.base.insert(key, change);
             }
@@ -307,9 +312,9 @@ impl Recorder {
                 ModeEvent::AudioClip(clip) => Change::AudioClip { embedding: embedding(clip) },
                 ModeEvent::ScreenClip(image) => Change::ScreenClip { embedding: embedding(image) },
                 ModeEvent::ScreenFlash(strength) => Change::Flash { strength: round(*strength, 100.0) },
-                ModeEvent::Zone { name, value } => Change::Zone { name: name.clone(), value: *value },
-                ModeEvent::Custom { name, value } => Change::Custom { name: name.clone(), value: value.clone() },
-                ModeEvent::External { name, data } => Change::External { name: name.clone(), data: data.clone() },
+                ModeEvent::Indicator { name, value } => Change::Indicator { name: name.clone(), value: *value },
+                ModeEvent::ExternalValue { name, value } => Change::ExternalValue { name: name.clone(), value: value.clone() },
+                ModeEvent::ExternalEvent { name, data } => Change::ExternalEvent { name: name.clone(), data: data.clone() },
                 ModeEvent::Button(_) | ModeEvent::Device { .. } => continue,
             };
             self.changes.push_back((t, change));
@@ -326,8 +331,8 @@ impl Recorder {
             Change::Button { pressed, .. } => *pressed,
             Change::Axis { value, .. } => *value != 0.0,
             Change::Rumble { strong, weak } => *strong != 0.0 || *weak != 0.0,
-            Change::Audio { .. } | Change::Screen { .. } | Change::Zone { .. } => true,
-            Change::Custom { value, .. } => !value.is_null(),
+            Change::Audio { .. } | Change::Screen { .. } | Change::Indicator { .. } => true,
+            Change::ExternalValue { value, .. } => !value.is_null(),
             Change::Mark
             | Change::NoAudio
             | Change::NoScreen
@@ -335,7 +340,7 @@ impl Recorder {
             | Change::AudioClip { .. }
             | Change::Flash { .. }
             | Change::ScreenClip { .. }
-            | Change::External { .. } => false,
+            | Change::ExternalEvent { .. } => false,
         });
         let changes: Vec<(f64, Change)> = base
             .cloned()
@@ -440,9 +445,9 @@ impl Player {
                 Change::NoScreen => self.screen = None,
                 Change::Flash { strength } => self.events.push(ModeEvent::ScreenFlash(*strength)),
                 Change::ScreenClip { embedding } => self.events.push(ModeEvent::ScreenClip(Arc::from(embedding.as_slice()))),
-                Change::Zone { name, value } => self.events.push(ModeEvent::Zone { name: name.clone(), value: *value }),
-                Change::Custom { name, value } => self.events.push(ModeEvent::Custom { name: name.clone(), value: value.clone() }),
-                Change::External { name, data } => self.events.push(ModeEvent::External { name: name.clone(), data: data.clone() }),
+                Change::Indicator { name, value } => self.events.push(ModeEvent::Indicator { name: name.clone(), value: *value }),
+                Change::ExternalValue { name, value } => self.events.push(ModeEvent::ExternalValue { name: name.clone(), value: value.clone() }),
+                Change::ExternalEvent { name, data } => self.events.push(ModeEvent::ExternalEvent { name: name.clone(), data: data.clone() }),
             }
             self.next += 1;
         }
@@ -525,7 +530,7 @@ mod tests {
     }
 
     #[test]
-    fn image_zones_and_other_programs_are_recorded_and_replayed() {
+    fn image_indicators_and_other_programs_are_recorded_and_replayed() {
         let pad = PadState::default();
         let none = RumbleLevels::default();
         let mut rec = Recorder::new(0.0, "T".into(), Some("game.exe".into()));
@@ -533,10 +538,10 @@ mod tests {
         let events = [
             ModeEvent::ScreenFlash(0.8),
             ModeEvent::ScreenClip(Arc::from(vec![1.0f32, 0.0].as_slice())),
-            ModeEvent::Zone { name: "hp".into(), value: ZoneValue::Bar(0.5) },
-            ModeEvent::Zone { name: "battle_hud".into(), value: ZoneValue::Visible(true) },
-            ModeEvent::Custom { name: "ammo".into(), value: serde_json::json!(3) },
-            ModeEvent::External { name: "kill".into(), data: serde_json::json!({"weapon": "bow"}) },
+            ModeEvent::Indicator { name: "hp".into(), value: IndicatorValue::Gauge(0.5) },
+            ModeEvent::Indicator { name: "battle_hud".into(), value: IndicatorValue::Visibility(true) },
+            ModeEvent::ExternalValue { name: "ammo".into(), value: serde_json::json!(3) },
+            ModeEvent::ExternalEvent { name: "kill".into(), data: serde_json::json!({"weapon": "bow"}) },
             ModeEvent::Button(ButtonEvent { name: "A", pressed: true }),
         ];
         rec.tick(0.5, none, &[], &pad, Senses { audio: None, screen: Some(seen) }, &events);
@@ -544,8 +549,12 @@ mod tests {
         let session = rec.session(1.5, None, None);
         assert_eq!(session.changes.len(), 8, "the button is recorded from the buttons, not the events: {:?}", session.changes);
         let text = serde_json::to_string(&session.changes).unwrap();
-        assert!(text.contains(r#"{"zone":{"name":"hp","value":{"bar":0.5}}}"#), "{text}");
-        assert!(text.contains(r#"{"external":{"name":"kill","data":{"weapon":"bow"}}}"#), "{text}");
+        assert!(text.contains(r#"{"indicator":{"name":"hp","value":{"gauge":0.5}}}"#), "{text}");
+        assert!(text.contains(r#"{"external_event":{"name":"kill","data":{"weapon":"bow"}}}"#), "{text}");
+        // Recordings made before the terms changed.
+        let old = r#"[{"zone":{"name":"hp","value":{"bar":0.5}}},{"zone":{"name":"hud","value":{"visible":true}}},{"custom":{"name":"ammo","value":3}},{"external":{"name":"kill","data":null}}]"#;
+        let old: Vec<Change> = serde_json::from_str(old).unwrap();
+        assert!(matches!(old[..], [Change::Indicator { value: IndicatorValue::Gauge(_), .. }, Change::Indicator { value: IndicatorValue::Visibility(true), .. }, Change::ExternalValue { .. }, Change::ExternalEvent { .. }]));
 
         let mut player = Player::new(session, Path::new(""), 0.0);
         let mut pad = PadState::default();

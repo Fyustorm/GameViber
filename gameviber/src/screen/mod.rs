@@ -1,11 +1,11 @@
 //! The game's image: small copies of its frames made by the in-game overlay
 //! (`gameviber_common::overlay::frames`), and what is measured on them:
-//! brightness, motion and flashes here, embeddings for scenes (`clip`, in a
-//! thread of its own) and the profile's zones (`zones`). The copies stay in
+//! brightness, motion and flashes here, embeddings for phases (`clip`, in a
+//! thread of its own) and the active mode's indicators (`indicators`). The copies stay in
 //! memory and are never saved.
 
 pub mod clip;
-pub mod zones;
+pub mod indicators;
 
 use std::collections::VecDeque;
 use std::sync::{mpsc, Arc};
@@ -119,19 +119,19 @@ const MODEL_IDLE: Duration = Duration::from_secs(30);
 
 /// Embeds copies of the game's image with the CLIP model, in a thread of its
 /// own; the model is loaded on the first image.
-pub struct ImageScenes {
+pub struct ImagePhases {
     frames: mpsc::SyncSender<Arc<Frame>>,
     embeddings: mpsc::Receiver<Embedding>,
 }
 
-impl ImageScenes {
+impl ImagePhases {
     pub fn start() -> Self {
         let (frames, frames_rx) = mpsc::sync_channel::<Arc<Frame>>(1);
         let (tx, embeddings) = mpsc::channel();
         std::thread::Builder::new()
-            .name("screen-scenes".into())
+            .name("screen-phases".into())
             .spawn(move || embed_frames(frames_rx, tx))
-            .expect("spawn the image scenes thread");
+            .expect("spawn the image phases thread");
         Self { frames, embeddings }
     }
 
@@ -153,7 +153,7 @@ fn embed_frames(frames: mpsc::Receiver<Arc<Frame>>, tx: mpsc::Sender<Embedding>)
             Ok(frame) => frame,
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 if encoder.take().is_some() {
-                    log::debug!("image scene model unloaded");
+                    log::debug!("image phase model unloaded");
                 }
                 continue;
             }
@@ -162,11 +162,11 @@ fn embed_frames(frames: mpsc::Receiver<Arc<Frame>>, tx: mpsc::Sender<Embedding>)
         if encoder.is_none() && !failed {
             match clip::ImageEncoder::load() {
                 Ok(e) => {
-                    log::info!("image scene model loaded");
+                    log::info!("image phase model loaded");
                     encoder = Some(e);
                 }
                 Err(e) => {
-                    log::error!("cannot load the image scene model: {e:#}");
+                    log::error!("cannot load the image phase model: {e:#}");
                     failed = true;
                 }
             }
@@ -192,11 +192,11 @@ pub struct ScreenView {
     pub levels: Option<ScreenLevels>,
     /// Copies per second.
     pub rate: f64,
-    /// The image model is ready and scenes or examples use it.
+    /// The image model is ready and phases or examples use it.
     pub model: crate::models::ModelState,
-    /// Raw measure of each zone of the game's profile (similarity or fill;
+    /// Raw measure of each indicator of the active mode (similarity or fill;
     /// None: a bar not on screen), and its value.
-    pub zones: Vec<(String, Option<f32>, Option<crate::mode::ZoneValue>)>,
+    pub indicators: Vec<(String, Option<f32>, Option<crate::mode::IndicatorValue>)>,
 }
 
 #[cfg(test)]

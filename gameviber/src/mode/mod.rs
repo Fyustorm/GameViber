@@ -7,7 +7,7 @@ pub mod outputs;
 pub mod prompt;
 pub mod report;
 pub mod rumble_events;
-pub mod scenes;
+pub mod phases;
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashSet};
@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use crate::audio::{AudioHit, AudioLevels, Embedding};
 use crate::gamepad::{ButtonEvent, PadState, AXES, BUTTONS};
 use crate::screen::ScreenLevels;
-use scenes::{SceneChange, SceneDecl, SceneTracker, Sense};
+use phases::{PhaseChange, PhaseDecl, PhaseTracker, Sense};
 use outputs::Outputs;
 use rumble_events::{RumbleEvent, RumbleLevels, RumbleTracker, DEFAULT_RELEASE, DEFAULT_THRESHOLD};
 
@@ -31,11 +31,11 @@ const CALLBACK_BUDGET: Duration = Duration::from_millis(10);
 const LOAD_BUDGET: Duration = Duration::from_millis(200);
 const MEMORY_LIMIT: usize = 16 * 1024 * 1024;
 const PERSIST_MAX_DEPTH: usize = 16;
-const MAX_SCENES: usize = 8;
+const MAX_PHASES: usize = 8;
 /// Sound hits at least this strong are impacts (`on_impact`).
 const IMPACT_MIN_HIT: f64 = 0.3;
-/// Nesting kept from the values external programs send (`input.custom`).
-const CUSTOM_MAX_DEPTH: usize = 4;
+/// Nesting kept from the values external programs send (`input.external`).
+const EXTERNAL_MAX_DEPTH: usize = 4;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -130,20 +130,23 @@ pub struct ModeInfo {
     pub feedback: Vec<Question>,
     pub rumble_threshold: f64,
     pub rumble_release: f64,
-    /// Scenes recognized from the game's sound and image (§6.3), sorted by name.
-    pub scenes: Vec<SceneDecl>,
-    /// Seconds over which scene probabilities are averaged.
-    pub scene_window: f64,
+    /// Phases recognized from the game's sound and image (§6.3), sorted by name.
+    pub phases: Vec<PhaseDecl>,
+    /// Seconds over which phase probabilities are averaged.
+    pub phase_window: f64,
 }
 
-/// A zone of the game's screen, set up in its Signals (§6.5).
+/// What an indicator of the game's screen reads, set up in a mode's Inputs
+/// (§6.5); recorded `visible` and `bar` before the terms changed.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ZoneValue {
+pub enum IndicatorValue {
     /// An element shown or not.
-    Visible(bool),
-    /// How full a bar is, 0..1.
-    Bar(f64),
+    #[serde(alias = "visible")]
+    Visibility(bool),
+    /// How full a gauge is, 0..1.
+    #[serde(alias = "bar")]
+    Gauge(f64),
     /// Not found on screen (a bar hidden in menus): nil for modes.
     Unknown,
 }
@@ -169,12 +172,12 @@ pub enum ModeEvent {
     ScreenClip(Embedding),
     /// A sudden flash of the game's image, 0..1.
     ScreenFlash(f64),
-    /// A zone of the screen changed.
-    Zone { name: String, value: ZoneValue },
-    /// A value sent by another program (`input.custom`); `Null` removes it.
-    Custom { name: String, value: serde_json::Value },
+    /// An indicator of the screen changed.
+    Indicator { name: String, value: IndicatorValue },
+    /// A value sent by another program (`input.external`); `Null` removes it.
+    ExternalValue { name: String, value: serde_json::Value },
     /// An event sent by another program (`on_event`).
-    External { name: String, data: serde_json::Value },
+    ExternalEvent { name: String, data: serde_json::Value },
 }
 
 /// What a tick produced besides channel values.
@@ -259,9 +262,9 @@ struct InputTables {
     axes: Table,
     audio: Table,
     screen: Table,
-    scenes: Table,
-    zones: Table,
-    custom: Table,
+    phases: Table,
+    indicators: Table,
+    external: Table,
 }
 
 pub struct ModeRuntime {
@@ -279,13 +282,13 @@ pub struct ModeRuntime {
     audio: Option<AudioLevels>,
     /// The game's image right now; None when it is not copied.
     screen: Option<ScreenLevels>,
-    /// The scenes recognized: the game's when it has some, else the mode's own.
-    scene_decls: Vec<SceneDecl>,
-    scenes: SceneTracker,
-    /// Scene change to report on the next tick (the sound or image stopped).
-    pending_scene: Option<SceneChange>,
-    /// Zone values as last reported.
-    zones: BTreeMap<String, ZoneValue>,
+    /// The phases recognized: the game's when it has some, else the mode's own.
+    phase_decls: Vec<PhaseDecl>,
+    phases: PhaseTracker,
+    /// Phase change to report on the next tick (the sound or image stopped).
+    pending_phase: Option<PhaseChange>,
+    /// Indicator values as last reported.
+    indicators: BTreeMap<String, IndicatorValue>,
 }
 
 type LoadResult<T> = Result<T, String>;
@@ -405,9 +408,9 @@ impl ModeRuntime {
             axes: lua.create_table().map_err(lua_err)?,
             audio: lua.create_table().map_err(lua_err)?,
             screen: lua.create_table().map_err(lua_err)?,
-            scenes: lua.create_table().map_err(lua_err)?,
-            zones: lua.create_table().map_err(lua_err)?,
-            custom: lua.create_table().map_err(lua_err)?,
+            phases: lua.create_table().map_err(lua_err)?,
+            indicators: lua.create_table().map_err(lua_err)?,
+            external: lua.create_table().map_err(lua_err)?,
         };
         for (name, table) in [
             ("rumble", &input.rumble),
@@ -415,13 +418,13 @@ impl ModeRuntime {
             ("axes", &input.axes),
             ("audio", &input.audio),
             ("screen", &input.screen),
-            ("phases", &input.scenes),
-            ("indicators", &input.zones),
-            ("external", &input.custom),
+            ("phases", &input.phases),
+            ("indicators", &input.indicators),
+            ("external", &input.external),
             // Their names in the first version of the API.
-            ("scenes", &input.scenes),
-            ("zones", &input.zones),
-            ("custom", &input.custom),
+            ("scenes", &input.phases),
+            ("zones", &input.indicators),
+            ("custom", &input.external),
         ] {
             input.root.raw_set(name, table).map_err(lua_err)?;
         }
@@ -431,8 +434,8 @@ impl ModeRuntime {
 
         ctx.borrow_mut().outputs = Some(Outputs::new(info.channels.clone()));
         let tracker = RumbleTracker::new(info.rumble_threshold, info.rumble_release, 0.0);
-        let scenes = SceneTracker::new(&info.scenes, info.scene_window);
-        let scene_decls = info.scenes.clone();
+        let phases = PhaseTracker::new(&info.phases, info.phase_window);
+        let phase_decls = info.phases.clone();
         Ok(Self {
             lua,
             ctx,
@@ -446,10 +449,10 @@ impl ModeRuntime {
             tracker,
             audio: None,
             screen: None,
-            scene_decls,
-            scenes,
-            pending_scene: None,
-            zones: BTreeMap::new(),
+            phase_decls,
+            phases,
+            pending_phase: None,
+            indicators: BTreeMap::new(),
         })
     }
 
@@ -461,47 +464,47 @@ impl ModeRuntime {
         &self.param_values
     }
 
-    /// The scenes of the game being played, which replace the mode's own
-    /// (§6.3); none: the mode's own scenes.
-    pub fn set_game_scenes(&mut self, game: &[SceneDecl]) {
-        let mut wanted = if game.is_empty() { self.info.scenes.clone() } else { game.to_vec() };
+    /// The phases of the game being played, which replace the mode's own
+    /// (§6.3); none: the mode's own phases.
+    pub fn set_game_phases(&mut self, game: &[PhaseDecl]) {
+        let mut wanted = if game.is_empty() { self.info.phases.clone() } else { game.to_vec() };
         wanted.sort_by(|a, b| a.name.cmp(&b.name));
-        wanted.truncate(MAX_SCENES);
-        if wanted == self.scene_decls {
+        wanted.truncate(MAX_PHASES);
+        if wanted == self.phase_decls {
             return;
         }
-        if let Some(change) = self.scenes.reset() {
-            self.pending_scene = Some(change);
+        if let Some(change) = self.phases.reset() {
+            self.pending_phase = Some(change);
         }
-        self.scenes = SceneTracker::new(&wanted, self.info.scene_window);
-        // The zones on screen now, for the scenes tied to one.
+        self.phases = PhaseTracker::new(&wanted, self.info.phase_window);
+        // The indicators on screen now, for the phases tied to one.
         let time = self.ctx.borrow().time;
-        for (name, value) in &self.zones {
-            if let Some(change) = self.scenes.zone(time, name, matches!(value, ZoneValue::Visible(true) | ZoneValue::Bar(_))) {
-                self.pending_scene = Some(change);
+        for (name, value) in &self.indicators {
+            if let Some(change) = self.phases.indicator(time, name, matches!(value, IndicatorValue::Visibility(true) | IndicatorValue::Gauge(_))) {
+                self.pending_phase = Some(change);
             }
         }
-        let _ = self.input.scenes.clear();
-        self.scene_decls = wanted;
+        let _ = self.input.phases.clear();
+        self.phase_decls = wanted;
     }
 
-    /// The scenes recognized (the game's or the mode's own).
-    pub fn scene_decls(&self) -> &[SceneDecl] {
-        &self.scene_decls
+    /// The phases recognized (the game's or the mode's own).
+    pub fn phase_decls(&self) -> &[PhaseDecl] {
+        &self.phase_decls
     }
 
-    pub fn uses_sound_scenes(&self) -> bool {
-        self.scene_decls.iter().any(|s| s.sound.is_some())
+    pub fn uses_sound_phases(&self) -> bool {
+        self.phase_decls.iter().any(|s| s.sound.is_some())
     }
 
-    /// Scenes compared with the image: described for it, or with captures (`examples`).
-    pub fn uses_screen_scenes(&self, examples: bool) -> bool {
-        examples || self.scene_decls.iter().any(|s| s.screen.is_some())
+    /// Phases compared with the image: described for it, or with captures (`examples`).
+    pub fn uses_screen_phases(&self, examples: bool) -> bool {
+        examples || self.phase_decls.iter().any(|s| s.screen.is_some())
     }
 
-    /// Scenes and their description for `sense` (Sound or Screen), to compute their embeddings.
-    pub fn scene_descriptions(&self, sense: Sense) -> Vec<(String, String)> {
-        self.scene_decls
+    /// Phases and their description for `sense` (Sound or Screen), to compute their embeddings.
+    pub fn phase_descriptions(&self, sense: Sense) -> Vec<(String, String)> {
+        self.phase_decls
             .iter()
             .filter_map(|s| {
                 let description = match sense {
@@ -514,24 +517,24 @@ impl ModeRuntime {
             .collect()
     }
 
-    /// What `sense` compares with: a vector per scene (descriptions' embeddings,
-    /// or the mean of the profile's example images).
-    pub fn set_scene_references(&mut self, sense: Sense, references: Vec<(String, Embedding)>) {
-        self.scenes.set_references(sense, references);
+    /// What `sense` compares with: a vector per phase (descriptions' embeddings,
+    /// or the mean of the example images set up for the mode).
+    pub fn set_phase_references(&mut self, sense: Sense, references: Vec<(String, Embedding)>) {
+        self.phases.set_references(sense, references);
     }
 
     #[cfg(test)]
-    pub fn scenes_ready(&self) -> bool {
-        self.scenes.ready()
+    pub fn phases_ready(&self) -> bool {
+        self.phases.ready()
     }
 
-    pub fn scene_sense(&self, sense: Sense) -> bool {
-        self.scenes.has(sense)
+    pub fn phase_sense(&self, sense: Sense) -> bool {
+        self.phases.has(sense)
     }
 
-    /// The current scene and the average probability of each, sorted by name.
-    pub fn scene_state(&self) -> (Option<String>, Vec<(String, f64)>) {
-        (self.scenes.current().map(str::to_owned), self.scenes.averages().map(|(n, p)| (n.to_owned(), p)).collect())
+    /// The current phase and the average probability of each, sorted by name.
+    pub fn phase_state(&self) -> (Option<String>, Vec<(String, f64)>) {
+        (self.phases.current().map(str::to_owned), self.phases.averages().map(|(n, p)| (n.to_owned(), p)).collect())
     }
 
     /// The game's sound for the next ticks; None when it stops being captured.
@@ -546,17 +549,17 @@ impl ModeRuntime {
     pub fn set_screen(&mut self, levels: Option<ScreenLevels>) {
         if levels.is_none() && self.screen.is_some() {
             self.forget_sense(&[Sense::Screen, Sense::Examples]);
-            // The zones are read on the image: they are gone with it.
-            self.zones.clear();
-            let _ = self.input.zones.clear();
+            // The indicators are read on the image: they are gone with it.
+            self.indicators.clear();
+            let _ = self.input.indicators.clear();
         }
         self.screen = levels;
     }
 
     fn forget_sense(&mut self, senses: &[Sense]) {
         for sense in senses {
-            if let Some(change) = self.scenes.forget(*sense) {
-                self.pending_scene = Some(change);
+            if let Some(change) = self.phases.forget(*sense) {
+                self.pending_phase = Some(change);
             }
         }
     }
@@ -588,11 +591,11 @@ impl ModeRuntime {
         }
         let time = self.ctx.borrow().time;
         self.tracker = RumbleTracker::new(self.info.rumble_threshold, self.info.rumble_release, time);
-        self.scenes.reset();
-        self.pending_scene = None;
-        self.zones.clear();
-        let _ = self.input.zones.clear();
-        let _ = self.input.custom.clear();
+        self.phases.reset();
+        self.pending_phase = None;
+        self.indicators.clear();
+        let _ = self.input.indicators.clear();
+        let _ = self.input.external.clear();
         self.call_opt(&self.callbacks.on_start, ())
     }
 
@@ -653,11 +656,11 @@ impl ModeRuntime {
         self.input.root.raw_set("time", time).map_err(lua_err)?;
         self.run_timers(time)?;
 
-        if let Some(change) = self.pending_scene.take() {
-            self.scene_changed(change, time)?;
+        if let Some(change) = self.pending_phase.take() {
+            self.phase_changed(change, time)?;
         }
-        if let Some(change) = self.scenes.tick(time) {
-            self.scene_changed(change, time)?;
+        if let Some(change) = self.phases.tick(time) {
+            self.phase_changed(change, time)?;
         }
         for event in events {
             match event {
@@ -691,8 +694,8 @@ impl ModeRuntime {
                     }
                 }
                 ModeEvent::AudioClip(sound) => {
-                    if let Some(change) = self.scenes.update(time, Sense::Sound, sound) {
-                        self.scene_changed(change, time)?;
+                    if let Some(change) = self.phases.update(time, Sense::Sound, sound) {
+                        self.phase_changed(change, time)?;
                     }
                 }
                 ModeEvent::ScreenClip(image) => {
@@ -700,8 +703,8 @@ impl ModeRuntime {
                         continue;
                     }
                     for sense in [Sense::Screen, Sense::Examples] {
-                        if let Some(change) = self.scenes.update(time, sense, image) {
-                            self.scene_changed(change, time)?;
+                        if let Some(change) = self.phases.update(time, sense, image) {
+                            self.phase_changed(change, time)?;
                         }
                     }
                 }
@@ -710,21 +713,21 @@ impl ModeRuntime {
                         self.impact(*strength, "screen", time)?;
                     }
                 }
-                ModeEvent::Zone { name, value } => {
-                    let previous = self.zones.insert(name.clone(), *value);
+                ModeEvent::Indicator { name, value } => {
+                    let previous = self.indicators.insert(name.clone(), *value);
                     if previous == Some(*value) {
                         continue;
                     }
-                    let lua_value = |v: ZoneValue| match v {
-                        ZoneValue::Visible(b) => Value::Boolean(b),
-                        ZoneValue::Bar(x) => Value::Number(x),
-                        ZoneValue::Unknown => Value::Nil,
+                    let lua_value = |v: IndicatorValue| match v {
+                        IndicatorValue::Visibility(b) => Value::Boolean(b),
+                        IndicatorValue::Gauge(x) => Value::Number(x),
+                        IndicatorValue::Unknown => Value::Nil,
                     };
-                    self.input.zones.raw_set(name.as_str(), lua_value(*value)).map_err(lua_err)?;
-                    // A zone can be a sure sign of a scene of the game.
-                    let shown = matches!(value, ZoneValue::Visible(true) | ZoneValue::Bar(_));
-                    if let Some(change) = self.scenes.zone(time, name, shown) {
-                        self.scene_changed(change, time)?;
+                    self.input.indicators.raw_set(name.as_str(), lua_value(*value)).map_err(lua_err)?;
+                    // An indicator can be a sure sign of a phase of the game.
+                    let shown = matches!(value, IndicatorValue::Visibility(true) | IndicatorValue::Gauge(_));
+                    if let Some(change) = self.phases.indicator(time, name, shown) {
+                        self.phase_changed(change, time)?;
                     }
                     if self.callbacks.on_indicator.is_some() {
                         let t = self.lua.create_table().map_err(lua_err)?;
@@ -736,11 +739,11 @@ impl ModeRuntime {
                         self.call_opt(&self.callbacks.on_indicator, t)?;
                     }
                 }
-                ModeEvent::Custom { name, value } => {
+                ModeEvent::ExternalValue { name, value } => {
                     let value = json_to_lua(&self.lua, value, 0).map_err(lua_err)?;
-                    self.input.custom.raw_set(name.as_str(), value).map_err(lua_err)?;
+                    self.input.external.raw_set(name.as_str(), value).map_err(lua_err)?;
                 }
-                ModeEvent::External { name, data } => {
+                ModeEvent::ExternalEvent { name, data } => {
                     if self.callbacks.on_event.is_none() {
                         continue;
                     }
@@ -796,14 +799,14 @@ impl ModeRuntime {
         self.call_opt(&self.callbacks.on_impact, t)
     }
 
-    fn scene_changed(&self, change: SceneChange, time: f64) -> Result<(), String> {
-        log::debug!("scene: {:?} -> {:?} ({:.2})", change.previous, change.scene, change.confidence);
+    fn phase_changed(&self, change: PhaseChange, time: f64) -> Result<(), String> {
+        log::debug!("phase: {:?} -> {:?} ({:.2})", change.previous, change.phase, change.confidence);
         if self.callbacks.on_phase.is_none() {
             return Ok(());
         }
         let t = self.lua.create_table().map_err(lua_err)?;
-        t.raw_set("phase", change.scene.clone()).map_err(lua_err)?;
-        t.raw_set("scene", change.scene).map_err(lua_err)?;
+        t.raw_set("phase", change.phase.clone()).map_err(lua_err)?;
+        t.raw_set("scene", change.phase).map_err(lua_err)?;
         t.raw_set("previous", change.previous).map_err(lua_err)?;
         t.raw_set("confidence", change.confidence).map_err(lua_err)?;
         t.raw_set("t", time).map_err(lua_err)?;
@@ -876,12 +879,12 @@ impl ModeRuntime {
         // The senses there are, averaged.
         let busy: Vec<f64> = [self.audio.map(|l| l.intensity), self.screen.map(|l| l.action as f64)].into_iter().flatten().collect();
         root.raw_set("intensity", if busy.is_empty() { 0.0 } else { busy.iter().sum::<f64>() / busy.len() as f64 })?;
-        root.raw_set("phase", self.scenes.current())?;
-        root.raw_set("phase_confidence", self.scenes.confidence())?;
-        root.raw_set("scene", self.scenes.current())?;
-        root.raw_set("scene_confidence", self.scenes.confidence())?;
-        for (name, p) in self.scenes.averages() {
-            self.input.scenes.raw_set(name, p)?;
+        root.raw_set("phase", self.phases.current())?;
+        root.raw_set("phase_confidence", self.phases.confidence())?;
+        root.raw_set("scene", self.phases.current())?;
+        root.raw_set("scene_confidence", self.phases.confidence())?;
+        for (name, p) in self.phases.averages() {
+            self.input.phases.raw_set(name, p)?;
         }
         Ok(())
     }
@@ -895,7 +898,7 @@ fn json_to_lua(lua: &Lua, value: &serde_json::Value, depth: usize) -> mlua::Resu
         Json::Bool(b) => Value::Boolean(*b),
         Json::Number(n) => Value::Number(n.as_f64().unwrap_or(0.0)),
         Json::String(s) => Value::String(lua.create_string(s)?),
-        _ if depth >= CUSTOM_MAX_DEPTH => Value::Nil,
+        _ if depth >= EXTERNAL_MAX_DEPTH => Value::Nil,
         Json::Array(items) => {
             let t = lua.create_table()?;
             for (i, item) in items.iter().enumerate() {
@@ -994,10 +997,10 @@ fn parse_info(declared: &Table) -> LoadResult<ModeInfo> {
     let number = |key: &str, default: f64| -> LoadResult<f64> {
         Ok(declared.get::<Option<f64>>(key).map_err(|e| format!("mode.{key}: {e}"))?.unwrap_or(default))
     };
-    // `phases` and `phase_window` were `scenes` and `scene_window` in the first version of the API.
+    // `phases` and `phase_window` were `phases` and `phase_window` in the first version of the API.
     let either = |key: &str, old: &str| if declared.contains_key(key).unwrap_or(false) { key.to_owned() } else { old.to_owned() };
     let (phases_key, window_key) = (either("phases", "scenes"), either("phase_window", "scene_window"));
-    let mut scenes = Vec::new();
+    let mut phases = Vec::new();
     if let Some(table) = declared.get::<Option<Table>>(phases_key.as_str()).map_err(|e| format!("mode.{phases_key}: {e}"))? {
         for pair in table.pairs::<String, Value>() {
             let (name, def) = pair.map_err(|e| format!("mode.{phases_key}: {e}"))?;
@@ -1012,15 +1015,15 @@ fn parse_info(declared: &Table) -> LoadResult<ModeInfo> {
             if sound.is_none() && screen.is_none() {
                 return Err(format!("mode.{phases_key}: phase '{name}' needs a sound or a screen description"));
             }
-            scenes.push(SceneDecl { name, sound, screen, zone: None, hold: 0.0 });
+            phases.push(PhaseDecl { name, sound, screen, indicator: None, hold: 0.0 });
         }
-        scenes.sort_by(|a, b| a.name.cmp(&b.name));
-        if !(2..=MAX_SCENES).contains(&scenes.len()) {
-            return Err(format!("mode.{phases_key} must declare 2 to {MAX_SCENES} phases"));
+        phases.sort_by(|a, b| a.name.cmp(&b.name));
+        if !(2..=MAX_PHASES).contains(&phases.len()) {
+            return Err(format!("mode.{phases_key} must declare 2 to {MAX_PHASES} phases"));
         }
     }
-    let scene_window = number(&window_key, scenes::DEFAULT_WINDOW)?;
-    if !(2.0..=60.0).contains(&scene_window) {
+    let phase_window = number(&window_key, phases::DEFAULT_WINDOW)?;
+    if !(2.0..=60.0).contains(&phase_window) {
         return Err(format!("mode.{window_key} must be between 2 and 60 seconds"));
     }
 
@@ -1037,8 +1040,8 @@ fn parse_info(declared: &Table) -> LoadResult<ModeInfo> {
         feedback: feedback.into_iter().map(|(_, q)| q).collect(),
         rumble_threshold: number("rumble_threshold", DEFAULT_THRESHOLD)?,
         rumble_release: number("rumble_release", DEFAULT_RELEASE)?,
-        scenes,
-        scene_window,
+        phases,
+        phase_window,
     })
 }
 

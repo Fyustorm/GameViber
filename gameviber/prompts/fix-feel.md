@@ -37,7 +37,7 @@ Mode **{{NAME}}**, with the player's current settings:
 
 # What GameViber knows about this game
 
-{{PROFILE}}
+{{INPUTS}}
 
 # What to do
 

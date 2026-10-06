@@ -1,6 +1,6 @@
 //! "A mode for this game" dialog, opened from a game's modes: builds a
 //! request for an AI assistant from the game's name (and, for an advanced
-//! mode, its signals), copies it to the clipboard, then creates a mode from
+//! mode, its inputs), copies it to the clipboard, then creates a mode from
 //! the answer pasted back (or a dropped .luau file), checking that it loads,
 //! and adds it to the game.
 
@@ -80,10 +80,10 @@ impl App {
                 "Also the raw sound and image, and the game's indicators, captures and values from other programs (its \
                  Inputs)",
             );
-            // The signals of the active mode, when it is one of the game's: the new mode starts with them.
+            // The inputs of the active mode, when it is one of the game's: the new mode starts with them.
             let inputs = for_game.filter(|game| game.modes.contains(&s.mode.id)).and(s.mode_inputs.as_ref());
-            let profile = for_game.zip(inputs).map(|(game, inputs)| (game.name.clone(), inputs.describe()));
-            match (&profile, g.depth) {
+            let described = for_game.zip(inputs).map(|(game, inputs)| (game.name.clone(), inputs.describe()));
+            match (&described, g.depth) {
                 (Some((game, text)), prompt::Depth::Advanced) if !text.is_empty() => {
                     ui.label(muted(format!("The request includes the inputs set up for {game}.")).size(12.0));
                 }
@@ -101,9 +101,9 @@ impl App {
             ui.horizontal(|ui| {
                 let game = g.game.trim().to_owned();
                 if ui.add_enabled(!game.is_empty(), primary("📋 Copy the request")).clicked() {
-                    let profile = profile.as_ref().map(|(_, text)| text.as_str());
-                    let scenes: Vec<String> = inputs.iter().flat_map(|i| i.phases.iter().map(|s| s.name.clone())).collect();
-                    let request = prompt::new_mode_prompt(&prompt::Templates::load(), &game, &s.settings.language, g.depth, profile, &scenes);
+                    let described = described.as_ref().map(|(_, text)| text.as_str());
+                    let phases: Vec<String> = inputs.iter().flat_map(|i| i.phases.iter().map(|s| s.name.clone())).collect();
+                    let request = prompt::new_mode_prompt(&prompt::Templates::load(), &game, &s.settings.language, g.depth, described, &phases);
                     ui.ctx().copy_text(request);
                     g.copied = Some(game.clone());
                 }

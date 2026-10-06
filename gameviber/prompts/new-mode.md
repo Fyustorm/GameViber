@@ -26,7 +26,7 @@ transformation; its API is specified at the end of this message.
 
 # What GameViber knows about this game
 
-{{PROFILE}}
+{{INPUTS}}
 
 {{RULES}}
 

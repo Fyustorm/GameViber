@@ -7,9 +7,9 @@
 mod audio;
 mod config;
 mod engine;
+mod external;
 mod gamepad;
 mod gui;
-mod inputs;
 mod intiface;
 mod logging;
 mod models;

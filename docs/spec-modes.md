@@ -426,7 +426,7 @@ them; an indicator shown in several places has a zone for each).
 **External inputs**: values and events from other programs. A game's existing mod, a script reading a game's API or
 anything else can send JSON to `ws://127.0.0.1:12350` (the port is set in Setup;
 web pages are refused) or, one message per line, to the pipe
-`$XDG_RUNTIME_DIR/gameviber/inputs`:
+`$XDG_RUNTIME_DIR/gameviber/external`:
 
 ```json
 {"set": {"hp": 0.4, "stance": "low"}}

@@ -2,7 +2,7 @@
 //! Central, their toys, the gamepad and a first mode; afterwards a status bar
 //! (the game being played, the panic stop) sits above the pages: Games (the
 //! library, then each game by breadcrumb: its modes, each with a page of its
-//! own, its signals — scenes, captures, zones, sound — and its sessions),
+//! own, its inputs — phases, captures, indicators, sound — and its sessions),
 //! Toys (with Intiface Central), Setup (gamepad, combos, overlay, default
 //! sound, other programs: what does not depend on the game) and Creator (mode
 //! editor, graphs, simulator, sessions, logs). Dialogs help players get a
@@ -25,7 +25,7 @@ mod setup;
 mod sharing;
 mod play;
 mod screen;
-mod signals;
+mod inputs;
 mod theme;
 mod toys;
 mod tour;
@@ -75,8 +75,8 @@ enum GameView {
     Modes,
     /// The active mode's page.
     Mode,
-    Signals,
-    /// Signals › captures and zones.
+    Inputs,
+    /// Inputs › captures and indicators.
     Screen,
     Sessions,
 }
@@ -102,7 +102,7 @@ pub struct App {
     feedback: feedback::State,
     screen: screen::State,
     games: games::State,
-    signals: signals::State,
+    inputs: inputs::State,
     sharing: sharing::State,
     /// The engine was told the Screen page is open.
     watching_screen: bool,
@@ -142,7 +142,7 @@ impl App {
             feedback: feedback::State::default(),
             screen: screen::State::default(),
             games: games::State::default(),
-            signals: signals::State::default(),
+            inputs: inputs::State::default(),
             sharing: sharing::State::default(),
             watching_screen: false,
             tour: tour::Tour::from_env(),
@@ -253,7 +253,7 @@ impl eframe::App for App {
         self.update_simulated_rumble();
         // The overlay copies the game's image while it is looked at, even when modes do not see it.
         let watching = self.page == Page::Games
-            && matches!(self.route, Route::Game { view: GameView::Screen | GameView::Signals, .. });
+            && matches!(self.route, Route::Game { view: GameView::Screen | GameView::Inputs, .. });
         if watching != self.watching_screen {
             self.watching_screen = watching;
             self.send(Command::WatchScreen(watching));

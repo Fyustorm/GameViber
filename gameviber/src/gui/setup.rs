@@ -1,5 +1,5 @@
 //! Setup page: what does not depend on the game, under tabs — the gamepad,
-//! the gamepad combos, the in-game overlay, the default sound and scene
+//! the gamepad combos, the in-game overlay, the default sound and phase
 //! model, and the local server other programs send values to.
 
 use eframe::egui::{self, Margin, RichText};
@@ -58,7 +58,7 @@ impl App {
 
     /// The local server other programs send values and events to, and what came lately.
     fn programs_ui(&mut self, ui: &mut egui::Ui, s: &Shared) {
-        let view = &s.inputs;
+        let view = &s.external;
         let frame = egui::Frame::new().fill(BG).inner_margin(Margin::symmetric(24, 20));
         egui::CentralPanel::default().frame(frame).show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
@@ -91,18 +91,18 @@ impl App {
                         ui.label(muted(format!("Or one message per line to the pipe {}", pipe.display())));
                     }
                     let mut apply = None;
-                    let port = self.screen.port.get_or_insert_with(|| s.settings.inputs_port.to_string());
+                    let port = self.screen.port.get_or_insert_with(|| s.settings.external_port.to_string());
                     ui.horizontal(|ui| {
                         ui.label("Port");
                         ui.add(egui::TextEdit::singleline(port).desired_width(60.0));
                         let parsed = port.trim().parse::<u16>().ok();
-                        if ui.add_enabled(parsed.is_some_and(|p| p != s.settings.inputs_port), egui::Button::new("Apply")).clicked() {
+                        if ui.add_enabled(parsed.is_some_and(|p| p != s.settings.external_port), egui::Button::new("Apply")).clicked() {
                             apply = parsed;
                         }
                         ui.label(muted("0 turns the WebSocket off"));
                     });
                     if let Some(port) = apply {
-                        self.send(Command::SetInputsPort(port));
+                        self.send(Command::SetExternalPort(port));
                     }
                     if let Some(rejected) = &view.rejected {
                         ui.label(RichText::new(format!("Last message refused: {rejected}")).color(DANGER_TEXT).size(12.0));
@@ -116,7 +116,7 @@ impl App {
 
 /// The values and events received lately.
 pub(super) fn received(ui: &mut egui::Ui, s: &Shared) {
-    let view = &s.inputs;
+    let view = &s.external;
     if view.values.is_empty() && view.events.is_empty() {
         return;
     }

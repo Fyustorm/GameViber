@@ -35,7 +35,7 @@ const MAX_MESSAGE: usize = 16 * 1024;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Message {
-    /// `input.custom.<name>`; `Null` removes it.
+    /// `input.external.<name>`; `Null` removes it.
     Set(String, Value),
     /// `on_event`.
     Event(String, Value),
@@ -81,7 +81,7 @@ pub fn parse(text: &str) -> Result<Vec<Message>, String> {
 
 /// What the GUI shows of the inputs.
 #[derive(Debug, Clone, Default)]
-pub struct InputsView {
+pub struct ExternalView {
     /// WebSocket address, when listening.
     pub address: Option<String>,
     pub pipe: Option<PathBuf>,
@@ -106,7 +106,7 @@ struct Status {
 }
 
 /// The WebSocket server and the named pipe, both feeding one channel.
-pub struct Inputs {
+pub struct ExternalInputs {
     rx: mpsc::UnboundedReceiver<Message>,
     status: Arc<Mutex<Status>>,
     server: Option<tokio::task::JoinHandle<()>>,
@@ -114,7 +114,7 @@ pub struct Inputs {
     events: Vec<(f64, String)>,
 }
 
-impl Inputs {
+impl ExternalInputs {
     /// Starts listening on `port` (0: WebSocket off) and on the pipe. Needs a Tokio runtime.
     pub fn start(port: u16) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
@@ -152,9 +152,9 @@ impl Inputs {
         out
     }
 
-    pub fn view(&self) -> InputsView {
+    pub fn view(&self) -> ExternalView {
         let status = self.status.lock().unwrap();
-        InputsView {
+        ExternalView {
             address: status.address.clone(),
             pipe: status.pipe.clone(),
             error: status.error.clone(),

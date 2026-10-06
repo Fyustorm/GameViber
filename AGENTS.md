@@ -20,19 +20,19 @@ Linux only for now; everything OS-specific is isolated so that other systems
 (Windows first) can be added later (see Platforms).
 
 Pipeline: **source** (interception), **audio** (the game's sound), **screen** (its
-image, the mode's indicators) and **inputs** (other programs) → **mode** (Luau
-script) → **safety layer** → **Intiface output**.
+image, the mode's indicators) and **external inputs** (other programs) → **mode**
+(Luau script) → **safety layer** → **Intiface output**.
 
-Terms players and modes see: a game has **modes**; a mode has **presets** (named
-settings) and its **Inputs**: what
-GameViber reads by itself (rumble, gamepad, sound, image) and what the player sets
-up for the mode — **phases** (parts of the game that should not feel the same),
-**captures**, **indicators** (part of the game's interface read as visibility or a
-gauge, in one or more **zones** of the screen) and **external inputs** (values and
-events other programs send). The code behind phase recognition still says
-"scene" (`mode/scenes.rs`, the sound and image scene models), and a `Zone` is one
-zone of an indicator (zones sharing a name are one indicator); the API's old names
-(`input.scene`, `input.zones`, `input.custom`...) stay accepted.
+Terms players, modes and the code use: a game has **modes**; a mode has
+**presets** (named settings) and its **Inputs**: what GameViber reads by itself
+(rumble, gamepad, sound, image) and what the player sets up for the mode —
+**phases** (parts of the game that should not feel the same), **captures**,
+**indicators** (parts of the game's interface read as visibility or a gauge, in
+one or more **zones** of the screen) and **external inputs** (values and events
+other programs send). In the code, a `Zone` is one zone of an indicator: zones
+naming the same indicator are read together. The API's first names
+(`input.scene`, `input.zones`, `input.custom`...) and older files' keys stay
+accepted; nothing else of them is left.
 
 ## Layout
 
@@ -40,21 +40,21 @@ zone of an indicator (zones sharing a name are one indicator); the API's old nam
 |---|---|
 | `gameviber/src/platform/` | what differs between operating systems for the rest of the code (paths, local time, stop signals, the GUI window system dialogs open over, file dialogs); `linux/`: XDG paths, the privileged helper (`helper/`, `gameviber helper`, started through pkexec), the device hider, the desktop's portals (`portal.rs`; file chooser: `files.rs`) |
 | `gameviber/src/source/` | interception sources, OS backends started through `Sources`: `linux/proxy` (uinput virtual gamepad) and `linux/ebpf` |
-| `gameviber/src/audio/` | the game's sound: `capture` (what to listen to; `linux`: PipeWire `pw-record` / `pw-dump`), `features` (levels, hits), `clap` (sound scene model: mel spectrogram, encoder) |
-| `gameviber/src/models.rs` | scene models downloaded on demand (CLAP, CLIP): download, ONNX sessions, text embeddings |
+| `gameviber/src/audio/` | the game's sound: `capture` (what to listen to; `linux`: PipeWire `pw-record` / `pw-dump`), `features` (levels, hits), `clap` (sound phase model: mel spectrogram, encoder) |
+| `gameviber/src/models.rs` | phase models downloaded on demand (CLAP, CLIP): download, ONNX sessions, text embeddings |
 | `gameviber/src/rumble.rs` | force-feedback semantics (evdev's, ff-memless) → strong/weak levels |
 | `gameviber/src/gamepad.rs` | button/axis normalization (Xbox layout) from `codes` (Linux's numbering, which every source translates to), panic combo |
-| `gameviber/src/mode/` | Luau runtime: `library.rs` (script API), `outputs.rs` (channels, pulses, patterns), `rumble_events.rs`, `scenes.rs` (phases fused from the sound, the image and the mode's captures; the phases set up for the mode replace its own), `prompt.rs` (AI requests: a per-game mode, a fix for a mode that feels wrong), `report.rs` (a session replayed offline into a mode, for the fix request), `tests.rs` |
-| `gameviber/src/screen/` | the game's image: frames copied by the overlay, measures (brightness, motion, flashes), `clip` (image scene model: PIL-exact preprocessing, encoder thread), `zones` (indicators read in their zones: visibility and gauges) |
+| `gameviber/src/mode/` | Luau runtime: `library.rs` (script API), `outputs.rs` (channels, pulses, patterns), `rumble_events.rs`, `phases.rs` (phases fused from the sound, the image and the mode's captures; the phases set up for the mode replace its own), `prompt.rs` (AI requests: a per-game mode, a fix for a mode that feels wrong), `report.rs` (a session replayed offline into a mode, for the fix request), `tests.rs` |
+| `gameviber/src/screen/` | the game's image: frames copied by the overlay, measures (brightness, motion, flashes), `clip` (image phase model: PIL-exact preprocessing, encoder thread), `indicators` (indicators read in their zones: visibility and gauges) |
 | `gameviber/src/game.rs` | games (`~/.config/gameviber/games/<id>.json`), identified by name: linked executables (optional), sound source, modes; migration of the older exe-keyed profiles |
 | `gameviber/src/package.rs` | mode packages (`~/.config/gameviber/modes/<name>/`): the script (`mode.luau`) and the inputs the player set up for the mode (`mode.json`: phases, captures per phase, also the phase examples, as PNG in `captures/`, indicators drawn on them, declared external inputs); migration of the older mode files and game-held inputs |
 | `gameviber/src/sharing.rs` | a mode shared with its game: `.gameviber` files (zip: `gameviber.json` with the game and the mode's inputs, `mode.luau`, `captures/`), exported from a mode's page, imported from the library (joined to the game of the same name); `gui/sharing.rs` |
 | `gameviber/src/shortcuts/` | keyboard shortcuts for the combos' actions; `linux`: the desktop's global shortcuts portal (needs a desktop entry for the app id, written on first use) |
 | `gameviber/src/update/` | new versions from the GitHub releases, installed according to how GameViber was installed (the `distribution` file of `packaging/linux/`): package through pkexec, archive in place, only announced for stores and source builds; `gui/updates.rs`: banner and Settings card |
-| `gameviber/src/inputs/` | values and events other programs send: local WebSocket (browsers refused) and, `linux`, a named pipe |
+| `gameviber/src/external/` | external inputs: values and events other programs send: local WebSocket (browsers refused) and, `linux`, a named pipe |
 | `gameviber/src/engine.rs` | engine thread: sources, audio, image, mode, safety layer, routing, output |
-| `gameviber/src/session.rs` | recorded play sessions (rumble, buttons, axes, sound and image measures, hits, flashes, indicators, scene embeddings, values from other programs) and their replay |
-| `gameviber/src/gui/` | egui GUI: setup guide (`onboarding`), pages: `live` (while playing: mode, output, inputs, gamepad combos), `games` (library, then each game by breadcrumb: modes, sessions), `play` (a mode's page, mode tiles), `signals` (the guided Inputs of the active mode), `screen` (the active mode's captures and zoomable indicator editor checked on every capture), `toys`, `setup` (tabs: `gamepad`, `keybindings`, `overlay`, `audio` (default sound), other programs), `creator`, `settings`; AI requests (`generator` dialog: a mode for a game; `feedback` page: a fix for the active mode), Luau highlighting (`luau`), `theme` |
+| `gameviber/src/session.rs` | recorded play sessions (rumble, buttons, axes, sound and image measures, hits, flashes, indicators, phase embeddings, external inputs) and their replay |
+| `gameviber/src/gui/` | egui GUI: setup guide (`onboarding`), pages: `live` (while playing: mode, output, inputs, gamepad combos), `games` (library, then each game by breadcrumb: modes, sessions), `play` (a mode's page, mode tiles), `inputs` (the guided Inputs of the active mode), `screen` (the active mode's captures and zoomable indicator editor checked on every capture), `toys`, `setup` (tabs: `gamepad`, `keybindings`, `overlay`, `audio` (default sound), other programs), `creator`, `settings`; AI requests (`generator` dialog: a mode for a game; `feedback` page: a fix for the active mode), Luau highlighting (`luau`), `theme` |
 | `gameviber/src/config.rs` | config files, built-in mode registry (`BUILTIN_MODES`) |
 | `gameviber/modes/` | built-in modes, embedded in the binary |
 | `gameviber/prompts/new-mode.md` | template of the request asking an AI assistant to write a mode for one game |
@@ -142,7 +142,7 @@ no eBPF, an overlay of its own) is planned. Keep the way open:
 - **Where it goes**: things the whole app needs (paths, time, signals, the
   privileged helper) in `platform/`; a part's backend next to that part
   (`source/linux/`, `audio/capture/linux.rs`, `overlay/linux/`,
-  `shortcuts/linux.rs`, `inputs/linux.rs`, `update/linux.rs`,
+  `shortcuts/linux.rs`, `external/linux.rs`, `update/linux.rs`,
   `gameviber-overlay/src/linux/`).
   The part's `mod.rs` holds the neutral types and logic and re-exports the
   backend's items under the same names for every OS.

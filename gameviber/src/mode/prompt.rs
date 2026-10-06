@@ -27,8 +27,8 @@ const SPEC_LEFT_OUT: [&str; 7] = [
     "## 13. ",
     "## 14. ",
 ];
-/// Left out of quick requests too: the raw sound and image, the game's
-/// profile and the advanced inputs (`Depth::Quick`).
+/// Left out of quick requests too: the raw sound and image, the inputs set
+/// up for the mode and the advanced inputs (`Depth::Quick`).
 const SPEC_ADVANCED: [&str; 3] = ["### 6.4 ", "### 6.5 ", "### 7.1 "];
 
 /// How much of GameViber a request shows the assistant.
@@ -39,16 +39,16 @@ pub enum Depth {
     #[default]
     Quick,
     /// Also the raw sound and image measures, the indicators of the screen, the
-    /// example images and values other programs send (the game's profile).
+    /// example images and values other programs send (the inputs set up for the mode).
     Advanced,
 }
 
 /// What the inputs set up for the mode bring to a request: their description
 /// (`Inputs::describe`), if any; a quick request only gets the phases.
-fn profile_text(depth: Depth, profile: Option<&str>, scenes: &[String]) -> String {
-    match (depth, profile.map(str::trim).filter(|p| !p.is_empty())) {
-        (Depth::Quick, _) if !scenes.is_empty() => {
-            let names: Vec<String> = scenes.iter().map(|s| format!("`{s}`")).collect();
+fn inputs_text(depth: Depth, described: Option<&str>, phases: &[String]) -> String {
+    match (depth, described.map(str::trim).filter(|p| !p.is_empty())) {
+        (Depth::Quick, _) if !phases.is_empty() => {
+            let names: Vec<String> = phases.iter().map(|s| format!("`{s}`")).collect();
             format!(
                 "GameViber already recognizes this game's phases: {}. Read them with `input.phase` and \
                  `on_phase`, and do not declare `phases` in the mode. Otherwise use the rumble, the buttons and the \
@@ -59,8 +59,8 @@ fn profile_text(depth: Depth, profile: Option<&str>, scenes: &[String]) -> Strin
         (Depth::Quick, _) => "Nothing more: use the rumble, the buttons and the high-level inputs (phases, impacts, \
              intensity)."
             .to_owned(),
-        (Depth::Advanced, Some(profile)) => format!(
-            "The player set up inputs for this game in GameViber (§6.5). Use what helps:\n\n{profile}"
+        (Depth::Advanced, Some(described)) => format!(
+            "The player set up inputs for this game in GameViber (§6.5). Use what helps:\n\n{described}"
         ),
         (Depth::Advanced, None) => "The player has not set up anything for this game yet. If an indicator of the screen \
              would help (an interface shown only in battles, a health bar), tell the player which indicators to draw in \
@@ -111,10 +111,10 @@ impl Template {
     /// Placeholders the template should keep, so the request holds what it needs.
     pub fn placeholders(self) -> &'static [&'static str] {
         match self {
-            Template::NewMode => &["{{GAME}}", "{{LANGUAGE}}", "{{PROFILE}}", "{{RULES}}", "{{SPEC}}"],
+            Template::NewMode => &["{{GAME}}", "{{LANGUAGE}}", "{{INPUTS}}", "{{RULES}}", "{{SPEC}}"],
             Template::FixFeel => &[
                 "{{GAME}}", "{{LANGUAGE}}", "{{PROBLEMS}}", "{{HISTORY}}", "{{NAME}}", "{{PARAMS}}",
-                "{{SOURCE}}", "{{SESSION}}", "{{PROFILE}}", "{{RULES}}", "{{SPEC}}",
+                "{{SOURCE}}", "{{SESSION}}", "{{INPUTS}}", "{{RULES}}", "{{SPEC}}",
             ],
             Template::Rules => &[],
         }
@@ -125,9 +125,10 @@ impl Template {
         config::config_dir().join("prompts").join(self.file_name())
     }
 
-    /// The player's version, or the shipped one.
+    /// The player's version, or the shipped one. `{{INPUTS}}` was `{{PROFILE}}`
+    /// in versions the player saved before the terms changed.
     pub fn text(self) -> String {
-        std::fs::read_to_string(self.path()).unwrap_or_else(|_| self.builtin().to_owned())
+        std::fs::read_to_string(self.path()).map(|t| t.replace("{{PROFILE}}", "{{INPUTS}}")).unwrap_or_else(|_| self.builtin().to_owned())
     }
 
     pub fn customized(self) -> bool {
@@ -174,11 +175,11 @@ impl Templates {
 }
 
 /// The request to paste into an AI assistant to get a mode made for `game`,
-/// answered in `language`; `profile` describes the game's profile (advanced requests).
-pub fn new_mode_prompt(t: &Templates, game: &str, language: &str, depth: Depth, profile: Option<&str>, scenes: &[String]) -> String {
+/// answered in `language`; `described` describes the inputs set up for the mode (advanced requests).
+pub fn new_mode_prompt(t: &Templates, game: &str, language: &str, depth: Depth, described: Option<&str>, phases: &[String]) -> String {
     sections(&t.new_mode, true)
         .replace("{{RULES}}", t.rules.trim_end())
-        .replace("{{PROFILE}}", &profile_text(depth, profile, scenes))
+        .replace("{{INPUTS}}", &inputs_text(depth, described, phases))
         .replace("{{SPEC}}", &spec(depth))
         .replace("{{LANGUAGE}}", language)
         .replace("{{GAME}}", game.trim())
@@ -252,21 +253,21 @@ pub struct FeelReport<'a> {
     /// for the conversation that wrote the mode.
     pub full: bool,
     pub language: &'a str,
-    /// The game's profile, described (`Profile::describe`).
-    pub profile: Option<&'a str>,
+    /// The inputs set up for the mode, described (`Inputs::describe`).
+    pub inputs: Option<&'a str>,
 }
 
 impl FeelReport<'_> {
     /// A mode reading the raw sound or image, indicators or other programs gets the
-    /// advanced specification; so does any mode while the game has a profile.
+    /// advanced specification; so does any mode with inputs set up.
     fn depth(&self) -> Depth {
         const ADVANCED: [&str; 10] = [
             "input.audio", "input.screen", "input.indicators", "input.external", "on_audio_hit", "on_indicator", "on_event",
             // The names of the first version of the API.
             "input.zones", "input.custom", "on_zone",
         ];
-        let profile = self.profile.is_some_and(|p| !p.trim().is_empty());
-        if profile || ADVANCED.iter().any(|a| self.source.contains(a)) {
+        let described = self.inputs.is_some_and(|p| !p.trim().is_empty());
+        if described || ADVANCED.iter().any(|a| self.source.contains(a)) {
             Depth::Advanced
         } else {
             Depth::Quick
@@ -313,13 +314,13 @@ pub fn feel_prompt(t: &Templates, r: &FeelReport) -> String {
         None => "No session was recorded.".to_owned(),
     };
     let depth = r.depth();
-    let profile = match depth {
-        Depth::Advanced => profile_text(depth, r.profile, &[]),
+    let described = match depth {
+        Depth::Advanced => inputs_text(depth, r.inputs, &[]),
         Depth::Quick => "None set up for this game.".to_owned(),
     };
     sections(&t.fix_feel, r.full)
         .replace("{{RULES}}", t.rules.trim_end())
-        .replace("{{PROFILE}}", &profile)
+        .replace("{{INPUTS}}", &described)
         .replace("{{SPEC}}", &spec(depth))
         .replace("{{LANGUAGE}}", r.language)
         .replace("{{GAME}}", &game)

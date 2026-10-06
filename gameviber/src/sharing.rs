@@ -1,6 +1,6 @@
 //! Modes shared with their game, as `.gameviber` files: a zip archive of
 //! `gameviber.json` (the game — its name and the executables it runs as — and
-//! the inputs the mode reads: its scenes, zones, captures, values from other
+//! the inputs the mode reads: its phases, indicators, captures, values from other
 //! programs), the mode's script (`mode.luau`) and the captures
 //! (`captures/*.png`): a mode's package (`package.rs`), with its game.
 //!
@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::{self, ModeEntry, MODE_EXTENSION};
 use crate::game::{self, Game};
-use crate::package::{self, Inputs, MAX_CAPTURES, MAX_SCENES};
+use crate::package::{self, Inputs, MAX_CAPTURES, MAX_PHASES};
 
 pub const EXTENSION: &str = "gameviber";
 /// Version of the layout; files of a newer one are refused.
@@ -28,7 +28,7 @@ const MODE: &str = "mode.luau";
 const CAPTURES: &str = "captures/";
 const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
 /// What an imported file may hold: files in it, bytes per file, bytes in all.
-const MAX_ENTRIES: usize = 2 + MAX_SCENES * MAX_CAPTURES;
+const MAX_ENTRIES: usize = 2 + MAX_PHASES * MAX_CAPTURES;
 const MAX_ENTRY_SIZE: u64 = 8 << 20;
 const MAX_TOTAL_SIZE: u64 = 128 << 20;
 
@@ -74,7 +74,7 @@ pub fn export(game: &str, mode: &str, path: &Path) -> anyhow::Result<()> {
     }
     let source = entry.source().with_context(|| format!("cannot read {}", entry.id))?;
     let mut inputs = Inputs::of(&entry);
-    // Captures to sort are examples of no scene yet.
+    // Captures to sort are examples of no phase yet.
     inputs.captures.retain(|c| !c.phase.is_empty());
     let mut images = Vec::new();
     inputs.captures.retain_mut(|capture| {
@@ -202,11 +202,11 @@ fn install_mode(dir: &Path, stem: &str, source: &str, mut inputs: Inputs, images
     let path = config::unused_mode_path_in(dir, if stem.is_empty() { "shared-mode" } else { &stem });
     config::write_file(&path, source).with_context(|| format!("cannot write {}", path.display()))?;
     inputs.dir = ModeEntry::from_id(&path.to_string_lossy()).dir().context("no package for the mode")?;
-    inputs.phases.truncate(MAX_SCENES);
+    inputs.phases.truncate(MAX_PHASES);
     inputs.captures.clear();
     for (capture, bytes) in images {
-        let of_scene = inputs.captures.iter().filter(|c| c.phase == capture.phase).count();
-        if of_scene >= MAX_CAPTURES || inputs.captures.iter().any(|c| c.file == capture.file) {
+        let of_phase = inputs.captures.iter().filter(|c| c.phase == capture.phase).count();
+        if of_phase >= MAX_CAPTURES || inputs.captures.iter().any(|c| c.file == capture.file) {
             continue;
         }
         let file = package::capture_path(&inputs.dir, &capture.file);
@@ -298,7 +298,7 @@ mod tests {
         inputs.add_capture("", &frame(2)).unwrap();
         inputs.captures[0].embedding = vec![1.0, 0.0];
         let drawn_on = inputs.captures[0].file.clone();
-        inputs.zones.push(Zone { name: "menu".into(), capture: Some(drawn_on.clone()), ..Zone::default() });
+        inputs.zones.push(Zone { indicator: "menu".into(), capture: Some(drawn_on.clone()), ..Zone::default() });
         inputs.save();
         let mut game = Game::new("Metaphor: ReFantazio");
         game.executables.push("METAPHOR.exe".into());
@@ -357,7 +357,7 @@ mod tests {
         zip.finish().unwrap();
         let imported = import_into(&path, &modes).unwrap();
         let inputs = Inputs::of(&ModeEntry::from_id(&imported.mode));
-        assert_eq!((inputs.phases[0].name.as_str(), inputs.zones[0].name.as_str(), inputs.captures.len()), ("boss", "hp", 1));
+        assert_eq!((inputs.phases[0].name.as_str(), inputs.zones[0].indicator.as_str(), inputs.captures.len()), ("boss", "hp", 1));
         assert!(package::capture_path(&inputs.dir, "boss-1.png").exists());
         assert_eq!(Game::load(&imported.game).unwrap().executables, ["Hades2.exe"]);
         let _ = fs::remove_dir_all(root);

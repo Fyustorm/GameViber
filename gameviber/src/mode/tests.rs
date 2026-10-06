@@ -1,7 +1,7 @@
 use super::*;
 use crate::audio::AudioHit;
-use crate::mode::scenes::Sense;
-use crate::mode::ZoneValue;
+use crate::mode::phases::Sense;
+use crate::mode::IndicatorValue;
 use crate::screen::ScreenLevels;
 
 const SIMPLE: &str = include_str!("../../modes/simple.luau");
@@ -515,7 +515,7 @@ fn ai_prompt_names_the_game_and_embeds_the_api() {
     }
     assert!(text.contains("Nothing more: use the rumble"), "{text}");
 
-    // An advanced request: the raw inputs and the game's profile.
+    // An advanced request: the raw inputs and the inputs set up for the mode.
     let profile = "Indicators of the screen (`input.indicators`, `on_indicator`):\n- `battle_hud`: true while shown, false otherwise\n";
     let advanced = prompt::new_mode_prompt(&prompt::Templates::builtin(), "Hades II", "English", prompt::Depth::Advanced, Some(profile), &[]);
     assert!(advanced.contains("### 6.4 ") && advanced.contains("### 6.5 ") && advanced.contains("### 7.1 "));
@@ -572,7 +572,7 @@ fn feel_prompt_holds_the_problem_settings_and_session() {
         session: Some("### Vibrations sent by the game (0)\n"),
         full: true,
         language: "English",
-        profile: None,
+        inputs: None,
     };
     let templates = prompt::Templates::builtin();
     let text = prompt::feel_prompt(&templates, &report);
@@ -694,7 +694,7 @@ fn input_audio_and_hits_follow_the_game_sound() {
     assert_eq!(plot_value(&out, "hits"), 2.0);
     assert_eq!(plot_value(&out, "impacts"), 1.0, "weak hits are no impacts");
     assert_eq!(plot_value(&out, "source"), 1.0);
-    assert_eq!(plot_value(&out, "phase"), 0.0, "no scenes declared");
+    assert_eq!(plot_value(&out, "phase"), 0.0, "no phases declared");
 
     // The image adds to the intensity, and its flashes are impacts.
     rt.set_screen(Some(ScreenLevels { brightness: 0.5, motion: 0.2, action: 0.75 }));
@@ -749,32 +749,32 @@ fn phases_are_declared_and_reported() {
                end";
     let mut rt = load(src);
     let info = rt.info();
-    assert_eq!(info.scenes[0].name, "battle", "sorted by name");
-    assert_eq!(info.scenes[0].screen, None);
-    assert_eq!(info.scene_window, 4.0);
-    assert!(rt.uses_sound_scenes() && rt.uses_screen_scenes(false));
+    assert_eq!(info.phases[0].name, "battle", "sorted by name");
+    assert_eq!(info.phases[0].screen, None);
+    assert_eq!(info.phase_window, 4.0);
+    assert!(rt.uses_sound_phases() && rt.uses_screen_phases(false));
     assert_eq!(
-        rt.scene_descriptions(Sense::Sound),
+        rt.phase_descriptions(Sense::Sound),
         [("battle".to_owned(), "intense battle music".to_owned()), ("calm".to_owned(), "calm ambient music".to_owned())]
     );
-    assert_eq!(rt.scene_descriptions(Sense::Screen), [("calm".to_owned(), "a quiet village".to_owned())]);
+    assert_eq!(rt.phase_descriptions(Sense::Screen), [("calm".to_owned(), "a quiet village".to_owned())]);
     // Text embeddings of battle and calm: two axes.
     let axis = |i: usize| -> crate::audio::Embedding { (0..2).map(|k| if k == i { 1.0 } else { 0.0 }).collect() };
     rt.set_audio(Some(audio_levels(0.5)));
     let clip = ModeEvent::AudioClip(axis(0));
     let out = rt.step(DT, rumble(0.0, 0.0), &PadState::default(), 1e9, &[clip.clone()]).unwrap();
     assert_eq!(plot_value(&out, "changes"), 0.0, "nothing before the descriptions are encoded");
-    assert!(!rt.scenes_ready());
+    assert!(!rt.phases_ready());
 
-    rt.set_scene_references(Sense::Sound, vec![("battle".into(), axis(0)), ("calm".into(), axis(1))]);
+    rt.set_phase_references(Sense::Sound, vec![("battle".into(), axis(0)), ("calm".into(), axis(1))]);
     let out = rt.step(DT, rumble(0.0, 0.0), &PadState::default(), 1e9, &[clip]).unwrap();
     assert_eq!(plot_value(&out, "changes"), 1.0);
     assert_eq!(plot_value(&out, "is_battle"), 1.0);
     assert!(plot_value(&out, "confidence") > 0.99);
     assert!(plot_value(&out, "battle") > 0.99);
-    assert_eq!(rt.scene_state().0.as_deref(), Some("battle"));
+    assert_eq!(rt.phase_state().0.as_deref(), Some("battle"));
 
-    // The sound stops: no sense is left, the scene is forgotten, with an event.
+    // The sound stops: no sense is left, the phase is forgotten, with an event.
     rt.set_audio(None);
     let out = step(&mut rt, rumble(0.0, 0.0));
     assert_eq!(plot_value(&out, "changes"), 2.0);
@@ -807,11 +807,11 @@ fn names_of_the_first_api_version_still_work() {
                  plot('no_scene', input.scene == nil and input.scene_confidence == 0 and 1 or 0)
                end";
     let mut rt = load(src);
-    assert_eq!((rt.info().scenes.len(), rt.info().scene_window), (2, 4.0));
+    assert_eq!((rt.info().phases.len(), rt.info().phase_window), (2, 4.0));
     rt.set_screen(Some(ScreenLevels::default()));
     let events = [
-        ModeEvent::Zone { name: "hp".into(), value: ZoneValue::Bar(0.5) },
-        ModeEvent::Custom { name: "ammo".into(), value: serde_json::json!(3) },
+        ModeEvent::Indicator { name: "hp".into(), value: IndicatorValue::Gauge(0.5) },
+        ModeEvent::ExternalValue { name: "ammo".into(), value: serde_json::json!(3) },
     ];
     let out = rt.step(DT, rumble(0.0, 0.0), &PadState::default(), 1e9, &events).unwrap();
     assert_eq!(["hp", "ammo", "zone_events", "no_scene"].map(|k| plot_value(&out, k)), [0.5, 3.0, 1.0, 1.0]);
@@ -842,28 +842,28 @@ fn indicators_and_external_inputs_reach_the_mode() {
     );
     let mut rt = load(&src);
     rt.set_screen(Some(ScreenLevels::default()));
-    let zone = |name: &str, value| ModeEvent::Zone { name: name.into(), value };
-    let custom = |name: &str, value| ModeEvent::Custom { name: name.into(), value };
+    let indicator = |name: &str, value| ModeEvent::Indicator { name: name.into(), value };
+    let external = |name: &str, value| ModeEvent::ExternalValue { name: name.into(), value };
     let events = [
-        zone("battle_hud", ZoneValue::Visible(true)),
-        zone("hp", ZoneValue::Bar(0.5)),
-        custom("ammo", serde_json::json!(12)),
-        custom("stance", serde_json::json!("low")),
-        ModeEvent::External { name: "hit".into(), data: serde_json::json!({ "amount": 30 }) },
+        indicator("battle_hud", IndicatorValue::Visibility(true)),
+        indicator("hp", IndicatorValue::Gauge(0.5)),
+        external("ammo", serde_json::json!(12)),
+        external("stance", serde_json::json!("low")),
+        ModeEvent::ExternalEvent { name: "hit".into(), data: serde_json::json!({ "amount": 30 }) },
     ];
     let out = rt.step(DT, rumble(0.0, 0.0), &PadState::default(), 1e9, &events).unwrap();
     assert_eq!(
         ["hud", "hp", "previous_hp", "zone_events", "events", "damage", "ammo", "stance"].map(|k| plot_value(&out, k)),
         [1.0, 0.5, -1.0, 2.0, 1.0, 30.0, 12.0, 1.0]
     );
-    // An unchanged zone is not reported again; a JSON null removes a value.
-    let events = [zone("hp", ZoneValue::Bar(0.5)), zone("hp", ZoneValue::Bar(0.25)), custom("ammo", serde_json::Value::Null)];
+    // An unchanged indicator is not reported again; a JSON null removes a value.
+    let events = [indicator("hp", IndicatorValue::Gauge(0.5)), indicator("hp", IndicatorValue::Gauge(0.25)), external("ammo", serde_json::Value::Null)];
     let out = rt.step(DT, rumble(0.0, 0.0), &PadState::default(), 1e9, &events).unwrap();
     assert_eq!(["hp", "previous_hp", "zone_events", "ammo"].map(|k| plot_value(&out, k)), [0.25, 0.5, 3.0, -1.0]);
     // A bar not on screen (a menu): nil, not 0.
-    let out = rt.step(DT, rumble(0.0, 0.0), &PadState::default(), 1e9, &[zone("hp", ZoneValue::Unknown)]).unwrap();
+    let out = rt.step(DT, rumble(0.0, 0.0), &PadState::default(), 1e9, &[indicator("hp", IndicatorValue::Unknown)]).unwrap();
     assert_eq!(["hp", "previous_hp", "zone_events"].map(|k| plot_value(&out, k)), [-1.0, 0.25, 4.0]);
-    // The image goes: so do the zones read on it.
+    // The image goes: so do the indicators read on it.
     rt.set_screen(None);
     let out = step(&mut rt, rumble(0.0, 0.0));
     assert_eq!((plot_value(&out, "hud"), plot_value(&out, "hp")), (0.0, -1.0));

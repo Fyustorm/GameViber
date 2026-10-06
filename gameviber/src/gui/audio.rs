@@ -1,6 +1,6 @@
 //! Setup › Sound: which sound GameViber listens to by default (a game can
-//! pick its own in its Signals), what it hears right now, and the sound scene
-//! model. The model and scene cards are shared with a game's Signals.
+//! pick its own in its Inputs), what it hears right now, and the sound phase
+//! model. The model and phase cards are shared with a mode's Inputs.
 
 use eframe::egui::{self, Margin, RichText};
 
@@ -137,7 +137,7 @@ fn heard_now(ui: &mut egui::Ui, s: &Shared) {
     });
 }
 
-/// Download of a scene model, or its state.
+/// Download of a phase model, or its state.
 pub(super) fn model_card(ui: &mut egui::Ui, model: Model, state: &ModelState) -> Option<Command> {
     let mut command = None;
     let (title, what) = match model {

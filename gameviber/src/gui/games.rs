@@ -1,6 +1,6 @@
 //! Games page: the library of games, then each game by breadcrumb — its
-//! modes (a compact list, each mode with a page of its own), its signals
-//! (`signals.rs`, with captures and zones in `screen.rs`) and its sessions.
+//! modes (a compact list, each mode with a page of its own), its inputs
+//! (`inputs.rs`, with captures and indicators in `screen.rs`) and its sessions.
 //! Built-in modes can also be played without a game.
 
 use eframe::egui::{self, Margin, RichText};
@@ -53,7 +53,7 @@ impl App {
                 self.feedback_page(ui, s);
                 return;
             }
-            // The captures and zones fit the window: only the image edited takes what is left.
+            // The captures and indicators fit the window: only the image edited takes what is left.
             if matches!(self.route, Route::Game { view: GameView::Screen, .. }) {
                 self.route_page(ui, s);
             } else {
@@ -210,7 +210,7 @@ impl App {
             GameView::Screen => {
                 self.breadcrumb(
                     ui,
-                    &[("Games", Some(Route::Library)), (&game.name, at(GameView::Modes)), ("Inputs", at(GameView::Signals)), ("Captures and indicators", None)],
+                    &[("Games", Some(Route::Library)), (&game.name, at(GameView::Modes)), ("Inputs", at(GameView::Inputs)), ("Captures and indicators", None)],
                 );
                 self.screen_page(ui, s, game);
                 return;
@@ -218,7 +218,7 @@ impl App {
             _ => {}
         }
         let tab = match view {
-            GameView::Signals => "Inputs",
+            GameView::Inputs => "Inputs",
             GameView::Sessions => "Sessions",
             _ => "Modes",
         };
@@ -226,7 +226,7 @@ impl App {
         self.game_header(ui, s, game);
         ui.add_space(6.0);
         ui.horizontal(|ui| {
-            for (v, label) in [(GameView::Modes, format!("Modes · {}", game.modes.len())), (GameView::Signals, "Inputs".to_owned()), (GameView::Sessions, "Sessions".to_owned())] {
+            for (v, label) in [(GameView::Modes, format!("Modes · {}", game.modes.len())), (GameView::Inputs, "Inputs".to_owned()), (GameView::Sessions, "Sessions".to_owned())] {
                 if ui.selectable_label(view == v, RichText::new(label).size(15.0)).clicked() {
                     self.route = Route::Game { id: game.id.clone(), view: v };
                 }
@@ -235,7 +235,7 @@ impl App {
         ui.separator();
         ui.add_space(6.0);
         match view {
-            GameView::Signals => self.signals_page(ui, s, game),
+            GameView::Inputs => self.inputs_page(ui, s, game),
             GameView::Sessions => self.game_sessions(ui, s, game),
             _ => self.game_modes(ui, s, game),
         }
@@ -467,7 +467,7 @@ impl App {
                     done = Some(GameView::Modes);
                 }
                 if ui.add_enabled(ok, egui::Button::new("Add, then set up its inputs")).clicked() {
-                    done = Some(GameView::Signals);
+                    done = Some(GameView::Inputs);
                 }
                 if ui.button("Cancel").clicked() {
                     close = true;
@@ -486,7 +486,7 @@ impl App {
     }
 }
 
-/// A game in the library: its name, whether it runs, its modes and signals. Returns true when clicked.
+/// A game in the library: its name, whether it runs, its modes and inputs. Returns true when clicked.
 fn game_card(ui: &mut egui::Ui, s: &Shared, game: &Game, size: egui::Vec2) -> bool {
     let playing = s.game.as_ref().is_some_and(|g| g.id == game.id);
     let response = card(PANEL)

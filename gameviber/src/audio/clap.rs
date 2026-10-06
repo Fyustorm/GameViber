@@ -1,7 +1,7 @@
-//! CLAP audio scene model (LAION `larger_clap_music_and_speech`, quantized
+//! CLAP audio phase model (LAION `larger_clap_music_and_speech`, quantized
 //! ONNX export): 10 s of sound and short texts are turned into vectors
 //! whose similarity tells how well a text describes the sound. Modes describe
-//! their scenes in words ("intense battle music"); this module measures how
+//! their phases in words ("intense battle music"); this module measures how
 //! much the game's sound looks like each.
 //!
 //! The model is downloaded on demand (about 200 MB, `models::Model::Sound`)
@@ -20,7 +20,7 @@ use crate::models::{self, Model};
 
 /// Length of the sound the model looks at: 10 s.
 pub const CLIP_SAMPLES: usize = 480_000;
-/// `exp(logit_scale_a)` of the model: sharpness of the scene probabilities.
+/// `exp(logit_scale_a)` of the model: sharpness of the phase probabilities.
 pub const LOGIT_SCALE: f64 = 27.4399;
 const N_FFT: usize = 1024;
 const HOP: usize = 480;
