@@ -31,9 +31,11 @@ enum Stop {
     IndicatorEdit,
     /// The Community page on its first game, and that game's first mode.
     CommunityGame,
+    /// The Community page searching a game nobody made a mode for.
+    CommunityNothing,
 }
 
-const STOPS: [(&str, Stop); 22] = [
+const STOPS: [(&str, Stop); 23] = [
     ("games", Stop::Games(|_| Some(Route::Library))),
     ("add-game", Stop::AddGame),
     ("builtin-modes", Stop::Games(|_| Some(Route::BuiltIn))),
@@ -47,6 +49,7 @@ const STOPS: [(&str, Stop); 22] = [
     ("sessions", Stop::Games(|s| game(s, GameView::Sessions))),
     ("community", Stop::Page(Page::Community)),
     ("community-game", Stop::CommunityGame),
+    ("community-nothing", Stop::CommunityNothing),
     ("live", Stop::Page(Page::Live)),
     ("toys", Stop::Page(Page::Toys)),
     ("setup-gamepad", Stop::Setup(setup::Tab::Gamepad)),
@@ -131,6 +134,10 @@ impl App {
                         self.screen.edit_zone(zone, inputs);
                     }
                 }
+            }
+            Stop::CommunityNothing => {
+                self.page = Page::Community;
+                super::community::tour_search(self, "Hollow Knight: Silksong");
             }
             Stop::CommunityGame => {
                 self.page = Page::Community;

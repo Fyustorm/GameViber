@@ -88,7 +88,11 @@ pub struct State {
     /// The server the caches below come from: they start over when it changes.
     url: String,
     search: String,
+    /// What the games shown were searched with.
+    searched: String,
     games: Remote<Vec<GameView>>,
+    /// A game added to the library to make a mode for: the AI request opens once it is there.
+    making_for: Option<String>,
     /// The game whose modes are shown, and how they are sorted (the most downloaded first, else the newest).
     game: Option<GameView>,
     newest: bool,
@@ -237,6 +241,7 @@ impl App {
 
     pub(super) fn community_ui(&mut self, ui: &mut egui::Ui, s: &Shared) {
         self.community_poll(s);
+        self.open_pending_generator(s);
         let frame = egui::Frame::new().fill(BG).inner_margin(Margin::symmetric(24, 18));
         egui::CentralPanel::default().frame(frame).show(ui, |ui| {
             self.sharing_ui(ui);
@@ -268,13 +273,37 @@ impl App {
 
     fn community_games(&mut self, ui: &mut egui::Ui, s: &Shared) {
         let mut search = false;
-        ui.horizontal(|ui| {
-            let field = ui.add(egui::TextEdit::singleline(&mut self.community.search).hint_text("Search a game").desired_width(280.0));
-            search = ui.button("Search").clicked() || (field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+        card(PANEL).inner_margin(Margin::symmetric(18, 16)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(RichText::new("Which game do you play?").strong().size(17.0));
+            ui.label(muted("Modes other players made for it, ready in a click."));
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                let field = ui.add(
+                    egui::TextEdit::singleline(&mut self.community.search)
+                        .hint_text("Elden Ring, Hades II...")
+                        .font(egui::TextStyle::Heading)
+                        .desired_width(ui.available_width() - 110.0),
+                );
+                search = ui.add(primary("Search")).clicked() || (field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+            });
+            // The library's games, one click away.
+            if !s.games.is_empty() {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(muted("Your games:"));
+                    for game in &s.games {
+                        if ui.small_button(&game.name).clicked() {
+                            self.community.search = game.name.clone();
+                            search = true;
+                        }
+                    }
+                });
+            }
         });
-        ui.add_space(8.0);
+        ui.add_space(12.0);
         if search || matches!(self.community.games, Remote::Idle) {
-            let (client, text) = (self.client(s), self.community.search.clone());
+            let (client, text) = (self.client(s), self.community.search.trim().to_owned());
+            self.community.searched = text.clone();
             self.community.games.start(ui.ctx(), move || client.games(&text));
         }
         // A mode reached by its code shows here, without a game.
@@ -294,7 +323,8 @@ impl App {
                 self.unreachable(ui, s, &e);
             }
             Remote::Ready(games) if games.is_empty() => {
-                ui.label(muted("No game has a mode published yet. Publish yours from a mode's Sharing tab."));
+                let searched = self.community.searched.clone();
+                self.make_your_own(ui, s, &searched);
             }
             Remote::Ready(games) => {
                 let mine: Vec<String> = s.games.iter().map(|g| crate::game::slug(&g.name)).collect();
@@ -325,6 +355,44 @@ impl App {
                     self.community.open_game(game);
                 }
             }
+        }
+    }
+
+    /// Nothing found: the player makes the first mode for their game, then shares it.
+    fn make_your_own(&mut self, ui: &mut egui::Ui, s: &Shared, game: &str) {
+        let mut make = false;
+        card(SELECTED_BG).stroke(egui::Stroke::new(1.0, ACCENT)).inner_margin(Margin::symmetric(18, 16)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            let title = if game.is_empty() { "No mode published yet".to_owned() } else { format!("No mode for “{game}” yet") };
+            ui.label(RichText::new(title).strong().size(17.0));
+            ui.label(
+                "Be the first: an AI assistant writes a mode made for your game in a couple of minutes, from the rumble, \
+                 your buttons and what GameViber hears and sees of it. Play it, tune it, then share it: the next players \
+                 of this game will find it here.",
+            );
+            ui.add_space(8.0);
+            if !game.is_empty() {
+                make = ui.add(primary(&format!("Create a mode for {game}"))).clicked();
+            }
+            ui.label(muted("Already have one? Publish it from its page, Sharing tab.").size(12.0));
+        });
+        if make {
+            match s.games.iter().find(|g| crate::game::slug(&g.name) == crate::game::slug(game)) {
+                Some(local) => self.open_generator_for(&local.clone(), crate::mode::prompt::Depth::Quick),
+                None => {
+                    self.send(Command::CreateGame { name: game.to_owned(), executable: None });
+                    self.community.making_for = Some(game.to_owned());
+                }
+            }
+        }
+    }
+
+    /// The game added to make a mode for is in the library: its AI request opens.
+    fn open_pending_generator(&mut self, s: &Shared) {
+        let Some(name) = &self.community.making_for else { return };
+        if let Some(game) = s.games.iter().find(|g| crate::game::slug(&g.name) == crate::game::slug(name)).cloned() {
+            self.community.making_for = None;
+            self.open_generator_for(&game, crate::mode::prompt::Depth::Quick);
         }
     }
 
@@ -1001,5 +1069,16 @@ pub(super) fn tour_first_game(app: &mut App, ctx: &egui::Context, s: &Shared) {
         if let Some(mode) = modes.first().map(|m| m.id.clone()).filter(|_| app.community.selected.is_none()) {
             app.select_mode_page(ctx, s, Source::Id(mode));
         }
+    }
+}
+
+/// For the screenshot tour: the Community page searching `game`.
+pub(super) fn tour_search(app: &mut App, game: &str) {
+    app.community.game = None;
+    app.community.selected = None;
+    if app.community.searched != game {
+        app.community.search = game.to_owned();
+        app.community.searched = game.to_owned();
+        app.community.games = Remote::Idle;
     }
 }

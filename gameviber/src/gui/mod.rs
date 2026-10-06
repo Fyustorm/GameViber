@@ -133,7 +133,8 @@ impl App {
             logs,
             commands,
             engine: Some(engine),
-            page: Page::Games,
+            // The usual way in: finding a mode made for one's game.
+            page: Page::Community,
             route: Route::Library,
             setup_tab: setup::Tab::default(),
             onboarding: None,
@@ -365,8 +366,8 @@ impl App {
         egui::Panel::left("rail").frame(frame).exact_size(84.0).resizable(false).show(ui, |ui| {
             ui.vertical_centered(|ui| {
                 for (page, icon, label) in [
-                    (Page::Games, "🎮", "Games"),
                     (Page::Community, "🌐", "Community"),
+                    (Page::Games, "🎮", "Games"),
                     (Page::Live, "📺", "Live"),
                     (Page::Toys, "📳", "Toys"),
                     (Page::Setup, "🛠", "Setup"),

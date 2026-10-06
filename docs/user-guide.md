@@ -11,8 +11,8 @@ intensity and **STOP ALL**.
 
 | Page | What it is for |
 |---|---|
+| **Community** | Where GameViber opens: search the game you play, and install a mode other players made for it in a click (the most downloaded or the newest first), open one shared with you by its code, report one that a game update broke. No mode for your game yet? **Create a mode for it**: an AI assistant writes it, then share it from its Sharing tab. A game's page shows its community modes too, and the library tells when the game you play has some and you have no mode of your own. |
 | **Games** | Your games, added by name. Each game has its **Modes** and its recorded **Sessions**; each mode has its page, in tabs: **Overview** (what it does, its variants, presets and settings), **Inputs** (what GameViber reads from the game for it, see below) and **Sharing**. A game linked to its executable becomes the game being played by itself, and so does a game Steam starts once GameViber saw its Steam app id. |
-| **Community** | The modes other players published, by game (the most downloaded or the newest first): install one in a click, open one shared with you by its code, report one that a game update broke. A game's page shows its community modes too, and the library tells when the game you play has some and you have no mode of your own. |
 | **Live** | What happens while you play, to keep on a second screen: the mode and its main settings, what goes to the toys, the phase, the sound, the gamepad. |
 | **Toys** | The connection to Intiface Central, the toys it found, a test buzz, and how each toy plays: which mode channels, weakest and strongest intensity, response curve. |
 | **Setup** | What does not depend on the game: the gamepad and how it is captured, the shortcuts (panic stop, mark a moment, capture the screen) on the gamepad or the keyboard, the in-game overlay, the sound listened to by default, other programs. |
