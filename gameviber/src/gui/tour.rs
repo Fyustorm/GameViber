@@ -29,9 +29,11 @@ enum Stop {
     Generator,
     /// The captures and indicators page, editing a bar indicator (else the first indicator).
     IndicatorEdit,
+    /// The Community page on its first game, and that game's first mode.
+    CommunityGame,
 }
 
-const STOPS: [(&str, Stop); 21] = [
+const STOPS: [(&str, Stop); 22] = [
     ("games", Stop::Games(|_| Some(Route::Library))),
     ("add-game", Stop::AddGame),
     ("builtin-modes", Stop::Games(|_| Some(Route::BuiltIn))),
@@ -44,6 +46,7 @@ const STOPS: [(&str, Stop); 21] = [
     ("mode-sharing", Stop::Games(|s| game(s, GameView::Sharing))),
     ("sessions", Stop::Games(|s| game(s, GameView::Sessions))),
     ("community", Stop::Page(Page::Community)),
+    ("community-game", Stop::CommunityGame),
     ("live", Stop::Page(Page::Live)),
     ("toys", Stop::Page(Page::Toys)),
     ("setup-gamepad", Stop::Setup(setup::Tab::Gamepad)),
@@ -128,6 +131,10 @@ impl App {
                         self.screen.edit_zone(zone, inputs);
                     }
                 }
+            }
+            Stop::CommunityGame => {
+                self.page = Page::Community;
+                super::community::tour_first_game(self, ctx, s);
             }
             Stop::Generator => {
                 if !self.generator.open {

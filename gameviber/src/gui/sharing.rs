@@ -47,7 +47,7 @@ impl App {
                 if path.extension().is_none() {
                     path.set_extension(EXTENSION);
                 }
-                match sharing::export(&game, &mode, &path) {
+                match sharing::export(&game, &mode, &path, &[]) {
                     Ok(()) => Outcome::Exported(path),
                     Err(e) => Outcome::Failed(format!("Cannot export the mode: {e:#}")),
                 }
@@ -77,14 +77,7 @@ impl App {
             }
         });
         ui.add_space(10.0);
-        card(RAISED).inner_margin(Margin::symmetric(18, 14)).show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.label(RichText::new("In the community").strong().size(16.0));
-            ui.label(muted(format!(
-                "Coming soon: publish it for every player of {}, or first for a few testers with a code.",
-                game.name
-            )));
-        });
+        self.community_sharing(ui, s, game);
     }
 
     /// Asks for a `.gameviber` file, and imports it.

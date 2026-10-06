@@ -104,6 +104,8 @@ pub struct Settings {
     /// Language AI assistants answer in, and write the texts players see in a mode
     /// (the GUI itself is in English for now).
     pub language: String,
+    /// The community server modes are shared on (`community.rs`).
+    pub community_url: String,
 }
 
 /// Port of the local server other programs send values and events to.
@@ -201,6 +203,7 @@ impl Default for Settings {
             check_updates: true,
             active_game: None,
             language: DEFAULT_LANGUAGE.into(),
+            community_url: crate::community::DEFAULT_URL.into(),
         }
     }
 }

@@ -103,6 +103,13 @@ enum Target {
 }
 
 impl State {
+    /// The texture of a capture loaded (`App::load_captures`).
+    pub(super) fn capture_texture(&self, file: &str) -> Option<egui::TextureHandle> {
+        self.captures.get(file).map(|(_, texture)| texture.clone())
+    }
+}
+
+impl State {
     /// Opens a zone (index `i`) on the capture shown (the screenshot tour).
     pub(super) fn edit_zone(&mut self, i: usize, inputs: &Inputs) {
         self.open_zone(i, inputs, false);

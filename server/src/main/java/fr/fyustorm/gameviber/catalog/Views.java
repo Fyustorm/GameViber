@@ -17,7 +17,8 @@ public final class Views {
         }
     }
 
-    public record ModeSummary(String id, String name, String description, String author, long downloads, int version, Instant updatedAt) {}
+    /** `version` and `api`: its latest version's number and mode API. */
+    public record ModeSummary(String id, String name, String description, String author, long downloads, int version, int api, Instant updatedAt) {}
 
     /** `visibility` and `shareCode` only for its author (and administrators). */
     public record ModeDetail(
@@ -42,8 +43,10 @@ public final class Views {
 
     static ModeSummary summary(Mode mode) {
         Author author = Author.findById(mode.authorId);
-        int version = ModeVersion.latest(mode).map(v -> v.number).orElse(0);
-        return new ModeSummary(mode.publicId, mode.name, mode.description, author.pseudo, mode.downloads, version, mode.updatedAt);
+        var latest = ModeVersion.latest(mode);
+        return new ModeSummary(
+                mode.publicId, mode.name, mode.description, author.pseudo, mode.downloads,
+                latest.map(v -> v.number).orElse(0), latest.map(v -> v.api).orElse(0), mode.updatedAt);
     }
 
     static ModeDetail detail(Mode mode, boolean owner) {

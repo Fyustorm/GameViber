@@ -20,7 +20,7 @@ use crate::screen::Frame;
 
 /// The inputs of a mode, in its package.
 pub const INPUTS_FILE: &str = "mode.json";
-const CAPTURES_DIR: &str = "captures";
+pub const CAPTURES_DIR: &str = "captures";
 /// A mode keeps at most this many captures per phase.
 pub const MAX_CAPTURES: usize = 40;
 /// A mode has at most this many phases (as modes may declare).

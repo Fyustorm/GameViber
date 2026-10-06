@@ -79,3 +79,6 @@ pub fn window_closing() {}
 pub fn steam_app_id(_pid: u32) -> Option<u32> {
     None
 }
+
+/// Only its owner may read or write the file: not done on this system yet.
+pub fn keep_private(_path: &std::path::Path) {}

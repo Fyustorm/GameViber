@@ -70,8 +70,8 @@ pub fn file_name(game: &Game, mode: &str) -> String {
 }
 
 /// Writes `mode` (or the mode it is a variant of, with all its variants) with
-/// the game `game` (by id) to `path`.
-pub fn export(game: &str, mode: &str, path: &Path) -> anyhow::Result<()> {
+/// the game `game` (by id) to `path`, without the captures `left_out` (file names).
+pub fn export(game: &str, mode: &str, path: &Path, left_out: &[String]) -> anyhow::Result<()> {
     let game = Game::load(game).context("this game is gone")?;
     let entry = ModeEntry::from_id(&ModeEntry::from_id(mode).main_id());
     if entry.builtin {
@@ -85,7 +85,12 @@ pub fn export(game: &str, mode: &str, path: &Path) -> anyhow::Result<()> {
     }
     let mut inputs = Inputs::of(&entry);
     // Captures to sort are examples of no phase yet.
-    inputs.captures.retain(|c| !c.phase.is_empty());
+    inputs.captures.retain(|c| !c.phase.is_empty() && !left_out.contains(&c.file));
+    for zone in &mut inputs.zones {
+        if zone.capture.as_ref().is_some_and(|file| left_out.contains(file)) {
+            zone.capture = None;
+        }
+    }
     let mut images = Vec::new();
     inputs.captures.retain_mut(|capture| {
         capture.embedding.clear();
@@ -146,7 +151,18 @@ pub fn import(path: &Path) -> anyhow::Result<Imported> {
     import_into(path, &config::modes_dir())
 }
 
-fn import_into(path: &Path, modes_dir: &Path) -> anyhow::Result<Imported> {
+/// What a `.gameviber` file holds, checked: every script loads.
+struct Shared {
+    /// The mode's name in files.
+    stem: String,
+    game: Game,
+    source: String,
+    variants: Vec<(String, String)>,
+    inputs: Inputs,
+    images: Vec<(package::Capture, Vec<u8>)>,
+}
+
+fn read_shared(path: &Path) -> anyhow::Result<Shared> {
     let file = fs::File::open(path).with_context(|| format!("cannot open {}", path.display()))?;
     let mut archive = Archive::open(file)?;
     let manifest: Manifest =
@@ -186,10 +202,14 @@ fn import_into(path: &Path, modes_dir: &Path) -> anyhow::Result<Imported> {
             Err(e) => log::warn!("leaving out the capture {}: {e:#}", capture.file),
         }
     }
+    Ok(Shared { stem: manifest.mode, game: shared, source, variants, inputs, images })
+}
 
+fn import_into(path: &Path, modes_dir: &Path) -> anyhow::Result<Imported> {
+    let Shared { stem, game: shared, source, variants, inputs, images } = read_shared(path)?;
     let (mode, mode_existed) = match same_mode(modes_dir, &source) {
         Some(mode) => (mode, true),
-        None => (install_mode(modes_dir, &manifest.mode, &source, &variants, inputs, images)?, false),
+        None => (install_mode(modes_dir, &stem, &source, &variants, inputs, images)?, false),
     };
     let games = Game::list();
     let existing = games.iter().find(|g| g.same_as(&shared.name, shared.steam_app_id)).cloned();
@@ -206,8 +226,27 @@ fn import_into(path: &Path, modes_dir: &Path) -> anyhow::Result<Imported> {
         game.modes.push(mode.clone());
     }
     game.save();
-    log::info!("imported {} for {} ({})", manifest.mode, game.name, if new_game { "new game" } else { "existing game" });
+    log::info!("imported {} for {} ({})", stem, game.name, if new_game { "new game" } else { "existing game" });
     Ok(Imported { game: game.id, name: game.name, mode, new_game, mode_existed })
+}
+
+/// Replaces the package of `mode` (a user mode, by id) with what the
+/// `.gameviber` file `path` holds: its script, variants, inputs and
+/// captures (a new version of a mode installed from the community).
+pub fn update(path: &Path, mode: &str) -> anyhow::Result<()> {
+    let Shared { source, variants, inputs, images, .. } = read_shared(path)?;
+    let entry = ModeEntry::from_id(mode);
+    let script = entry.path().filter(|_| entry.dir().is_some()).context("only a package can be updated")?;
+    let dir = entry.dir().context("only a package can be updated")?;
+    for old in [config::VARIANTS_DIR, package::CAPTURES_DIR] {
+        match fs::remove_dir_all(dir.join(old)) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+            _ => {}
+        }
+    }
+    fill_package(&script, &source, &variants, inputs, images)?;
+    log::info!("{} updated", entry.key);
+    Ok(())
 }
 
 /// The id of a package of `dir` with the very same script.
@@ -228,12 +267,24 @@ fn install_mode(
     stem: &str,
     source: &str,
     variants: &[(String, String)],
-    mut inputs: Inputs,
+    inputs: Inputs,
     images: Vec<(package::Capture, Vec<u8>)>,
 ) -> anyhow::Result<String> {
     let stem: String = stem.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').take(64).collect();
     let path = config::unused_mode_path_in(dir, if stem.is_empty() { "shared-mode" } else { &stem });
-    config::write_file(&path, source).with_context(|| format!("cannot write {}", path.display()))?;
+    fill_package(&path, source, variants, inputs, images)?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
+/// Writes a package: its script at `path`, its variants, captures and inputs.
+fn fill_package(
+    path: &Path,
+    source: &str,
+    variants: &[(String, String)],
+    mut inputs: Inputs,
+    images: Vec<(package::Capture, Vec<u8>)>,
+) -> anyhow::Result<()> {
+    config::write_file(path, source).with_context(|| format!("cannot write {}", path.display()))?;
     inputs.dir = ModeEntry::from_id(&path.to_string_lossy()).dir().context("no package for the mode")?;
     for (name, text) in variants {
         let file = inputs.dir.join(config::VARIANTS_DIR).join(format!("{name}.{MODE_EXTENSION}"));
@@ -260,7 +311,7 @@ fn install_mode(
         }
     }
     inputs.save();
-    Ok(path.to_string_lossy().into_owned())
+    Ok(())
 }
 
 /// A plain file name: no directory, nothing hidden.
@@ -353,8 +404,8 @@ mod tests {
         game.save();
         let file = root.join(file_name(&game, &mode));
         assert!(file.ends_with("metaphor-refantazio-battles.gameviber"));
-        export(&game.id, &variant.to_string_lossy(), &file).unwrap();
-        assert!(export(&game.id, "builtin:simple", &root.join("x.gameviber")).is_err(), "built-in modes are not shared");
+        export(&game.id, &variant.to_string_lossy(), &file, &[]).unwrap();
+        assert!(export(&game.id, "builtin:simple", &root.join("x.gameviber"), &[]).is_err(), "built-in modes are not shared");
 
         // Another player, without the game nor the mode.
         game.delete();

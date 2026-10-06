@@ -98,6 +98,7 @@ pub struct App {
     /// The setup was considered for this session (shown at most once automatically).
     onboarding_checked: bool,
     play: play::State,
+    community: community::State,
     toys: toys::State,
     overlay: overlay::State,
     settings: settings::State,
@@ -138,6 +139,7 @@ impl App {
             onboarding: None,
             onboarding_checked: false,
             play: play::State::default(),
+            community: community::State::default(),
             toys: toys::State::default(),
             overlay: overlay::State::default(),
             settings: settings::State::default(),
@@ -266,7 +268,7 @@ impl eframe::App for App {
         }
         match self.page {
             Page::Games => self.games_ui(ui, &s),
-            Page::Community => self.community_ui(ui),
+            Page::Community => self.community_ui(ui, &s),
             Page::Live => self.live_ui(ui, &s),
             Page::Toys => self.toys_ui(ui, &s),
             Page::Setup => self.setup_ui(ui, &s),

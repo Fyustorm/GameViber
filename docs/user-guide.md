@@ -12,7 +12,7 @@ intensity and **STOP ALL**.
 | Page | What it is for |
 |---|---|
 | **Games** | Your games, added by name. Each game has its **Modes** and its recorded **Sessions**; each mode has its page, in tabs: **Overview** (what it does, its variants, presets and settings), **Inputs** (what GameViber reads from the game for it, see below) and **Sharing**. A game linked to its executable becomes the game being played by itself, and so does a game Steam starts once GameViber saw its Steam app id. |
-| **Community** | Coming: modes other players made for your games, and publishing yours. Meanwhile, import a shared `.gameviber` file there. |
+| **Community** | The modes other players published, by game (the most downloaded or the newest first): install one in a click, open one shared with you by its code, report one that a game update broke. A game's page shows its community modes too, and the library tells when the game you play has some and you have no mode of your own. |
 | **Live** | What happens while you play, to keep on a second screen: the mode and its main settings, what goes to the toys, the phase, the sound, the gamepad. |
 | **Toys** | The connection to Intiface Central, the toys it found, a test buzz, and how each toy plays: which mode channels, weakest and strongest intensity, response curve. |
 | **Setup** | What does not depend on the game: the gamepad and how it is captured, the shortcuts (panic stop, mark a moment, capture the screen) on the gamepad or the keyboard, the in-game overlay, the sound listened to by default, other programs. |
@@ -69,6 +69,24 @@ are images of your screen: look at them before sharing the file.
 the same name, or adds the game. Captures are analysed again once the mode is
 played. Modes run in a sandbox: they can
 only drive your toys, never reach your files or the network.
+
+### Publishing a mode
+
+In a mode's **Sharing** tab, **In the community**: pick a name players see
+and a password (there is no email yet: a lost password cannot be recovered),
+then publish it for the people you give its code to (testers, first) or for
+everyone. Look at the captures it sends, and leave out those showing your name,
+a chat or a notification. Modes are published under the MIT license. Once
+published, the same tab gives its tester code (and a new one, the old one then
+stops working), lists it for everyone or makes it private again, publishes its
+next version with a word on what changed, or withdraws it.
+
+A mode installed from the community offers its updates (in the game's modes
+and its Sharing tab), unless you keep its version. If you changed it, the
+update installs beside your version, which stays as it is. After a few hours
+of play with a mode of your own that you did not change, GameViber suggests
+publishing it (never while you play; **Later**, or **Don't ask for this mode**).
+The server is set in **Settings › Community server**.
 
 ## A mode's inputs
 

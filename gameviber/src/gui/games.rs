@@ -116,6 +116,7 @@ impl App {
     }
 
     fn library(&mut self, ui: &mut egui::Ui, s: &Shared) {
+        self.community_banner(ui, s);
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
                 heading(ui, "Games");
@@ -370,6 +371,7 @@ impl App {
                                 open = Some(id.clone());
                             }
                             if entry.is_some_and(|e| !e.builtin) {
+                                self.community_update_button(ui, s, id);
                                 let button = ui
                                     .add_enabled(!self.sharing.busy(), egui::Button::new("Export"))
                                     .on_hover_text("Save it in a file to share, with its inputs");
@@ -388,6 +390,7 @@ impl App {
                         });
                     });
                 });
+                self.publish_suggestion(ui, s, game, id);
                 ui.add(egui::Separator::default().spacing(0.0));
             }
         });
@@ -407,13 +410,7 @@ impl App {
             self.send(Command::RemoveGameMode { game: game.id.clone(), mode });
         }
         ui.add_space(8.0);
-        card(RAISED).inner_margin(Margin::symmetric(14, 10)).show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.horizontal_wrapped(|ui| {
-                ui.label(RichText::new("From the community").strong());
-                ui.label(muted(format!("Coming soon: the modes other players made for {}, ranked by who kept playing them.", game.name)));
-            });
-        });
+        self.community_card(ui, s, game);
         ui.add_space(12.0);
         ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new("New mode").strong());

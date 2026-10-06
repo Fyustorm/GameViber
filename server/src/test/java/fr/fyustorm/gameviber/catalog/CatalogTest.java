@@ -150,6 +150,8 @@ class CatalogTest {
         int gameId = given().queryParam("search", game.toUpperCase()).get("/api/games").then().statusCode(200)
                 .body("[0].name", equalTo(game)).body("[0].modes", equalTo(1)).extract().path("[0].id");
         given().get("/api/games/" + gameId + "/modes?sort=downloads").then().body("[0].id", equalTo(id)).body("[0].downloads", equalTo(1));
+        given().queryParam("name", game.toLowerCase()).get("/api/games/match").then().statusCode(200).body("id", equalTo(gameId)).body("modes", equalTo(1));
+        given().queryParam("name", "No such game").get("/api/games/match").then().statusCode(404);
         given().get("/api/modes/" + id + "/package").then().statusCode(200).header("Content-Disposition", containsString(id + "-1.gameviber"));
         given().get("/api/modes/" + id).then().body("downloads", equalTo(2)).body("visibility", nullValue());
 

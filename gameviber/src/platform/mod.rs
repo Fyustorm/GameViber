@@ -14,7 +14,7 @@
 pub mod linux;
 #[cfg(target_os = "linux")]
 pub use linux::{
-    chown_to_caller, config_dir, data_dir, local_time, open_file, open_files, privileged_subcommand, save_file, steam_app_id, window_closing,
+    chown_to_caller, config_dir, data_dir, keep_private, local_time, open_file, open_files, privileged_subcommand, save_file, steam_app_id, window_closing,
     window_created, window_expected, window_focused, StopSignals,
 };
 
@@ -22,6 +22,6 @@ pub use linux::{
 mod unsupported;
 #[cfg(not(target_os = "linux"))]
 pub use unsupported::{
-    chown_to_caller, config_dir, data_dir, local_time, open_file, open_files, privileged_subcommand, save_file, steam_app_id, window_closing,
+    chown_to_caller, config_dir, data_dir, keep_private, local_time, open_file, open_files, privileged_subcommand, save_file, steam_app_id, window_closing,
     window_created, window_expected, window_focused, StopSignals,
 };

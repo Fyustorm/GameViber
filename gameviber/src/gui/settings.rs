@@ -20,11 +20,13 @@ pub struct State {
     /// Template text being edited (None: load it from disk).
     text: Option<String>,
     note: Option<Result<String, String>>,
+    /// Community server address being typed (None: show the saved one).
+    community_url: Option<String>,
 }
 
 impl Default for State {
     fn default() -> Self {
-        Self { language: None, template: Template::NewMode, text: None, note: None }
+        Self { language: None, template: Template::NewMode, text: None, note: None, community_url: None }
     }
 }
 
@@ -48,6 +50,25 @@ impl App {
                          (settings, help, questions, overlay messages) in it. GameViber itself is in English for now.",
                     ));
                     self.language_picker(ui, s);
+                });
+                ui.add_space(8.0);
+                card(PANEL).inner_margin(Margin::same(16)).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.label(RichText::new("Community server").strong().size(15.0));
+                    ui.label(muted("Where the modes players publish are, and where yours are published."));
+                    let mut apply = None;
+                    let url = self.settings.community_url.get_or_insert_with(|| s.settings.community_url.clone());
+                    ui.horizontal(|ui| {
+                        ui.add(egui::TextEdit::singleline(url).desired_width(320.0));
+                        let changed = url.trim().trim_end_matches('/') != s.settings.community_url;
+                        if ui.add_enabled(changed, egui::Button::new("Apply")).clicked() {
+                            apply = Some(url.clone());
+                        }
+                    });
+                    if let Some(url) = apply {
+                        self.send(Command::SetCommunityUrl(url));
+                        self.settings.community_url = None;
+                    }
                 });
                 ui.add_space(8.0);
                 card(PANEL).inner_margin(Margin::same(16)).show(ui, |ui| {

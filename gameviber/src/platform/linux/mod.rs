@@ -55,6 +55,14 @@ pub fn runtime_dir() -> PathBuf {
     std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("/tmp/gameviber-{}", uid())))
 }
 
+/// Only its owner may read or write the file `path` (a secret in it).
+pub fn keep_private(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    if let Err(e) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)) {
+        log::warn!("cannot keep {} private: {e}", path.display());
+    }
+}
+
 /// The Steam app id of a running process, as Steam sets it in the game's
 /// environment (`SteamAppId`; Proton games too). None for a game Steam did not
 /// start, or a process of another user.

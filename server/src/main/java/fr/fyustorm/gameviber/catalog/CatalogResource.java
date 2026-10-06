@@ -1,6 +1,7 @@
 package fr.fyustorm.gameviber.catalog;
 
 import java.util.List;
+import java.util.Optional;
 
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
@@ -37,6 +38,18 @@ public class CatalogResource {
                 .map(Views::game)
                 .sorted((a, b) -> Long.compare(b.modes(), a.modes()))
                 .toList();
+    }
+
+    /**
+     * The game a player plays, as GameViber knows it (its Steam app id, else its
+     * name), when it has public modes: what the app tells the player about.
+     */
+    @GET
+    @Path("/games/match")
+    public Views.GameView match(@QueryParam("name") String name, @QueryParam("steamAppId") Long steamAppId) {
+        var byApp = steamAppId == null ? Optional.<Game>empty() : Game.<Game>find("steamAppId", steamAppId).firstResultOptional();
+        var game = byApp.or(() -> name == null || name.isBlank() ? Optional.empty() : Game.<Game>find("slug", Game.slug(name)).firstResultOptional());
+        return game.map(Views::game).filter(g -> g.modes() > 0).orElseThrow(() -> Problem.notFound("no public mode for this game"));
     }
 
     /** A game, and its public modes: `sort` new (default) or downloads. */

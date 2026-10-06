@@ -74,6 +74,8 @@ pub enum Command {
     RefreshModes,
     /// Language of the requests to AI assistants.
     SetLanguage(String),
+    /// The community server's address.
+    SetCommunityUrl(String),
     /// Deletes a user mode; the default mode takes over if it was active.
     DeleteMode(String),
     SetParam(String, ParamValue),
@@ -400,6 +402,8 @@ struct Engine {
     external: ExternalInputs,
     shortcuts: Option<Shortcuts>,
     ticks: u64,
+    /// Seconds a game ran with the active mode, not yet counted (`community::record_play`).
+    played: f64,
 }
 
 type PhaseTexts = (Sense, Vec<(String, String)>, Result<Vec<Embedding>, String>);
@@ -490,6 +494,7 @@ async fn run_async(
         external,
         shortcuts,
         ticks: 0,
+        played: 0.0,
     };
     engine.apply_combos();
     engine.start_source();
@@ -669,6 +674,11 @@ impl Engine {
             Command::SetLanguage(language) => {
                 let language = language.trim();
                 self.settings.language = if language.is_empty() { config::DEFAULT_LANGUAGE.into() } else { language.into() };
+                self.settings.save();
+            }
+            Command::SetCommunityUrl(url) => {
+                let url = url.trim().trim_end_matches('/');
+                self.settings.community_url = if url.is_empty() { crate::community::DEFAULT_URL.into() } else { url.into() };
                 self.settings.save();
             }
             Command::DeleteMode(id) => {
@@ -1184,6 +1194,16 @@ impl Engine {
         let time = self.time();
         self.check_reload();
         self.retry_source();
+        // Play time with the active mode, counted a minute at a time.
+        if self.running.is_some() {
+            self.played += dt;
+            if self.played >= 60.0 {
+                if let Some(active) = &self.mode {
+                    crate::community::record_play(&active.entry.id, self.played);
+                }
+                self.played = 0.0;
+            }
+        }
         if self.player.as_ref().is_some_and(|(p, _)| p.finished(time)) {
             self.stop_replay();
         }
