@@ -26,7 +26,7 @@ use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
-use crate::game::valid_name;
+use crate::package::valid_name;
 
 /// At most this many values are kept.
 const MAX_VALUES: usize = 64;

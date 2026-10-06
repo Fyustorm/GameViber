@@ -17,6 +17,8 @@ use crate::platform;
 
 pub const BUILTIN_PREFIX: &str = "builtin:";
 pub const MODE_EXTENSION: &str = "luau";
+/// A user mode's script in its package (`modes/<name>/mode.luau`, `package.rs`).
+pub const MODE_FILE: &str = "mode.luau";
 
 const BUILTIN_MODES: [(&str, &str); 10] = [
     ("simple", include_str!("../modes/simple.luau")),
@@ -202,7 +204,17 @@ impl Default for Settings {
 
 pub use crate::platform::{config_dir, data_dir};
 
+#[cfg(test)]
+thread_local! {
+    /// Tests keep their modes out of the player's.
+    pub(crate) static MODES_TEST_DIR: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
 pub fn modes_dir() -> PathBuf {
+    #[cfg(test)]
+    if let Some(dir) = MODES_TEST_DIR.with(|d| d.borrow().clone()) {
+        return dir;
+    }
     config_dir().join("modes")
 }
 
@@ -337,7 +349,7 @@ impl FeedbackHistory {
 pub struct ModeEntry {
     /// "builtin:<name>" or the absolute path of a user mode file.
     pub id: String,
-    /// Built-in name or file stem; also the key of the saved parameters.
+    /// Built-in name, package name, or file stem; also the key of the saved parameters.
     pub key: String,
     pub builtin: bool,
 }
@@ -347,7 +359,9 @@ impl ModeEntry {
         match id.strip_prefix(BUILTIN_PREFIX) {
             Some(name) => Self { id: id.to_owned(), key: name.to_owned(), builtin: true },
             None => {
-                let key = Path::new(id).file_stem().map_or_else(|| id.to_owned(), |s| s.to_string_lossy().into_owned());
+                let path = Path::new(id);
+                let name = if path.file_name().is_some_and(|f| f == MODE_FILE) { path.parent().and_then(Path::file_name) } else { path.file_stem() };
+                let key = name.map_or_else(|| id.to_owned(), |s| s.to_string_lossy().into_owned());
                 Self { id: id.to_owned(), key, builtin: false }
             }
         }
@@ -355,6 +369,12 @@ impl ModeEntry {
 
     pub fn path(&self) -> Option<PathBuf> {
         (!self.builtin).then(|| PathBuf::from(&self.id))
+    }
+
+    /// The mode's package (`package.rs`): None for a built-in mode, or a file run from elsewhere.
+    pub fn dir(&self) -> Option<PathBuf> {
+        let path = self.path()?;
+        path.file_name().is_some_and(|f| f == MODE_FILE).then(|| path.parent().map(Path::to_path_buf)).flatten()
     }
 
     pub fn chunk_name(&self) -> String {
@@ -412,14 +432,17 @@ impl ModeEntry {
         write_toml(&self.feedback_path(), history);
     }
 
-    /// Deletes a user mode's file, its backup, and its saved parameters,
-    /// presets and feedback history, so a new mode with the same name starts
-    /// afresh.
+    /// Deletes a user mode's package (or file and backup), and its saved
+    /// parameters, presets and feedback history, so a new mode with the same
+    /// name starts afresh.
     pub fn delete(&self) -> io::Result<()> {
         let Some(path) = self.path() else {
             return Err(io::Error::new(io::ErrorKind::PermissionDenied, "built-in modes cannot be deleted"));
         };
-        fs::remove_file(&path)?;
+        match self.dir() {
+            Some(dir) => fs::remove_dir_all(&dir)?,
+            None => fs::remove_file(&path)?,
+        }
         for file in [path.with_extension("luau.bak"), self.params_path(), self.presets_path(), self.feedback_path()] {
             if let Err(e) = fs::remove_file(&file) {
                 if e.kind() != io::ErrorKind::NotFound {
@@ -431,15 +454,15 @@ impl ModeEntry {
     }
 }
 
-/// Built-in modes first, then `~/.config/gameviber/modes/*.luau` sorted by name.
+/// Built-in modes first, then the packages `~/.config/gameviber/modes/*/mode.luau` sorted by name.
 pub fn list_modes() -> Vec<ModeEntry> {
     let mut modes: Vec<_> = BUILTIN_MODES.iter().map(|(name, _)| ModeEntry::from_id(&format!("{BUILTIN_PREFIX}{name}"))).collect();
     let mut user: Vec<_> = fs::read_dir(modes_dir())
         .into_iter()
         .flatten()
         .filter_map(Result::ok)
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|e| e == MODE_EXTENSION))
+        .map(|e| e.path().join(MODE_FILE))
+        .filter(|p| p.is_file())
         .map(|p| ModeEntry::from_id(&p.to_string_lossy()))
         .collect();
     user.sort_by(|a, b| a.key.cmp(&b.key));
@@ -447,19 +470,19 @@ pub fn list_modes() -> Vec<ModeEntry> {
     modes
 }
 
-/// First free `<stem>.luau`, `<stem>-2.luau`... in the modes directory.
+/// The script of the first free package `<stem>/`, `<stem>-2/`... in the modes directory.
 pub fn unused_mode_path(stem: &str) -> PathBuf {
     unused_mode_path_in(&modes_dir(), stem)
 }
 
-/// First free `<stem>.luau`, `<stem>-2.luau`... in `dir`.
+/// The script of the first free package `<stem>/`, `<stem>-2/`... in `dir`.
 pub fn unused_mode_path_in(dir: &Path, stem: &str) -> PathBuf {
     let mut n = 1;
     loop {
-        let name = if n == 1 { format!("{stem}.{MODE_EXTENSION}") } else { format!("{stem}-{n}.{MODE_EXTENSION}") };
-        let path = dir.join(name);
-        if !path.exists() {
-            return path;
+        let name = if n == 1 { stem.to_owned() } else { format!("{stem}-{n}") };
+        let package = dir.join(&name);
+        if !package.exists() {
+            return package.join(MODE_FILE);
         }
         n += 1;
     }
@@ -497,9 +520,13 @@ mod tests {
     }
 
     #[test]
-    fn user_entries_use_file_stem() {
-        let e = ModeEntry::from_id("/x/modes/combo.luau");
+    fn user_entries_use_their_package_or_file_stem() {
+        let e = ModeEntry::from_id("/x/modes/combo/mode.luau");
         assert_eq!((e.key.as_str(), e.builtin, e.chunk_name().as_str()), ("combo", false, "combo.luau"));
+        assert_eq!(e.dir(), Some(PathBuf::from("/x/modes/combo")));
+        let e = ModeEntry::from_id("/elsewhere/combo.luau");
+        assert_eq!((e.key.as_str(), e.dir()), ("combo", None), "a file run from elsewhere has no package");
+        assert_eq!(ModeEntry::from_id("builtin:combo").dir(), None);
     }
 
     #[test]

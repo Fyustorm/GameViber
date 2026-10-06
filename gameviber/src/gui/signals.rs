@@ -1,8 +1,9 @@
 //! A game's Signals (Games › game › Signals): what GameViber reads from the
-//! game for all its modes, as guided steps — what signals are, naming the
-//! scenes, showing what each looks like (captures, `screen.rs`), reading exact
-//! values on screen (zones), the sound, and for experts the values other
-//! programs send — with, on the side, what the modes know right now.
+//! game for the active mode (the inputs in its package), as guided steps —
+//! what signals are, naming the scenes, showing what each looks like
+//! (captures, `screen.rs`), reading exact values on screen (zones), the
+//! game's sound, and for experts the values other programs send — with, on
+//! the side, what the mode knows right now.
 
 use std::collections::HashMap;
 
@@ -13,7 +14,8 @@ use super::theme::*;
 use super::{App, GameView, Route};
 use crate::config::AudioSource;
 use crate::engine::{Command, Shared};
-use crate::game::{valid_name, Game, InputDecl, InputKind, SceneDef, MAX_SCENES};
+use crate::game::Game;
+use crate::package::{valid_name, InputDecl, InputKind, Inputs, SceneDef, MAX_SCENES};
 use crate::mode::prompt::Depth;
 use crate::mode::ZoneValue;
 use crate::models::Model;
@@ -47,19 +49,20 @@ enum Status {
 
 impl App {
     pub(super) fn signals_page(&mut self, ui: &mut egui::Ui, s: &Shared, game: &Game) {
+        let Some(inputs) = self.inputs_of(ui, s, game) else { return };
         let playing = s.game.as_ref().is_some_and(|g| g.id == game.id);
         let steps = |app: &mut Self, ui: &mut egui::Ui| {
             app.signals_intro(ui);
             ui.add_space(10.0);
-            app.scenes_step(ui, s, game);
+            app.scenes_step(ui, s, game, inputs);
             ui.add_space(10.0);
-            app.looks_step(ui, s, game);
+            app.looks_step(ui, s, game, inputs);
             ui.add_space(10.0);
-            app.zones_step(ui, s, game, playing);
+            app.zones_step(ui, s, game, inputs, playing);
             ui.add_space(10.0);
             app.sound_step(ui, s, game);
             ui.add_space(10.0);
-            app.experts_step(ui, s, game);
+            app.experts_step(ui, s, inputs);
         };
         if ui.available_width() >= TWO_COLUMNS_WIDTH {
             let side = 320.0;
@@ -74,14 +77,36 @@ impl App {
                 });
                 ui.allocate_ui_with_layout(Vec2::new(side, 0.0), layout, |ui| {
                     ui.set_width(side);
-                    self.modes_know(ui, s, game, playing);
+                    self.modes_know(ui, s, game, inputs, playing);
                 });
             });
         } else {
             steps(self, ui);
             ui.add_space(10.0);
-            self.modes_know(ui, s, game, playing);
+            self.modes_know(ui, s, game, inputs, playing);
         }
+    }
+
+    /// The inputs of the active mode, when it is one of `game`'s and has a
+    /// package; otherwise says why there are none to set up.
+    pub(super) fn inputs_of<'a>(&mut self, ui: &mut egui::Ui, s: &'a Shared, game: &Game) -> Option<&'a Inputs> {
+        let name = s.mode.info.as_ref().map_or_else(|| s.mode.id.clone(), |i| i.name.clone());
+        let why = if !game.modes.contains(&s.mode.id) {
+            "Signals belong to a mode: open one of this game's modes to set up what it reads."
+        } else if s.mode_inputs.is_none() {
+            "Built-in modes read no signals set up for a game: duplicate it to set some up for this game."
+        } else {
+            ui.label(muted(format!("Signals of the mode {name}.")));
+            return s.mode_inputs.as_ref();
+        };
+        card(PANEL).inner_margin(Margin::symmetric(18, 14)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(why);
+            if ui.button("Open its modes").clicked() {
+                self.route = Route::Game { id: game.id.clone(), view: GameView::Modes };
+            }
+        });
+        None
     }
 
     fn signals_intro(&mut self, ui: &mut egui::Ui) {
@@ -94,19 +119,19 @@ impl App {
                  vibration through a battle and calm down during a cutscene.",
             );
             ui.label(muted(
-                "Everything here is optional, set once for this game, and shared by all its modes. Steps 1 and 2 give \
-                 the most for the least effort.",
+                "Everything here is optional, and belongs to this mode: a new mode made from this game's page starts \
+                 with it. Steps 1 and 2 give the most for the least effort.",
             ));
         });
     }
 
-    fn scenes_step(&mut self, ui: &mut egui::Ui, s: &Shared, game: &Game) {
-        let status = if game.scenes.len() >= 2 {
-            Status::Done(format!("Done · {} scenes", game.scenes.len()))
+    fn scenes_step(&mut self, ui: &mut egui::Ui, s: &Shared, game: &Game, inputs: &Inputs) {
+        let status = if inputs.scenes.len() >= 2 {
+            Status::Done(format!("Done · {} scenes", inputs.scenes.len()))
         } else {
             Status::Next("Start here".to_owned())
         };
-        let mut changed: Option<Game> = None;
+        let mut changed: Option<Inputs> = None;
         step_card(ui, 1, "Name the scenes of the game", status, |ui| {
             ui.label(muted(
                 "A scene is a phase of the game that should not feel the same: a battle, exploring, a dialogue, a \
@@ -114,13 +139,13 @@ impl App {
                  different.",
             ));
             ui.add_space(4.0);
-            if !game.scenes.is_empty() {
+            if !inputs.scenes.is_empty() {
                 let live: HashMap<&str, f64> = if s.game.as_ref().is_some_and(|g| g.id == game.id) {
                     s.scenes.scenes.iter().map(|(n, p)| (n.as_str(), *p)).collect()
                 } else {
                     HashMap::new()
                 };
-                let mut zone_names: Vec<&str> = game.zones.iter().map(|z| z.name.as_str()).collect();
+                let mut zone_names: Vec<&str> = inputs.zones.iter().map(|z| z.name.as_str()).collect();
                 zone_names.dedup();
                 zone_names.sort();
                 zone_names.dedup();
@@ -132,7 +157,7 @@ impl App {
                     ui.label(muted("Right now").size(12.0));
                     ui.label("");
                     ui.end_row();
-                    for (i, scene) in game.scenes.iter().enumerate() {
+                    for (i, scene) in inputs.scenes.iter().enumerate() {
                         let current = s.scenes.scene.as_deref() == Some(scene.name.as_str()) && !live.is_empty();
                         let name = RichText::new(&scene.name).strong();
                         ui.label(if current { name.color(ACCENT_TEXT) } else { name });
@@ -140,7 +165,7 @@ impl App {
                         let edit = ui.add(egui::TextEdit::singleline(text).hint_text("e.g. aggressive battle music with heavy drums").desired_width(260.0));
                         let typed = text.trim().to_owned();
                         if edit.lost_focus() && Some(typed.as_str()) != scene.sound.as_deref().or(Some("")) {
-                            let mut g = game.clone();
+                            let mut g = inputs.clone();
                             g.scenes[i].sound = (!typed.is_empty()).then_some(typed);
                             changed = Some(g);
                         }
@@ -158,7 +183,7 @@ impl App {
                             .on_hover_text(SURE_SIGN_HELP);
                         });
                         if zone != scene.zone.clone().filter(|z| zone_names.contains(&z.as_str())) {
-                            let mut g = game.clone();
+                            let mut g = inputs.clone();
                             g.scenes[i].zone = zone;
                             changed = Some(g);
                         }
@@ -167,7 +192,7 @@ impl App {
                         // Saved once let go (or typed).
                         let done = drag.drag_stopped() || drag.lost_focus() || (drag.changed() && !drag.dragged() && !drag.has_focus());
                         if done && *hold != scene.hold && changed.is_none() {
-                            let mut g = game.clone();
+                            let mut g = inputs.clone();
                             g.scenes[i].hold = *hold;
                             changed = Some(g);
                         }
@@ -183,7 +208,7 @@ impl App {
                             }
                         }
                         if ui.small_button("Remove").on_hover_text("Forget this scene (its captures stay, to sort)").clicked() {
-                            let mut g = game.clone();
+                            let mut g = inputs.clone();
                             g.scenes.remove(i);
                             changed = Some(g);
                         }
@@ -192,19 +217,19 @@ impl App {
                 });
             }
             ui.horizontal_wrapped(|ui| {
-                let room = game.scenes.len() < MAX_SCENES;
-                for suggestion in SUGGESTED_SCENES.iter().filter(|n| !game.scenes.iter().any(|s| s.name == **n)) {
+                let room = inputs.scenes.len() < MAX_SCENES;
+                for suggestion in SUGGESTED_SCENES.iter().filter(|n| !inputs.scenes.iter().any(|s| s.name == **n)) {
                     if ui.add_enabled(room, egui::Button::new(format!("+ {suggestion}"))).clicked() {
-                        let mut g = game.clone();
+                        let mut g = inputs.clone();
                         g.scenes.push(SceneDef { name: (*suggestion).to_owned(), ..SceneDef::default() });
                         changed = Some(g);
                     }
                 }
                 ui.add(egui::TextEdit::singleline(&mut self.signals.new_scene).hint_text("another scene").desired_width(120.0));
                 let name = self.signals.new_scene.trim().to_owned();
-                let ok = room && valid_name(&name) && !game.scenes.iter().any(|s| s.name == name);
+                let ok = room && valid_name(&name) && !inputs.scenes.iter().any(|s| s.name == name);
                 if ui.add_enabled(ok, egui::Button::new("Add")).clicked() {
-                    let mut g = game.clone();
+                    let mut g = inputs.clone();
                     g.scenes.push(SceneDef { name, ..SceneDef::default() });
                     changed = Some(g);
                     self.signals.new_scene.clear();
@@ -212,15 +237,15 @@ impl App {
             });
         });
         if let Some(g) = changed {
-            self.send(Command::SaveGame(g));
+            self.send(Command::SaveInputs(g));
         }
     }
 
-    fn looks_step(&mut self, ui: &mut egui::Ui, s: &Shared, game: &Game) {
+    fn looks_step(&mut self, ui: &mut egui::Ui, s: &Shared, game: &Game, inputs: &Inputs) {
         let counts: Vec<(String, usize)> =
-            game.scenes.iter().map(|sc| (sc.name.clone(), game.captures.iter().filter(|c| c.scene == sc.name).count())).collect();
+            inputs.scenes.iter().map(|sc| (sc.name.clone(), inputs.captures.iter().filter(|c| c.scene == sc.name).count())).collect();
         let enough = !counts.is_empty() && counts.iter().all(|(_, n)| *n >= CAPTURES_WANTED);
-        let status = match (game.scenes.is_empty(), enough) {
+        let status = match (inputs.scenes.is_empty(), enough) {
             (true, _) => Status::Optional("After step 1".to_owned()),
             (false, true) => Status::Done("Done".to_owned()),
             (false, false) => Status::Next("Recommended · next step".to_owned()),
@@ -244,7 +269,7 @@ impl App {
                     }
                 });
             }
-            let to_sort = game.captures.iter().filter(|c| c.scene.is_empty()).count();
+            let to_sort = inputs.captures.iter().filter(|c| c.scene.is_empty()).count();
             if to_sort > 0 {
                 ui.label(RichText::new(format!("{to_sort} captures to sort")).color(WARN));
             }
@@ -263,7 +288,7 @@ impl App {
                     "Describe how a scene sounds in step 1 and the music is compared with it as well: useful when the \
                      music changes between scenes, useless when it does not.",
                 ));
-                if game.scenes.iter().any(|sc| sc.sound.is_some()) && s.audio.model != crate::models::ModelState::Ready {
+                if inputs.scenes.iter().any(|sc| sc.sound.is_some()) && s.audio.model != crate::models::ModelState::Ready {
                     if let Some(c) = model_card(ui, Model::Sound, &s.audio.model) {
                         command = Some(c);
                     }
@@ -278,8 +303,8 @@ impl App {
         }
     }
 
-    fn zones_step(&mut self, ui: &mut egui::Ui, s: &Shared, game: &Game, playing: bool) {
-        let mut names: Vec<&str> = game.zones.iter().map(|z| z.name.as_str()).collect();
+    fn zones_step(&mut self, ui: &mut egui::Ui, s: &Shared, game: &Game, inputs: &Inputs, playing: bool) {
+        let mut names: Vec<&str> = inputs.zones.iter().map(|z| z.name.as_str()).collect();
         names.sort();
         names.dedup();
         let status = Status::Optional(if names.is_empty() { "Optional".to_owned() } else { format!("Optional · {} zones", names.len()) });
@@ -302,7 +327,7 @@ impl App {
                     };
                     pill(ui, &text, TEXT, RAISED);
                 }
-                let label = if game.captures.is_empty() { "Capture images first, then draw zones on them ›" } else { "Draw zones on the captures ›" };
+                let label = if inputs.captures.is_empty() { "Capture images first, then draw zones on them ›" } else { "Draw zones on the captures ›" };
                 open = ui.link(label).clicked();
             });
         });
@@ -359,7 +384,7 @@ impl App {
         }
     }
 
-    fn experts_step(&mut self, ui: &mut egui::Ui, s: &Shared, game: &Game) {
+    fn experts_step(&mut self, ui: &mut egui::Ui, s: &Shared, inputs: &Inputs) {
         let mut changed = None;
         card(PANEL).inner_margin(Margin::symmetric(18, 12)).show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -369,7 +394,7 @@ impl App {
                      to {} (Setup › Other programs). Declare them here so that AI assistants know them.",
                     s.inputs.address.as_deref().unwrap_or("GameViber")
                 )));
-                for (i, input) in game.inputs.iter().enumerate() {
+                for (i, input) in inputs.inputs.iter().enumerate() {
                     ui.horizontal(|ui| {
                         let kind = match input.kind {
                             InputKind::Value => format!("input.custom.{}", input.name),
@@ -378,7 +403,7 @@ impl App {
                         ui.label(RichText::new(kind).monospace());
                         ui.label(&input.description);
                         if ui.small_button("Delete").clicked() {
-                            let mut g = game.clone();
+                            let mut g = inputs.clone();
                             g.inputs.remove(i);
                             changed = Some(g);
                         }
@@ -394,9 +419,9 @@ impl App {
                         });
                     ui.add(egui::TextEdit::singleline(&mut new.name).hint_text("hp").desired_width(100.0));
                     ui.add(egui::TextEdit::singleline(&mut new.description).hint_text("health, 0 to 100").desired_width(220.0));
-                    let ok = valid_name(&new.name) && !new.description.trim().is_empty() && !game.inputs.iter().any(|i| i.name == new.name);
+                    let ok = valid_name(&new.name) && !new.description.trim().is_empty() && !inputs.inputs.iter().any(|i| i.name == new.name);
                     if ui.add_enabled(ok, egui::Button::new("Declare")).clicked() {
-                        let mut g = game.clone();
+                        let mut g = inputs.clone();
                         g.inputs.push(std::mem::take(new));
                         changed = Some(g);
                     }
@@ -405,12 +430,12 @@ impl App {
             });
         });
         if let Some(g) = changed {
-            self.send(Command::SaveGame(g));
+            self.send(Command::SaveInputs(g));
         }
     }
 
     /// What the modes know right now, in plain words.
-    fn modes_know(&mut self, ui: &mut egui::Ui, s: &Shared, game: &Game, playing: bool) {
+    fn modes_know(&mut self, ui: &mut egui::Ui, s: &Shared, game: &Game, inputs: &Inputs, playing: bool) {
         let mut advanced = false;
         card(PANEL).inner_margin(Margin::symmetric(16, 14)).show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -422,7 +447,7 @@ impl App {
                 ui.add_space(4.0);
                 match (&s.scenes.scene, s.scenes.scenes.iter().find(|(n, _)| Some(n) == s.scenes.scene.as_ref())) {
                     (Some(scene), Some((_, p))) => known(ui, &capitalized(scene), &format!("scene, {:.0}% sure", p * 100.0), ACCENT_TEXT),
-                    _ if !game.scenes.is_empty() => known(ui, "No scene yet", "it takes a few seconds of the game", MUTED),
+                    _ if !inputs.scenes.is_empty() => known(ui, "No scene yet", "it takes a few seconds of the game", MUTED),
                     _ => {}
                 }
                 for (name, _, value) in &s.screen.zones {

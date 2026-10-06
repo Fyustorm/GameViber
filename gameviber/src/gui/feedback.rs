@@ -389,7 +389,7 @@ impl App {
         let session = match &f.session {
             Some(path) => {
                 let session = Session::open(path).map_err(|e| format!("cannot read the session: {e:#}"))?;
-                let sim = report::simulate(&entry.chunk_name(), &source, &s.mode.values, session)?;
+                let sim = report::simulate(&entry.chunk_name(), &source, &s.mode.values, &crate::package::Inputs::of(&entry), session)?;
                 Some(sim.report())
             }
             None => None,
@@ -407,7 +407,7 @@ impl App {
         }
         let mut history = entry.load_feedback();
         let earlier = history.lines();
-        let profile = s.game.as_ref().map(|p| p.describe());
+        let profile = s.mode_inputs.as_ref().map(|i| i.describe());
         let request = prompt::feel_prompt(&prompt::Templates::load(), &prompt::FeelReport {
             name: &info.name,
             game: &f.game,
@@ -476,7 +476,7 @@ impl App {
             None => {
                 *f = State { game: std::mem::take(&mut f.game), short: f.short, ..State::default() };
                 // The history follows the tuned copy.
-                if let Some(copy) = self.create_mode(&format!("{}-tuned", entry.key), &script) {
+                if let Some(copy) = self.create_mode(&format!("{}-tuned", entry.key), &script, Some(&entry.id)) {
                     copy.save_feedback(&history);
                 }
                 // The mode's page, within its game.

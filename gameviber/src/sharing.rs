@@ -1,13 +1,13 @@
 //! Modes shared with their game, as `.gameviber` files: a zip archive of
-//! `gameviber.json` (how the game is set up: its scenes, zones, captures,
-//! values from other programs, sound and executables), the mode's script
-//! (`mode.luau`) and the captures (`captures/*.png`). A mode written for one
-//! game reads that game's scenes and zones by name, so it travels with them.
+//! `gameviber.json` (the game — its name and the executables it runs as — and
+//! the inputs the mode reads: its scenes, zones, captures, values from other
+//! programs), the mode's script (`mode.luau`) and the captures
+//! (`captures/*.png`): a mode's package (`package.rs`), with its game.
 //!
-//! Importing one adds the mode to the game of the same name, completing its
-//! signals with those it lacks (what the player set up stays), or adds the
-//! game. Capture embeddings are left out: they are computed again with the
-//! player's image model.
+//! Importing one makes a package of the mode, joined to the game of the same
+//! name (or a new game). Files of the first format (0.1.0-alpha.2) held the
+//! inputs in the game: they become the mode's. Capture embeddings are left
+//! out: they are computed again with the player's image model.
 
 use std::fs;
 use std::io::{Read, Seek, Write};
@@ -17,11 +17,12 @@ use anyhow::{bail, Context};
 use serde::{Deserialize, Serialize};
 
 use crate::config::{self, ModeEntry, MODE_EXTENSION};
-use crate::game::{self, Capture, Game, MAX_CAPTURES, MAX_SCENES};
+use crate::game::{self, Game};
+use crate::package::{self, Inputs, MAX_CAPTURES, MAX_SCENES};
 
 pub const EXTENSION: &str = "gameviber";
 /// Version of the layout; files of a newer one are refused.
-const FORMAT: u32 = 1;
+const FORMAT: u32 = 2;
 const MANIFEST: &str = "gameviber.json";
 const MODE: &str = "mode.luau";
 const CAPTURES: &str = "captures/";
@@ -36,10 +37,13 @@ struct Manifest {
     format: u32,
     /// The GameViber version that wrote it.
     app_version: String,
-    /// The mode file's name, without its extension.
+    /// The mode's name in files, without extension.
     mode: String,
-    /// The game, without its modes and capture embeddings.
-    game: Game,
+    /// The game: its name and executables (format 1: also the inputs).
+    game: serde_json::Value,
+    /// The mode's inputs, without capture embeddings (format 2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    inputs: Option<Inputs>,
 }
 
 /// What an import did.
@@ -52,7 +56,7 @@ pub struct Imported {
     pub mode: String,
     /// The game was added (else the mode joined the game of that name).
     pub new_game: bool,
-    /// The same mode was there already.
+    /// The same mode was there already (its inputs stay as they are).
     pub mode_existed: bool,
 }
 
@@ -63,19 +67,19 @@ pub fn file_name(game: &Game, mode: &str) -> String {
 
 /// Writes `mode` with the game `game` (by id) to `path`.
 pub fn export(game: &str, mode: &str, path: &Path) -> anyhow::Result<()> {
-    let mut game = Game::load(game).context("this game is gone")?;
+    let game = Game::load(game).context("this game is gone")?;
     let entry = ModeEntry::from_id(mode);
     if entry.builtin {
         bail!("built-in modes come with every GameViber: there is no need to share them");
     }
     let source = entry.source().with_context(|| format!("cannot read {}", entry.id))?;
-    game.modes.clear();
+    let mut inputs = Inputs::of(&entry);
     // Captures to sort are examples of no scene yet.
-    game.captures.retain(|c| !c.scene.is_empty());
+    inputs.captures.retain(|c| !c.scene.is_empty());
     let mut images = Vec::new();
-    game.captures.retain_mut(|capture| {
+    inputs.captures.retain_mut(|capture| {
         capture.embedding.clear();
-        match fs::read(game::capture_path(&game.id, &capture.file)) {
+        match fs::read(package::capture_path(&inputs.dir, &capture.file)) {
             Ok(bytes) => {
                 images.push((capture.file.clone(), bytes));
                 true
@@ -86,14 +90,17 @@ pub fn export(game: &str, mode: &str, path: &Path) -> anyhow::Result<()> {
             }
         }
     });
-    let manifest = Manifest { format: FORMAT, app_version: env!("CARGO_PKG_VERSION").to_owned(), mode: entry.key.clone(), game };
+    // The sound to listen to is set for this computer.
+    let shared_game = serde_json::json!({ "name": game.name, "executables": game.executables });
+    let manifest =
+        Manifest { format: FORMAT, app_version: env!("CARGO_PKG_VERSION").to_owned(), mode: entry.key.clone(), game: shared_game, inputs: Some(inputs) };
 
     // Written beside the file, then renamed: a failure leaves no half file.
     let partial = path.with_extension(format!("{EXTENSION}.part"));
     let written = write_archive(fs::File::create(&partial)?, &manifest, &source, &images);
     match written.and_then(|()| Ok(fs::rename(&partial, path)?)) {
         Ok(()) => {
-            log::info!("{} and {} exported to {}", manifest.game.name, entry.key, path.display());
+            log::info!("{} for {} exported to {}", entry.key, game.name, path.display());
             Ok(())
         }
         Err(e) => {
@@ -134,15 +141,20 @@ fn import_into(path: &Path, modes_dir: &Path) -> anyhow::Result<Imported> {
         bail!("this mode was shared from a newer GameViber ({}): update GameViber to import it", manifest.app_version);
     }
     let source = String::from_utf8(archive.read(MODE)?).context("the mode's script is not text")?;
-    let shared = manifest.game;
+    let shared: Game = serde_json::from_value(manifest.game.clone()).context("this file names no game")?;
     if shared.name.trim().is_empty() {
         bail!("this file names no game");
     }
+    // The first format kept the inputs in the game.
+    let inputs = match manifest.inputs {
+        Some(inputs) => inputs,
+        None => serde_json::from_value(manifest.game).unwrap_or_default(),
+    };
     // A mode that does not load would only show an error once imported.
     crate::mode::ModeRuntime::load(&format!("{}.{MODE_EXTENSION}", manifest.mode), &source, &Default::default(), None)
         .map_err(|e| anyhow::anyhow!("its mode does not load in this GameViber: {e}"))?;
     let mut images = Vec::new();
-    for capture in shared.captures.iter().filter(|c| safe_file_name(&c.file)) {
+    for capture in inputs.captures.iter().filter(|c| safe_file_name(&c.file)) {
         match archive.read(&format!("{CAPTURES}{}", capture.file)) {
             Ok(bytes) if bytes.starts_with(PNG_SIGNATURE) => images.push((capture.clone(), bytes)),
             Ok(_) => log::warn!("leaving out the capture {}: not a PNG image", capture.file),
@@ -150,34 +162,20 @@ fn import_into(path: &Path, modes_dir: &Path) -> anyhow::Result<Imported> {
         }
     }
 
+    let (mode, mode_existed) = match same_mode(modes_dir, &source) {
+        Some(mode) => (mode, true),
+        None => (install_mode(modes_dir, &manifest.mode, &source, inputs, images)?, false),
+    };
     let games = Game::list();
     let existing = games.iter().find(|g| g.name.trim().eq_ignore_ascii_case(shared.name.trim())).cloned();
     let new_game = existing.is_none();
     let mut game = existing.unwrap_or_else(|| Game::new(&shared.name));
     let taken: Vec<&String> = games.iter().filter(|g| g.id != game.id).flat_map(|g| &g.executables).collect();
-    merge(&mut game, &shared, &taken);
-    for (capture, bytes) in images {
-        let of_scene = game.captures.iter().filter(|c| c.scene == capture.scene).count();
-        if of_scene >= MAX_CAPTURES || game.captures.iter().any(|c| c.file == capture.file) {
-            continue;
-        }
-        let path = game::capture_path(&game.id, &capture.file);
-        if path.exists() {
-            continue;
-        }
-        if let Some(dir) = path.parent() {
-            config::create_dir(dir)?;
-        }
-        fs::write(&path, bytes)?;
-        game.captures.push(Capture { file: capture.file, scene: capture.scene, embedding: Vec::new() });
-    }
-    // Zones drawn on a capture left out are edited without it.
-    for zone in &mut game.zones {
-        if zone.capture.as_ref().is_some_and(|file| !game.captures.iter().any(|c| c.file == *file)) {
-            zone.capture = None;
+    for exe in &shared.executables {
+        if !game.runs_as(exe) && !taken.iter().any(|t| t.eq_ignore_ascii_case(exe)) {
+            game.executables.push(exe.clone());
         }
     }
-    let (mode, mode_existed) = install_mode(modes_dir, &manifest.mode, &source)?;
     if !game.modes.contains(&mode) {
         game.modes.push(mode.clone());
     }
@@ -186,48 +184,46 @@ fn import_into(path: &Path, modes_dir: &Path) -> anyhow::Result<Imported> {
     Ok(Imported { game: game.id, name: game.name, mode, new_game, mode_existed })
 }
 
-/// Adds to `game` what `shared` sets up and it lacks, by name: scenes, zones
-/// (every place of each), values from other programs, executables no other
-/// game runs as (`taken`), its sound if it has none.
-fn merge(game: &mut Game, shared: &Game, taken: &[&String]) {
-    for scene in &shared.scenes {
-        if game.scenes.len() < MAX_SCENES && !game.scenes.iter().any(|s| s.name == scene.name) {
-            game.scenes.push(scene.clone());
-        }
-    }
-    let zones: Vec<String> = game.zones.iter().map(|z| z.name.clone()).collect();
-    game.zones.extend(shared.zones.iter().filter(|z| !zones.contains(&z.name)).cloned());
-    for input in &shared.inputs {
-        if !game.inputs.iter().any(|i| i.name == input.name) {
-            game.inputs.push(input.clone());
-        }
-    }
-    for exe in &shared.executables {
-        if !game.runs_as(exe) && !taken.iter().any(|t| t.eq_ignore_ascii_case(exe)) {
-            game.executables.push(exe.clone());
-        }
-    }
-    if game.audio.is_none() {
-        game.audio = shared.audio.clone();
-    }
-}
-
-/// Writes the mode in `dir`, unless the very same mode is there already; returns its id.
-fn install_mode(dir: &Path, stem: &str, source: &str) -> anyhow::Result<(String, bool)> {
-    let same = fs::read_dir(dir)
+/// The id of a package of `dir` with the very same script.
+fn same_mode(dir: &Path, source: &str) -> Option<String> {
+    fs::read_dir(dir)
         .into_iter()
         .flatten()
         .filter_map(Result::ok)
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|e| e == MODE_EXTENSION))
-        .find(|p| fs::read_to_string(p).is_ok_and(|s| s == source));
-    if let Some(path) = same {
-        return Ok((path.to_string_lossy().into_owned(), true));
-    }
+        .map(|e| e.path().join(config::MODE_FILE))
+        .find(|p| fs::read_to_string(p).is_ok_and(|s| s == source))
+        .map(|p| p.to_string_lossy().into_owned())
+}
+
+/// Makes a package of the mode in `dir`, with its inputs and the captures
+/// `images` holds (those it lacks are left out); returns its id.
+fn install_mode(dir: &Path, stem: &str, source: &str, mut inputs: Inputs, images: Vec<(package::Capture, Vec<u8>)>) -> anyhow::Result<String> {
     let stem: String = stem.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').take(64).collect();
     let path = config::unused_mode_path_in(dir, if stem.is_empty() { "shared-mode" } else { &stem });
     config::write_file(&path, source).with_context(|| format!("cannot write {}", path.display()))?;
-    Ok((path.to_string_lossy().into_owned(), false))
+    inputs.dir = ModeEntry::from_id(&path.to_string_lossy()).dir().context("no package for the mode")?;
+    inputs.scenes.truncate(MAX_SCENES);
+    inputs.captures.clear();
+    for (capture, bytes) in images {
+        let of_scene = inputs.captures.iter().filter(|c| c.scene == capture.scene).count();
+        if of_scene >= MAX_CAPTURES || inputs.captures.iter().any(|c| c.file == capture.file) {
+            continue;
+        }
+        let file = package::capture_path(&inputs.dir, &capture.file);
+        if let Some(captures) = file.parent() {
+            config::create_dir(captures)?;
+        }
+        fs::write(&file, bytes)?;
+        inputs.captures.push(package::Capture { embedding: Vec::new(), ..capture });
+    }
+    // Zones drawn on a capture left out are edited without it.
+    for zone in &mut inputs.zones {
+        if zone.capture.as_ref().is_some_and(|file| !inputs.captures.iter().any(|c| c.file == *file)) {
+            zone.capture = None;
+        }
+    }
+    inputs.save();
+    Ok(path.to_string_lossy().into_owned())
 }
 
 /// A plain file name: no directory, nothing hidden.
@@ -272,7 +268,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
-    use crate::game::{InputDecl, SceneDef, Zone, ZoneKind};
+    use crate::package::{Capture, InputDecl, SceneDef, Zone};
     use crate::screen::Frame;
 
     const MODE_SOURCE: &str = "mode { api = 1, name = \"Battles\" }\nfunction tick(dt, input) set(input.rumble.level) end\n";
@@ -280,8 +276,7 @@ mod tests {
     fn test_dirs(name: &str) -> (PathBuf, PathBuf) {
         let root = std::env::temp_dir().join(format!("gameviber-sharing-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
-        let games = root.join("games");
-        game::TEST_DIR.with(|d| *d.borrow_mut() = Some(games));
+        game::TEST_DIR.with(|d| *d.borrow_mut() = Some(root.join("games")));
         (root.clone(), root.join("modes"))
     }
 
@@ -290,21 +285,24 @@ mod tests {
     }
 
     #[test]
-    fn a_mode_travels_with_its_game() {
+    fn a_mode_travels_with_its_inputs_and_game() {
         let (root, modes) = test_dirs("round-trip");
-        let mode_path = modes.join("battles.luau");
+        let mode_path = config::unused_mode_path_in(&modes, "battles");
         config::write_file(&mode_path, MODE_SOURCE).unwrap();
         let mode = mode_path.to_string_lossy().into_owned();
 
+        let mut inputs = Inputs::of(&ModeEntry::from_id(&mode));
+        inputs.scenes.push(SceneDef { name: "battle".into(), sound: Some("battle music".into()), ..SceneDef::default() });
+        inputs.inputs.push(InputDecl { name: "hp".into(), ..InputDecl::default() });
+        inputs.add_capture("battle", &frame(1)).unwrap();
+        inputs.add_capture("", &frame(2)).unwrap();
+        inputs.captures[0].embedding = vec![1.0, 0.0];
+        let drawn_on = inputs.captures[0].file.clone();
+        inputs.zones.push(Zone { name: "menu".into(), capture: Some(drawn_on.clone()), ..Zone::default() });
+        inputs.save();
         let mut game = Game::new("Metaphor: ReFantazio");
         game.executables.push("METAPHOR.exe".into());
-        game.scenes.push(SceneDef { name: "battle".into(), sound: Some("battle music".into()), ..SceneDef::default() });
-        game.inputs.push(InputDecl { name: "hp".into(), ..InputDecl::default() });
-        game.add_capture("battle", &frame(1)).unwrap();
-        game.add_capture("", &frame(2)).unwrap();
-        game.captures[0].embedding = vec![1.0, 0.0];
-        let drawn_on = game.captures[0].file.clone();
-        game.zones.push(Zone { name: "menu".into(), capture: Some(drawn_on.clone()), ..Zone::default() });
+        game.audio = Some(config::AudioSource::Everything);
         game.modes.push(mode.clone());
         game.save();
         let file = root.join(file_name(&game, &mode));
@@ -314,46 +312,55 @@ mod tests {
 
         // Another player, without the game nor the mode.
         game.delete();
-        fs::remove_file(&mode_path).unwrap();
+        fs::remove_dir_all(mode_path.parent().unwrap()).unwrap();
         let imported = import_into(&file, &modes).unwrap();
         assert!(imported.new_game && !imported.mode_existed);
-        assert_eq!(imported.mode, mode, "the mode's file name");
+        assert_eq!(imported.mode, mode, "the mode's package name");
         let got = Game::load(&imported.game).unwrap();
-        assert_eq!(got.name, "Metaphor: ReFantazio");
-        assert_eq!((got.executables.clone(), got.scenes.clone(), got.inputs.clone()), (game.executables.clone(), game.scenes.clone(), game.inputs.clone()));
-        assert_eq!(got.modes, [mode.clone()]);
+        assert_eq!((got.name.as_str(), &got.executables, &got.modes), ("Metaphor: ReFantazio", &game.executables, &vec![mode.clone()]));
+        assert_eq!(got.audio, None, "the sound to listen to stays on each computer");
+        let got = Inputs::of(&ModeEntry::from_id(&mode));
+        assert_eq!((&got.scenes, &got.inputs), (&inputs.scenes, &inputs.inputs));
         assert_eq!(got.captures.len(), 1, "captures to sort stay home");
         assert!(got.captures[0].embedding.is_empty(), "embeddings are computed again");
-        assert_eq!(game::load_capture(&got.id, &drawn_on).unwrap().pixels, vec![1; 32]);
+        assert_eq!(package::load_capture(&got.dir, &drawn_on).unwrap().pixels, vec![1; 32]);
         assert_eq!(got.zones[0].capture.as_deref(), Some(drawn_on.as_str()));
         assert_eq!(fs::read_to_string(&mode_path).unwrap(), MODE_SOURCE);
 
         // Imported again: nothing doubles.
         let again = import_into(&file, &modes).unwrap();
         assert!(!again.new_game && again.mode_existed);
-        assert_eq!(Game::load(&got.id).unwrap(), got);
+        assert_eq!(Game::load(&again.game).unwrap().modes, [mode.clone()]);
         assert_eq!(fs::read_dir(&modes).unwrap().count(), 1);
         let _ = fs::remove_dir_all(root);
     }
 
     #[test]
-    fn signals_the_player_set_up_stay() {
-        let mut mine = Game::new("Hades II");
-        mine.scenes.push(SceneDef { name: "battle".into(), sound: Some("mine".into()), ..SceneDef::default() });
-        mine.zones.push(Zone { name: "hp".into(), kind: ZoneKind::Bar, ..Zone::default() });
-        let mut shared = mine.clone();
-        shared.scenes = vec![
-            SceneDef { name: "battle".into(), sound: Some("theirs".into()), ..SceneDef::default() },
-            SceneDef { name: "boss".into(), ..SceneDef::default() },
-        ];
-        shared.zones = vec![Zone { name: "hp".into(), ..Zone::default() }, Zone { name: "boss_bar".into(), ..Zone::default() }, Zone { name: "boss_bar".into(), rect: [0.5; 4], ..Zone::default() }];
-        shared.executables = vec!["Hades2.exe".into(), "other.exe".into()];
-        let other = "other.exe".to_owned();
-        merge(&mut mine, &shared, &[&other]);
-        assert_eq!(mine.scenes.iter().map(|s| (s.name.as_str(), s.sound.as_deref())).collect::<Vec<_>>(), [("battle", Some("mine")), ("boss", None)]);
-        assert_eq!(mine.zones.iter().map(|z| z.name.as_str()).collect::<Vec<_>>(), ["hp", "boss_bar", "boss_bar"], "every place of a new zone");
-        assert_eq!(mine.zones[0].kind, ZoneKind::Bar);
-        assert_eq!(mine.executables, ["Hades2.exe"], "an executable of another game stays there");
+    fn files_of_the_first_format_give_their_game_inputs_to_the_mode() {
+        let (root, modes) = test_dirs("format-1");
+        config::create_dir(&root).unwrap();
+        let path = root.join("old.gameviber");
+        let mut zip = zip::ZipWriter::new(fs::File::create(&path).unwrap());
+        let options = zip::write::SimpleFileOptions::default();
+        let game = serde_json::json!({
+            "name": "Hades II", "executables": ["Hades2.exe"],
+            "scenes": [{ "name": "boss" }], "zones": [{ "name": "hp", "kind": "bar" }],
+            "captures": [{ "file": "boss-1.png", "scene": "boss", "embedding": [] }], "inputs": [], "modes": [],
+        });
+        let manifest = serde_json::json!({ "format": 1, "app_version": "0.1.0-alpha.2", "mode": "boss", "game": game });
+        zip.start_file(MANIFEST, options).unwrap();
+        zip.write_all(manifest.to_string().as_bytes()).unwrap();
+        zip.start_file(MODE, options).unwrap();
+        zip.write_all(MODE_SOURCE.as_bytes()).unwrap();
+        zip.start_file("captures/boss-1.png", options).unwrap();
+        zip.write_all(PNG_SIGNATURE).unwrap();
+        zip.finish().unwrap();
+        let imported = import_into(&path, &modes).unwrap();
+        let inputs = Inputs::of(&ModeEntry::from_id(&imported.mode));
+        assert_eq!((inputs.scenes[0].name.as_str(), inputs.zones[0].name.as_str(), inputs.captures.len()), ("boss", "hp", 1));
+        assert!(package::capture_path(&inputs.dir, "boss-1.png").exists());
+        assert_eq!(Game::load(&imported.game).unwrap().executables, ["Hades2.exe"]);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -371,8 +378,9 @@ mod tests {
             path
         };
         let manifest = |format: u32, mode: &str| {
-            let game = Game { name: "Test".into(), captures: vec![Capture { file: "../../evil.png".into(), scene: "a".into(), embedding: Vec::new() }], ..Game::default() };
-            serde_json::to_vec(&Manifest { format, app_version: "9.0.0".into(), mode: mode.into(), game }).unwrap()
+            let inputs = Inputs { captures: vec![Capture { file: "../../evil.png".into(), scene: "a".into(), embedding: Vec::new() }], ..Inputs::default() };
+            let game = serde_json::json!({ "name": "Test" });
+            serde_json::to_vec(&Manifest { format, app_version: "9.0.0".into(), mode: mode.into(), game, inputs: Some(inputs) }).unwrap()
         };
         let error = |path: PathBuf| format!("{:#}", import_into(&path, &modes).unwrap_err());
         fs::write(root.join("text.gameviber"), "hello").unwrap();
@@ -383,8 +391,8 @@ mod tests {
         assert!(error(write("big.gameviber", &[(MANIFEST, &manifest(FORMAT, "m")), (MODE, &big)])).contains("too large"));
 
         let imported = import_into(&write("ok.gameviber", &[(MANIFEST, &manifest(FORMAT, "../x y")), (MODE, MODE_SOURCE.as_bytes()), ("captures/../../evil.png", PNG_SIGNATURE)]), &modes).unwrap();
-        assert!(imported.mode.ends_with("/modes/xy.luau"), "{}", imported.mode);
-        assert!(Game::load(&imported.game).unwrap().captures.is_empty(), "paths are refused");
+        assert!(imported.mode.ends_with("/modes/xy/mode.luau"), "{}", imported.mode);
+        assert!(Inputs::of(&ModeEntry::from_id(&imported.mode)).captures.is_empty(), "paths are refused");
         assert!(!root.join("evil.png").exists());
         let _ = fs::remove_dir_all(root);
     }

@@ -80,7 +80,9 @@ impl App {
                 "Also the raw sound and image, and the game's zones, captures and values from other programs (its \
                  Signals)",
             );
-            let profile = for_game.map(|game| (game.name.clone(), game.describe()));
+            // The signals of the active mode, when it is one of the game's: the new mode starts with them.
+            let inputs = for_game.filter(|game| game.modes.contains(&s.mode.id)).and(s.mode_inputs.as_ref());
+            let profile = for_game.zip(inputs).map(|(game, inputs)| (game.name.clone(), inputs.describe()));
             match (&profile, g.depth) {
                 (Some((game, text)), prompt::Depth::Advanced) if !text.is_empty() => {
                     ui.label(muted(format!("The request includes the signals of {game}.")).size(12.0));
@@ -100,7 +102,7 @@ impl App {
                 let game = g.game.trim().to_owned();
                 if ui.add_enabled(!game.is_empty(), primary("📋 Copy the request")).clicked() {
                     let profile = profile.as_ref().map(|(_, text)| text.as_str());
-                    let scenes: Vec<String> = for_game.iter().flat_map(|g| g.scenes.iter().map(|s| s.name.clone())).collect();
+                    let scenes: Vec<String> = inputs.iter().flat_map(|i| i.scenes.iter().map(|s| s.name.clone())).collect();
                     let request = prompt::new_mode_prompt(&prompt::Templates::load(), &game, &s.settings.language, g.depth, profile, &scenes);
                     ui.ctx().copy_text(request);
                     g.copied = Some(game.clone());
@@ -178,7 +180,7 @@ impl App {
         if let Some(id) = &game {
             self.route = Route::Game { id: id.clone(), view: GameView::Modes };
         }
-        self.create_mode(&stem, &script);
+        self.create_mode(&stem, &script, None);
         self.page = super::Page::Games;
         if let Some(id) = game {
             self.route = Route::Game { id, view: GameView::Mode };

@@ -17,6 +17,7 @@ mod mode;
 mod overlay;
 mod platform;
 mod game;
+mod package;
 mod rumble;
 mod screen;
 mod session;
@@ -92,6 +93,7 @@ fn main() -> anyhow::Result<()> {
     }
     let args = Args::parse();
     let logs = logging::init(args.verbose);
+    package::migrate();
     let opts = EngineOptions {
         source: args.source,
         device: args.device,

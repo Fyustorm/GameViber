@@ -275,7 +275,7 @@ impl App {
                     if ui.button("Cancel").clicked() {
                         self.games.confirm_delete = false;
                     }
-                    ui.label(RichText::new("Delete this game, its captures and zones? Its modes stay.").color(DANGER_TEXT));
+                    ui.label(RichText::new("Delete this game? Its modes stay.").color(DANGER_TEXT));
                 } else {
                     if ui.small_button("🗑 Delete").clicked() {
                         self.games.confirm_delete = true;
@@ -404,7 +404,7 @@ impl App {
                 }
             });
             if ui.button("Empty mode").on_hover_text("Write it yourself in Creator").clicked() {
-                self.create_mode("my-mode", &crate::config::NEW_MODE_TEMPLATE.replace("NAME", "My mode"));
+                self.create_mode("my-mode", &crate::config::NEW_MODE_TEMPLATE.replace("NAME", "My mode"), None);
             }
         });
         if !self.games.builtin.is_empty() {
@@ -509,24 +509,6 @@ fn game_card(ui: &mut egui::Ui, s: &Shared, game: &Game, size: egui::Vec2) -> bo
             ui.label(status.size(12.0));
             let playing_mode = if playing { s.mode.info.as_ref().map(|i| format!(" · playing {}", i.name)) } else { None };
             ui.label(muted(format!("{} modes{}", game.modes.len(), playing_mode.unwrap_or_default())));
-            ui.horizontal_wrapped(|ui| {
-                let analysed = game.captures.iter().filter(|c| !c.embedding.is_empty()).count();
-                let mut zones: Vec<&str> = game.zones.iter().map(|z| z.name.as_str()).collect();
-                zones.dedup();
-                for chip in [
-                    (!game.scenes.is_empty()).then(|| format!("{} scenes", game.scenes.len())),
-                    (!game.captures.is_empty()).then(|| format!("{} captures ({analysed} analysed)", game.captures.len())),
-                    (!zones.is_empty()).then(|| format!("{} zones", zones.len())),
-                ]
-                .into_iter()
-                .flatten()
-                {
-                    pill(ui, &chip, TEXT, RAISED);
-                }
-                if game.scenes.is_empty() && game.captures.is_empty() && game.zones.is_empty() {
-                    pill(ui, "rumble and buttons only", MUTED, RAISED);
-                }
-            });
         });
     response.response.interact(egui::Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
 }

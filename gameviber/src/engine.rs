@@ -4,7 +4,7 @@
 //! output. It publishes a `Shared` snapshot for the GUI and obeys `Command`s.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{mpsc as std_mpsc, Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -25,6 +25,7 @@ use crate::models::{self, Model, ModelState};
 use crate::overlay;
 use crate::platform;
 use crate::game::Game;
+use crate::package;
 use crate::screen::zones::ZoneReader;
 use crate::shortcuts::{Action, Shortcuts};
 use crate::screen::{self, Frame, ImageScenes, ScreenLevels, ScreenView};
@@ -143,12 +144,15 @@ pub enum Command {
     CaptureScene(String),
     /// The scene the capture combo files images under ("" to sort them later).
     SetCaptureScene(String),
-    /// Adds images (from files) to a game's captures, under a scene ("" to sort them later).
-    AddCaptures { game: String, scene: String, frames: Vec<Frame> },
-    /// Deletes a capture of a game (by file name).
-    DeleteCapture { game: String, file: String },
+    /// Replaces the inputs a mode reads (scenes, zones, values from other
+    /// programs), in its package (`Inputs::dir`); its captures change through their own commands.
+    SaveInputs(package::Inputs),
+    /// Adds images (from files) to the captures of a mode (by package), under a scene ("" to sort them later).
+    AddCaptures { dir: PathBuf, scene: String, frames: Vec<Frame> },
+    /// Deletes a capture of a mode (by file name).
+    DeleteCapture { dir: PathBuf, file: String },
     /// Files a capture under another scene.
-    MoveCapture { game: String, file: String, scene: String },
+    MoveCapture { dir: PathBuf, file: String, scene: String },
     /// Keyboard shortcuts for the combos' actions (through the desktop), on or off.
     SetKeyboardShortcuts(bool),
     /// Opens the desktop's settings of the keyboard shortcuts.
@@ -247,9 +251,12 @@ pub struct Shared {
     pub audio: AudioView,
     pub screen: ScreenView,
     pub scenes: SceneView,
-    /// Every game, and the one being played (capture embeddings left out).
+    /// Every game, and the one being played.
     pub games: Vec<Game>,
     pub game: Option<Game>,
+    /// The inputs the active mode reads (capture embeddings left out); None
+    /// for a mode without a package (built-in).
+    pub mode_inputs: Option<package::Inputs>,
     /// The executable showing the overlay, and whether no game runs as it.
     pub running_executable: Option<String>,
     pub unlinked_executable: Option<String>,
@@ -375,12 +382,13 @@ struct Engine {
     image_scenes: ImageScenes,
     /// When the last image was submitted for its embedding.
     last_image_submit: f64,
-    /// Embeddings of the game's captures being computed: game, then (file, embedding) as they come.
-    capture_job: Option<(String, std_mpsc::Receiver<(String, Embedding)>)>,
+    /// Embeddings of the active mode's captures being computed: its package, then (file, embedding) as they come.
+    capture_job: Option<(std::path::PathBuf, std_mpsc::Receiver<(String, Embedding)>)>,
     capture_scene: String,
-    /// Every game, the one being played, and the mean of its captures per scene.
+    /// Every game, the one being played, the inputs of the active mode and the mean of its captures per scene.
     games: Vec<Game>,
     game: Option<Game>,
+    mode_inputs: package::Inputs,
     /// The executable showing the overlay, as last seen.
     running: Option<String>,
     example_centroids: Vec<(String, Embedding)>,
@@ -470,6 +478,7 @@ async fn run_async(
         capture_scene: String::new(),
         games: Game::list(),
         game: None,
+        mode_inputs: package::Inputs::default(),
         running: None,
         example_centroids: Vec::new(),
         zones: ZoneReader::default(),
@@ -793,11 +802,7 @@ impl Engine {
                 self.games = Game::list();
                 self.select_game(Some(game.id));
             }
-            Command::SaveGame(mut game) => {
-                // The GUI's copy has no capture embeddings: captures change through their own commands.
-                if let Some(saved) = Game::load(&game.id) {
-                    game.captures = saved.captures;
-                }
+            Command::SaveGame(game) => {
                 game.save();
                 self.games = Game::list();
                 if self.game.as_ref().is_some_and(|g| g.id == game.id) {
@@ -834,15 +839,23 @@ impl Engine {
             }),
             Command::RemoveGameMode { game, mode } => self.edit_game_by_id(&game, |g| g.modes.retain(|m| *m != mode)),
             Command::CaptureScene(scene) => self.capture(scene, self.time()),
-            Command::AddCaptures { game, scene, frames } => self.edit_game_by_id(&game, |g| {
+            Command::SaveInputs(mut inputs) => {
+                // The GUI's copy has no capture embeddings: captures change through their own commands.
+                inputs.captures = package::Inputs::load(&inputs.dir).captures;
+                inputs.save();
+                if inputs.dir == self.mode_inputs.dir {
+                    self.set_mode_inputs(inputs);
+                }
+            }
+            Command::AddCaptures { dir, scene, frames } => self.edit_inputs(&dir, |i| {
                 for frame in &frames {
-                    if let Err(e) = g.add_capture(&scene, frame) {
+                    if let Err(e) = i.add_capture(&scene, frame) {
                         log::error!("cannot save the capture: {e}");
                     }
                 }
             }),
-            Command::DeleteCapture { game, file } => self.edit_game_by_id(&game, |p| p.remove_capture(&file)),
-            Command::MoveCapture { game, file, scene } => self.edit_game_by_id(&game, |p| {
+            Command::DeleteCapture { dir, file } => self.edit_inputs(&dir, |i| i.remove_capture(&file)),
+            Command::MoveCapture { dir, file, scene } => self.edit_inputs(&dir, |p| {
                 if let Some(capture) = p.captures.iter_mut().find(|c| c.file == file) {
                     capture.scene = scene;
                 }
@@ -988,6 +1001,7 @@ impl Engine {
             }
         }
         let entry = ModeEntry::from_id(id);
+        self.set_mode_inputs(package::Inputs::of(&entry));
         let mut active = ActiveMode {
             modified: entry.modified(),
             presets: entry.load_presets(),
@@ -1343,8 +1357,9 @@ impl Engine {
         shared.audio = self.audio_view(audio_levels);
         shared.screen = self.screen_view.clone();
         shared.scenes = self.scene_view();
-        shared.games = self.games.iter().map(Game::for_gui).collect();
-        shared.game = self.game.as_ref().map(Game::for_gui);
+        shared.games = self.games.clone();
+        shared.game = self.game.clone();
+        shared.mode_inputs = self.mode_inputs.has_package().then(|| self.mode_inputs.for_gui());
         shared.running_executable = self.running.clone();
         shared.unlinked_executable = self.running.clone().filter(|exe| !self.games.iter().any(|g| g.runs_as(exe)));
         shared.inputs = self.inputs.view();
@@ -1442,14 +1457,12 @@ impl Engine {
                 if let Some(strength) = flash {
                     self.events.push(ModeEvent::ScreenFlash(strength));
                 }
-                if let Some(profile) = &self.game {
-                    for (name, value) in self.zones.update(&profile.zones, &frame) {
-                        self.events.push(ModeEvent::Zone { name, value });
-                    }
+                for (name, value) in self.zones.update(&self.mode_inputs.zones, &frame) {
+                    self.events.push(ModeEvent::Zone { name, value });
                 }
-            } else if let Some(profile) = &self.game {
+            } else {
                 // Zones are still measured for the editor.
-                self.zones.update(&profile.zones, &frame);
+                self.zones.update(&self.mode_inputs.zones, &frame);
             }
             let rt = self.mode.as_ref().and_then(|m| m.runtime.as_ref());
             let scenes_use_image = self.settings.screen && rt.is_some_and(|rt| rt.scene_sense(Sense::Screen) || rt.scene_sense(Sense::Examples));
@@ -1482,7 +1495,7 @@ impl Engine {
         self.embed_captures();
         self.screen_view.model = Model::Image.state();
         // One entry per zone, whatever the number of places it is drawn in.
-        let mut names: Vec<&String> = self.game.iter().flat_map(|p| &p.zones).map(|z| &z.name).collect();
+        let mut names: Vec<&String> = self.mode_inputs.zones.iter().map(|z| &z.name).collect();
         names.dedup();
         names.sort();
         names.dedup();
@@ -1492,33 +1505,57 @@ impl Engine {
             .collect();
     }
 
-    /// Captures the game's current image into its profile under `scene` ("": to
-    /// sort), and says so in the in-game overlay.
+    /// Captures the game's current image into the active mode's inputs under
+    /// `scene` ("": to sort), and says so in the in-game overlay.
     fn capture(&mut self, scene: String, time: f64) {
-        let (Some(profile), Some(frame)) = (&mut self.game, &self.screen_view.frame) else {
+        let Some(frame) = &self.screen_view.frame else {
             log::warn!("no image of the game to capture");
             self.overlay_events.push(("No image to capture".to_owned(), time));
             return;
         };
-        match profile.add_capture(&scene, frame) {
+        if !self.mode_inputs.has_package() {
+            log::warn!("the active mode is built-in: it keeps no captures");
+            self.overlay_events.push(("Built-in modes keep no captures".to_owned(), time));
+            return;
+        }
+        let mut inputs = self.mode_inputs.clone();
+        match inputs.add_capture(&scene, frame) {
             Ok(()) => {
-                profile.save();
-                let count = profile.captures.iter().filter(|c| c.scene == scene).count();
+                inputs.save();
+                let count = inputs.captures.iter().filter(|c| c.scene == scene).count();
                 let what = if scene.is_empty() { "to sort".to_owned() } else { scene.clone() };
-                log::info!("capture ({what}) added to {}", profile.name);
+                log::info!("capture ({what}) added to {}", self.mode_name());
                 self.overlay_events.push((format!("📸 Captured: {what} ({count})"), time));
-                let profile = profile.clone();
-                self.games = Game::list();
-                self.set_game(Some(profile));
+                self.set_mode_inputs(inputs);
             }
             Err(e) => log::error!("cannot save the capture: {e}"),
         }
     }
 
-    /// Edits the active game, and saves it.
-    fn edit_game(&mut self, edit: impl FnOnce(&mut Game)) {
-        if let Some(id) = self.game.as_ref().map(|g| g.id.clone()) {
-            self.edit_game_by_id(&id, edit);
+    /// Edits the inputs of a mode (by package), and saves them.
+    fn edit_inputs(&mut self, dir: &Path, edit: impl FnOnce(&mut package::Inputs)) {
+        if dir.as_os_str().is_empty() {
+            return log::warn!("built-in modes read no inputs set up by the player");
+        }
+        let mut inputs = if dir == self.mode_inputs.dir { self.mode_inputs.clone() } else { package::Inputs::load(dir) };
+        edit(&mut inputs);
+        inputs.save();
+        if inputs.dir == self.mode_inputs.dir {
+            self.set_mode_inputs(inputs);
+        }
+    }
+
+    /// The active mode's inputs changed, or another mode became active.
+    fn set_mode_inputs(&mut self, inputs: package::Inputs) {
+        if inputs.dir != self.mode_inputs.dir {
+            self.zones.clear();
+            self.capture_job = None;
+        }
+        self.example_centroids = inputs.example_centroids();
+        self.mode_inputs = inputs;
+        // The active mode compares with the new examples.
+        if let Some(rt) = self.mode.as_mut().and_then(|m| m.runtime.as_mut()) {
+            rt.set_scene_references(Sense::Examples, self.example_centroids.clone());
         }
     }
 
@@ -1548,7 +1585,7 @@ impl Engine {
     fn select_game(&mut self, id: Option<String>) {
         let game = id.as_deref().and_then(Game::load);
         if let Some(game) = &game {
-            log::info!("playing {} ({} scenes, {} zones)", game.name, game.scenes.len(), game.zones.len());
+            log::info!("playing {}", game.name);
         }
         self.settings.active_game = game.as_ref().map(|g| g.id.clone());
         self.settings.save();
@@ -1558,7 +1595,7 @@ impl Engine {
     /// Computes the embeddings of the profile's captures that have none, in a
     /// thread of its own, once the image model is downloaded.
     fn embed_captures(&mut self) {
-        if let Some((game, rx)) = &self.capture_job {
+        if let Some((dir, rx)) = &self.capture_job {
             let mut results = Vec::new();
             let done = loop {
                 match rx.try_recv() {
@@ -1567,35 +1604,36 @@ impl Engine {
                     Err(std_mpsc::TryRecvError::Disconnected) => break true,
                 }
             };
-            if self.game.as_ref().is_some_and(|p| p.id == *game) && !results.is_empty() {
-                self.edit_game(|p| {
-                    for (file, embedding) in results {
-                        if let Some(capture) = p.captures.iter_mut().find(|c| c.file == file) {
-                            capture.embedding = embedding.to_vec();
-                        }
+            if self.mode_inputs.dir == *dir && !results.is_empty() {
+                let mut inputs = self.mode_inputs.clone();
+                for (file, embedding) in results {
+                    if let Some(capture) = inputs.captures.iter_mut().find(|c| c.file == file) {
+                        capture.embedding = embedding.to_vec();
                     }
-                });
+                }
+                inputs.save();
+                self.set_mode_inputs(inputs);
             }
             if done {
                 self.capture_job = None;
             }
             return;
         }
-        let Some(profile) = &self.game else { return };
-        let missing: Vec<String> = profile.captures.iter().filter(|c| c.embedding.is_empty()).map(|c| c.file.clone()).collect();
+        let inputs = &self.mode_inputs;
+        let missing: Vec<String> = inputs.captures.iter().filter(|c| c.embedding.is_empty()).map(|c| c.file.clone()).collect();
         if missing.is_empty() || !Model::Image.ready() {
             return;
         }
-        let game = profile.id.clone();
+        let dir = inputs.dir.clone();
         let (tx, rx) = std_mpsc::channel();
-        self.capture_job = Some((game.clone(), rx));
+        self.capture_job = Some((dir.clone(), rx));
         std::thread::spawn(move || {
             let mut encoder = match screen::clip::ImageEncoder::load() {
                 Ok(e) => e,
                 Err(e) => return log::error!("cannot load the image scene model: {e:#}"),
             };
             for file in missing {
-                let embedded = crate::game::load_capture(&game, &file).map(|frame| encoder.embed(&frame));
+                let embedded = package::load_capture(&dir, &file).map(|frame| encoder.embed(&frame));
                 match embedded {
                     Some(Ok(embedding)) => {
                         if tx.send((file, embedding)).is_err() {
@@ -1612,9 +1650,6 @@ impl Engine {
     /// The game being played changed, or was edited.
     fn set_game(&mut self, game: Option<Game>) {
         let changed = self.game.as_ref().map(|g| &g.id) != game.as_ref().map(|g| &g.id);
-        if changed {
-            self.zones.clear();
-        }
         // Its sound, or the default.
         let source = game.as_ref().and_then(|g| g.audio.clone()).unwrap_or_else(|| self.settings.audio.clone());
         if changed || self.game.as_ref().and_then(|g| g.audio.clone()) != game.as_ref().and_then(|g| g.audio.clone()) {
@@ -1622,12 +1657,7 @@ impl Engine {
                 audio.set_source(source);
             }
         }
-        self.example_centroids = game.as_ref().map(Game::example_centroids).unwrap_or_default();
         self.game = game;
-        // The active mode compares with the new examples.
-        if let Some(rt) = self.mode.as_mut().and_then(|m| m.runtime.as_mut()) {
-            rt.set_scene_references(Sense::Examples, self.example_centroids.clone());
-        }
     }
 
     /// Drains the audio service. While replaying, the recording is the sound.
@@ -1691,8 +1721,8 @@ impl Engine {
             }
             return;
         };
-        // The game's scenes replace the mode's own.
-        rt.set_game_scenes(&self.game.as_ref().map(Game::scene_decls).unwrap_or_default());
+        // The scenes the player set up replace the mode's own.
+        rt.set_game_scenes(&self.mode_inputs.scene_decls());
         if !rt.scene_sense(Sense::Examples) && !self.example_centroids.is_empty() {
             rt.set_scene_references(Sense::Examples, self.example_centroids.clone());
         }

@@ -12,7 +12,7 @@ use super::rumble_events::{RumbleEvent, RumbleTracker};
 use super::scenes::Sense;
 use super::{ModeEvent, ModeRuntime, ParamValue, ZoneValue};
 use crate::models::{self, Model};
-use crate::game::Game;
+use crate::package::Inputs;
 use crate::gamepad::PadState;
 use crate::session::{Change, Player, Session};
 
@@ -67,18 +67,19 @@ pub struct Simulation {
     scene_changes: Vec<(f64, Option<String>)>,
 }
 
-/// Replays `session` into a freshly loaded mode with `params`.
+/// Replays `session` into a freshly loaded mode with `params` and the inputs
+/// the player set up for it (`inputs`: its scenes and captures, as they are now).
 pub fn simulate(
     chunk_name: &str,
     source: &str,
     params: &BTreeMap<String, ParamValue>,
+    inputs: &Inputs,
     session: Session,
 ) -> Result<Simulation, String> {
     let mut rt = ModeRuntime::load(chunk_name, source, params, None)?;
     rt.start()?;
     let info = rt.info().clone();
     let duration = session.header.duration;
-    let game = session.header.game.clone();
     let marks = session.changes.iter().filter(|(_, c)| *c == Change::Mark).map(|(t, _)| *t).collect();
     let mut player = Player::new(session, Path::new(""), 0.0);
     let mut pad = PadState::default();
@@ -100,12 +101,8 @@ pub fn simulate(
         scenes_unavailable: None,
         scene_changes: Vec::new(),
     };
-    // The game the session was played in: its scenes and captures, as they are now.
-    let played = game.as_ref().and_then(|name| Game::list().into_iter().find(|g| g.name == *name || g.runs_as(name)));
-    if let Some(played) = &played {
-        rt.set_game_scenes(&played.scene_decls());
-        rt.set_scene_references(Sense::Examples, played.example_centroids());
-    }
+    rt.set_game_scenes(&inputs.scene_decls());
+    rt.set_scene_references(Sense::Examples, inputs.example_centroids());
     sim.has_scenes = !rt.scene_decls().is_empty();
     let mut unavailable = Vec::new();
     for (sense, model) in [(Sense::Sound, Model::Sound), (Sense::Screen, Model::Image)] {
@@ -417,7 +414,7 @@ end
             ],
         };
         let params = [("gain".to_owned(), ParamValue::Number(0.5))].into_iter().collect();
-        let sim = simulate("t.luau", source, &params, session).unwrap();
+        let sim = simulate("t.luau", source, &params, &Inputs::default(), session).unwrap();
         let report = sim.report();
         assert!(report.contains("### Vibrations sent by the game (1)"), "{report}");
         assert!(report.contains("- 0.60 s: 0.30 s long, peak 0.80"), "{report}");
@@ -446,7 +443,7 @@ function tick(dt, input) end
                 (0.6, Change::NoAudio),
             ],
         };
-        let report = simulate("t.luau", source, &BTreeMap::new(), session).unwrap().report();
+        let report = simulate("t.luau", source, &BTreeMap::new(), &Inputs::default(), session).unwrap().report();
         assert!(report.contains("### The game's sound\n\n1 hits heard"), "{report}");
         assert!(report.contains("| sound | scene |"), "{report}");
         assert!(report.contains("| 0.25 | 0.00 | - | 0.60 | - | 0.90 |"), "{report}");
@@ -463,7 +460,7 @@ function tick(dt, input) end
             header: Header { version: 1, started: "now".into(), game: None, mode: "T".into(), duration: 1.0, marks: 0 },
             changes: Vec::new(),
         };
-        let report = simulate("t.luau", source, &BTreeMap::new(), session).unwrap().report();
+        let report = simulate("t.luau", source, &BTreeMap::new(), &Inputs::default(), session).unwrap().report();
         assert!(report.contains("stopped on an error"), "{report}");
         assert!(report.contains("boom"), "{report}");
     }

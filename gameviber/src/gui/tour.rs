@@ -121,9 +121,9 @@ impl App {
                 self.page = Page::Games;
                 if let Some(game) = s.game.as_ref().or(s.games.first()).cloned() {
                     self.route = Route::Game { id: game.id.clone(), view: GameView::Screen };
-                    if tour.frames == 1 {
-                        let zone = game.zones.iter().position(|z| z.kind == crate::game::ZoneKind::Bar).unwrap_or(0);
-                        self.screen.edit_zone(zone, &game);
+                    if let Some(inputs) = s.mode_inputs.as_ref().filter(|_| tour.frames == 1) {
+                        let zone = inputs.zones.iter().position(|z| z.kind == crate::package::ZoneKind::Bar).unwrap_or(0);
+                        self.screen.edit_zone(zone, inputs);
                     }
                 }
             }

@@ -124,7 +124,7 @@ impl App {
             if ui.button("➕ New").clicked() {
                 let name = std::mem::take(&mut self.creator.new_mode_name);
                 let display = if name.trim().is_empty() { "My mode" } else { name.trim() };
-                self.create_mode(&name, &NEW_MODE_TEMPLATE.replace("NAME", display));
+                self.create_mode(&name, &NEW_MODE_TEMPLATE.replace("NAME", display), None);
             }
         });
         if ui.button("✨ Generate with an AI").clicked() {
@@ -221,7 +221,7 @@ impl App {
         }
         if duplicate {
             let source = self.creator.editor.text.clone();
-            self.create_mode(&format!("{}-copy", editing.key), &source);
+            self.create_mode(&format!("{}-copy", editing.key), &source, Some(&editing.id));
         }
     }
 

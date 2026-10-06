@@ -155,8 +155,10 @@ impl App {
         let _ = self.commands.send(command);
     }
 
-    /// Creates a user mode file, activates it and opens it in the Creator.
-    fn create_mode(&mut self, stem: &str, source: &str) -> Option<ModeEntry> {
+    /// Creates a user mode, activates it and opens it in the Creator. It starts
+    /// with the inputs of the mode `copy_of`, or else, made from a game's page,
+    /// with those of the active mode when it is one of that game's.
+    fn create_mode(&mut self, stem: &str, source: &str, copy_of: Option<&str>) -> Option<ModeEntry> {
         let stem: String = stem
             .trim()
             .chars()
@@ -168,6 +170,15 @@ impl App {
             Ok(()) => {
                 log::info!("created {}", path.display());
                 let id = path.to_string_lossy().into_owned();
+                let from = copy_of.map(str::to_owned).or_else(|| {
+                    let Route::Game { id: game, .. } = &self.route else { return None };
+                    let s = self.shared.lock().unwrap();
+                    s.games.iter().find(|g| g.id == *game).filter(|g| g.modes.contains(&s.mode.id)).map(|_| s.mode.id.clone())
+                });
+                let inputs = from.map(|from| crate::package::Inputs::of(&ModeEntry::from_id(&from))).filter(|i| !i.is_empty());
+                if let (Some(inputs), Some(dir)) = (inputs, ModeEntry::from_id(&id).dir()) {
+                    inputs.copy_to(&dir).save();
+                }
                 self.send(Command::RefreshModes);
                 self.send(Command::SelectMode(id.clone()));
                 // A mode made from a game's page belongs to that game.
@@ -188,7 +199,7 @@ impl App {
         let entry = ModeEntry::from_id(id);
         match entry.source() {
             Ok(source) => {
-                self.create_mode(&format!("{}-copy", entry.key), &source);
+                self.create_mode(&format!("{}-copy", entry.key), &source, Some(id));
             }
             Err(e) => log::error!("cannot read {}: {e}", entry.id),
         }

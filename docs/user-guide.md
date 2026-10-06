@@ -70,7 +70,10 @@ only drive your toys, never reach your files or the network.
 
 The rumble and the buttons do not say whether you are fighting, exploring or
 watching a cutscene; the music and the screen usually do. A game's **Signals**
-teach GameViber about the game, for all its modes, step by step:
+teach GameViber about the game, step by step, for the mode being played: each
+mode of yours keeps its own (a new mode made from the game's page starts with
+those of the active mode), and shares them with the mode. Built-in modes read
+none: duplicate one to set some up.
 
 - **Scenes**: name the phases that should not feel the same (battle,
   exploration, story, menu), and describe how each sounds if the music

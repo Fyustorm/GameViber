@@ -393,8 +393,9 @@ player can turn this off on a game's captures page).
 
 ### 6.5 The game's signals
 
-In a game's Signals the player teaches GameViber about the game; every mode of the game
-gets them while it is played. Everything here exists only once the player set it up:
+In a game's Signals the player teaches GameViber about the game, for one mode: they are
+part of the mode (its package) and travel with it when it is shared. Built-in modes get
+none. Everything here exists only once the player set it up:
 **read it defensively** (`input.zones.hp or 1`).
 
 **Captures**: images of the game the player captured per scene ("battle", "dungeon"...),

@@ -17,7 +17,8 @@ use eframe::egui::{self, Color32, CornerRadius, Margin, Pos2, Rect, RichText, Se
 use super::theme::*;
 use super::App;
 use crate::engine::{Command, Shared};
-use crate::game::{self, valid_name, Direction, Game, Zone, ZoneKind};
+use crate::game::Game;
+use crate::package::{self, valid_name, Direction, Inputs, Zone, ZoneKind};
 use crate::models::Model;
 use crate::screen::{zones, Frame};
 
@@ -36,7 +37,7 @@ const SAVED_SECS: f64 = 2.0;
 
 pub struct State {
     /// The game whose captures are loaded, and each capture: its image and texture.
-    loaded_game: Option<String>,
+    loaded_game: Option<std::path::PathBuf>,
     captures: HashMap<String, (Arc<Frame>, egui::TextureHandle)>,
     /// The capture zones are drawn on.
     selected: Option<String>,
@@ -103,14 +104,14 @@ enum Target {
 
 impl State {
     /// Opens a place (index `i`) on the capture shown (the screenshot tour).
-    pub(super) fn edit_zone(&mut self, i: usize, game: &Game) {
-        self.open_place(i, game, false);
+    pub(super) fn edit_zone(&mut self, i: usize, inputs: &Inputs) {
+        self.open_place(i, inputs, false);
     }
 
     /// Leaves what is edited, saving its changes (returned), for `to`.
-    fn go(&mut self, to: Target, game: &Game) -> Option<Game> {
-        let save = if self.dirty() { self.applied(game).map(|(g, _)| g) } else { None };
-        let g = save.as_ref().unwrap_or(game);
+    fn go(&mut self, to: Target, inputs: &Inputs) -> Option<Inputs> {
+        let save = if self.dirty() { self.applied(inputs).map(|(g, _)| g) } else { None };
+        let g = save.as_ref().unwrap_or(inputs);
         self.confirm_delete = false;
         match to {
             Target::NewZone => self.draft = Draft { zoom: self.draft.zoom, ..Draft::default() },
@@ -122,8 +123,8 @@ impl State {
 
     /// A place, and its capture when `on_capture`: the one it was drawn on,
     /// else one it is found on (its scene's first).
-    fn open_place(&mut self, i: usize, game: &Game, on_capture: bool) {
-        let Some(zone) = game.zones.get(i) else { return };
+    fn open_place(&mut self, i: usize, inputs: &Inputs, on_capture: bool) {
+        let Some(zone) = inputs.zones.get(i) else { return };
         self.draft = Draft::edit(self.draft.zoom, i, zone);
         self.center_zone = true;
         if !on_capture {
@@ -143,18 +144,18 @@ impl State {
         if self.selected.as_deref().is_some_and(found) {
             return;
         }
-        let in_scene = |c: &&game::Capture| zone.scene.as_ref().is_none_or(|s| c.scene == *s);
-        let best = game.captures.iter().filter(in_scene).find(|c| found(&c.file)).or_else(|| game.captures.iter().find(|c| found(&c.file)));
+        let in_scene = |c: &&package::Capture| zone.scene.as_ref().is_none_or(|s| c.scene == *s);
+        let best = inputs.captures.iter().filter(in_scene).find(|c| found(&c.file)).or_else(|| inputs.captures.iter().find(|c| found(&c.file)));
         if let Some(capture) = best {
             self.selected = Some(capture.file.clone());
         }
     }
 
     /// A zone, none of its places: its settings from its first place.
-    fn select_zone(&mut self, name: &str, game: &Game) {
-        match game.zones.iter().position(|z| z.name == name) {
+    fn select_zone(&mut self, name: &str, inputs: &Inputs) {
+        match inputs.zones.iter().position(|z| z.name == name) {
             Some(i) => {
-                let mut draft = Draft::edit(self.draft.zoom, i, &game.zones[i]);
+                let mut draft = Draft::edit(self.draft.zoom, i, &inputs.zones[i]);
                 draft.editing = None;
                 draft.start = None;
                 draft.end = None;
@@ -167,13 +168,13 @@ impl State {
 
     /// The place the draft makes (edited or new), its look taken from the
     /// capture it was drawn on; None until a rectangle is drawn.
-    fn draft_zone(&self, game: &Game) -> Option<Zone> {
+    fn draft_zone(&self, inputs: &Inputs) -> Option<Zone> {
         let d = &self.draft;
         let rect = d.rect()?;
-        let first = d.zone.as_ref().and_then(|name| game.zones.iter().find(|z| z.name == *name));
-        let base = d.editing.and_then(|i| game.zones.get(i)).or(first).cloned().unwrap_or_default();
+        let first = d.zone.as_ref().and_then(|name| inputs.zones.iter().find(|z| z.name == *name));
+        let base = d.editing.and_then(|i| inputs.zones.get(i)).or(first).cloned().unwrap_or_default();
         let drawn = d.drawn_on.as_ref().and_then(|f| self.captures.get(f)).map(|(frame, _)| frame);
-        let scene = d.drawn_on.as_ref().and_then(|f| game.captures.iter().find(|c| c.file == *f)).map(|c| c.scene.clone());
+        let scene = d.drawn_on.as_ref().and_then(|f| inputs.captures.iter().find(|c| c.file == *f)).map(|c| c.scene.clone());
         let mut zone = Zone {
             rect,
             threshold: d.threshold,
@@ -226,7 +227,7 @@ impl State {
     }
 
     /// Why the draft cannot be saved.
-    fn problem(&self, game: &Game) -> Option<&'static str> {
+    fn problem(&self, inputs: &Inputs) -> Option<&'static str> {
         let d = &self.draft;
         let placing = d.zone.is_none() || d.editing.is_some() || d.rect().is_some();
         if d.zone.is_none() && !d.kind_chosen {
@@ -239,7 +240,7 @@ impl State {
             Some("Take the bar's look full, on a capture where it is full.")
         } else if !valid_name(&d.name) {
             Some("Name: letters, digits and _, starting with a letter.")
-        } else if game.zones.iter().any(|z| z.name == d.name && Some(&z.name) != d.zone.as_ref()) {
+        } else if inputs.zones.iter().any(|z| z.name == d.name && Some(&z.name) != d.zone.as_ref()) {
             Some("Another zone has this name.")
         } else {
             None
@@ -249,12 +250,12 @@ impl State {
     /// The game with the draft applied — the zone's settings on all its places
     /// (renamed with the scene it is a sign of), the place edited or added —
     /// and the place now edited; None when it cannot be saved.
-    fn applied(&self, game: &Game) -> Option<(Game, Option<usize>)> {
-        if self.problem(game).is_some() {
+    fn applied(&self, inputs: &Inputs) -> Option<(Inputs, Option<usize>)> {
+        if self.problem(inputs).is_some() {
             return None;
         }
         let d = &self.draft;
-        let mut g = game.clone();
+        let mut g = inputs.clone();
         if let Some(old) = &d.zone {
             for zone in g.zones.iter_mut().filter(|z| z.name == *old) {
                 self.shared(zone);
@@ -263,7 +264,7 @@ impl State {
                 g.scenes.iter_mut().filter(|sc| sc.zone.as_ref() == Some(old)).for_each(|sc| sc.zone = Some(d.name.clone()));
             }
         }
-        let place = match (d.editing, self.draft_zone(game)) {
+        let place = match (d.editing, self.draft_zone(inputs)) {
             (Some(i), Some(zone)) if i < g.zones.len() => {
                 g.zones[i] = zone;
                 Some(i)
@@ -633,16 +634,17 @@ impl App {
     /// The page, fitting the window (the Games page does not scroll it): the
     /// image edited takes what the rest leaves.
     pub(super) fn screen_page(&mut self, ui: &mut egui::Ui, s: &Shared, game: &Game) {
-        self.load_captures(ui.ctx(), Some(game));
+        let Some(inputs) = self.inputs_of(ui, s, game) else { return };
+        self.load_captures(ui.ctx(), Some(inputs));
         heading(ui, "Captures and zones");
         ui.label(muted("Zones are drawn on captures and checked on all of them. Captures stay on your computer."));
         ui.add_space(4.0);
         // What the zone selected reads on each capture: its places, the one edited as drawn now.
         let st = &self.screen;
         let d = &st.draft;
-        let tested = st.draft_zone(game);
+        let tested = st.draft_zone(inputs);
         let mut places: Vec<&Zone> =
-            game.zones.iter().enumerate().filter(|(i, z)| d.zone.as_ref() == Some(&z.name) && Some(*i) != d.editing).map(|(_, z)| z).collect();
+            inputs.zones.iter().enumerate().filter(|(i, z)| d.zone.as_ref() == Some(&z.name) && Some(*i) != d.editing).map(|(_, z)| z).collect();
         places.extend(tested.as_ref());
         let readings: HashMap<String, (String, Color32)> = if places.is_empty() {
             HashMap::new()
@@ -650,7 +652,7 @@ impl App {
             st.captures.iter().map(|(file, (frame, _))| (file.clone(), reading_places(&places, frame))).collect()
         };
         // The captures its places were drawn on.
-        let marked: HashSet<String> = game.zones.iter().filter(|z| d.zone.as_ref() == Some(&z.name)).filter_map(|z| z.capture.clone()).collect();
+        let marked: HashSet<String> = inputs.zones.iter().filter(|z| d.zone.as_ref() == Some(&z.name)).filter_map(|z| z.capture.clone()).collect();
         let mut changed = None;
         let gap = 16.0;
         let side = (ui.available_width() * 0.3).clamp(SIDE_MIN_WIDTH, SIDE_WIDTH);
@@ -661,24 +663,24 @@ impl App {
             let layout = egui::Layout::top_down(egui::Align::Min);
             ui.allocate_ui_with_layout(Vec2::new(side, height), layout, |ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
-                self.captures_panel(ui, s, game, &readings, &marked);
+                self.captures_panel(ui, s, game, inputs, &readings, &marked);
             });
             ui.allocate_ui_with_layout(Vec2::new(main, height), layout, |ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
-                changed = self.zone_panel(ui, game);
+                changed = self.zone_panel(ui, inputs);
             });
         });
         if let Some(p) = changed {
-            self.send(Command::SaveGame(p));
+            self.send(Command::SaveInputs(p));
         }
     }
 
     /// Keeps the game's captures in memory, with their textures.
-    pub(super) fn load_captures(&mut self, ctx: &egui::Context, profile: Option<&Game>) {
+    pub(super) fn load_captures(&mut self, ctx: &egui::Context, profile: Option<&Inputs>) {
         let st = &mut self.screen;
-        let game = profile.map(|p| p.id.clone());
-        if st.loaded_game != game {
-            st.loaded_game = game;
+        let dir = profile.map(|p| p.dir.clone());
+        if st.loaded_game != dir {
+            st.loaded_game = dir;
             st.captures.clear();
             st.selected = None;
             st.filter = None;
@@ -690,7 +692,7 @@ impl App {
             if st.captures.contains_key(&capture.file) {
                 continue;
             }
-            if let Some(frame) = game::load_capture(&profile.id, &capture.file) {
+            if let Some(frame) = package::load_capture(&profile.dir, &capture.file) {
                 // Sharp pixels when zoomed in.
                 let texture = ctx.load_texture(&capture.file, color_image(&frame), egui::TextureOptions::NEAREST);
                 st.captures.insert(capture.file.clone(), (Arc::new(frame), texture));
@@ -705,45 +707,45 @@ impl App {
     }
 
     /// The left column: the captures by scene (scrolling if they must), then how to add some.
-    fn captures_panel(&mut self, ui: &mut egui::Ui, s: &Shared, game: &Game, readings: &HashMap<String, (String, Color32)>, marked: &HashSet<String>) {
+    fn captures_panel(&mut self, ui: &mut egui::Ui, s: &Shared, game: &Game, inputs: &Inputs, readings: &HashMap<String, (String, Color32)>, marked: &HashSet<String>) {
         let inner = ui.available_size() - Vec2::splat(2.0 * PANEL_MARGIN + 2.0);
         card(PANEL).inner_margin(Margin::same(PANEL_MARGIN as i8)).show(ui, |ui| {
             ui.set_width(inner.x);
             ui.set_height(inner.y);
             ui.label(RichText::new("Captures").strong().size(16.0));
-            if !game.captures.is_empty() {
-                self.capture_filters(ui, game);
+            if !inputs.captures.is_empty() {
+                self.capture_filters(ui, inputs);
             }
             // The grid takes what the part below it took on the last frame leaves.
             let height = (ui.available_height() - self.screen.captures_below).max(60.0);
-            if game.captures.is_empty() {
+            if inputs.captures.is_empty() {
                 ui.allocate_ui(Vec2::new(ui.available_width(), height), |ui| {
                     ui.label(muted("No capture yet: capture each scene a few times, in different places."));
                 });
             } else {
                 egui::ScrollArea::vertical().id_salt("captures").auto_shrink([false, false]).max_height(height).min_scrolled_height(height).show(ui, |ui| {
-                    self.capture_grid(ui, game, readings, marked);
+                    self.capture_grid(ui, inputs, readings, marked);
                 });
             }
             let top = ui.cursor().top();
-            let analysed = game.captures.iter().filter(|c| !c.embedding.is_empty()).count();
-            if analysed < game.captures.len() {
+            let analysed = inputs.captures.iter().filter(|c| !c.embedding.is_empty()).count();
+            if analysed < inputs.captures.len() {
                 let why = if Model::Image.ready() { "analysing..." } else { "download the image model in Signals, step 2, to use them for scenes" };
-                ui.label(muted(format!("{analysed} of {} analysed: {why}", game.captures.len())).size(11.5));
+                ui.label(muted(format!("{analysed} of {} analysed: {why}", inputs.captures.len())).size(11.5));
             }
-            self.add_captures(ui, s, game);
+            self.add_captures(ui, s, game, inputs);
             remember_height(ui, &mut self.screen.captures_below, top);
         });
     }
 
     /// Filters: all, each scene, to sort.
-    fn capture_filters(&mut self, ui: &mut egui::Ui, game: &Game) {
-        let mut filters: Vec<(Option<String>, String)> = vec![(None, format!("All · {}", game.captures.len()))];
-        for scene in game.scenes() {
-            let n = game.captures.iter().filter(|c| c.scene == scene).count();
+    fn capture_filters(&mut self, ui: &mut egui::Ui, inputs: &Inputs) {
+        let mut filters: Vec<(Option<String>, String)> = vec![(None, format!("All · {}", inputs.captures.len()))];
+        for scene in inputs.scenes() {
+            let n = inputs.captures.iter().filter(|c| c.scene == scene).count();
             filters.push((Some(scene.clone()), format!("{scene} · {n}")));
         }
-        let to_sort = game.captures.iter().filter(|c| c.scene.is_empty()).count();
+        let to_sort = inputs.captures.iter().filter(|c| c.scene.is_empty()).count();
         if to_sort > 0 {
             filters.push((Some(String::new()), format!("to sort · {to_sort}")));
         }
@@ -762,10 +764,10 @@ impl App {
     /// The captures shown by the scene filter, three per row, each with what
     /// the zone selected reads on it (📍: a place of it was drawn there); a
     /// click opens one in the editor.
-    fn capture_grid(&mut self, ui: &mut egui::Ui, game: &Game, readings: &HashMap<String, (String, Color32)>, marked: &HashSet<String>) {
-        let shown: Vec<&game::Capture> =
-            game.captures.iter().filter(|c| self.screen.filter.as_ref().is_none_or(|f| c.scene == *f)).collect();
-        let targets = game.scenes();
+    fn capture_grid(&mut self, ui: &mut egui::Ui, inputs: &Inputs, readings: &HashMap<String, (String, Color32)>, marked: &HashSet<String>) {
+        let shown: Vec<&package::Capture> =
+            inputs.captures.iter().filter(|c| self.screen.filter.as_ref().is_none_or(|f| c.scene == *f)).collect();
+        let targets = inputs.scenes();
         let mut delete = None;
         let mut moved = None;
         let gap = 6.0;
@@ -812,16 +814,16 @@ impl App {
             ui.add_space(4.0);
         }
         if let Some(file) = delete {
-            self.send(Command::DeleteCapture { game: game.id.clone(), file });
+            self.send(Command::DeleteCapture { dir: inputs.dir.clone(), file });
         }
         if let Some((file, scene)) = moved {
-            self.send(Command::MoveCapture { game: game.id.clone(), file, scene });
+            self.send(Command::MoveCapture { dir: inputs.dir.clone(), file, scene });
         }
     }
 
     /// How captures are taken: in game with the combo, or from here, into a
     /// scene; or images imported from files.
-    fn add_captures(&mut self, ui: &mut egui::Ui, s: &Shared, game: &Game) {
+    fn add_captures(&mut self, ui: &mut egui::Ui, s: &Shared, game: &Game, inputs: &Inputs) {
         let view = &s.screen;
         let playing = s.game.as_ref().is_some_and(|g| g.id == game.id);
         self.poll_import();
@@ -852,7 +854,7 @@ impl App {
             } else {
                 ui.label(muted(format!("Images of the game from your computer (screenshots), or play {} to capture it.", game.name)).size(12.5));
             }
-            let scenes = game.scenes();
+            let scenes = inputs.scenes();
             let current = s.capture_scene.clone();
             let label = |scene: &str| if scene.is_empty() { "to sort later".to_owned() } else { scene.to_owned() };
             let mut target = None;
@@ -894,25 +896,25 @@ impl App {
                 self.send(Command::CaptureScene(current.clone()));
             }
             if import {
-                self.import_captures(ui.ctx(), game, current);
+                self.import_captures(ui.ctx(), inputs, current);
             }
         });
     }
 
     /// Asks for image files, and adds them to `game`'s captures under `scene`.
-    fn import_captures(&mut self, ctx: &egui::Context, game: &Game, scene: String) {
+    fn import_captures(&mut self, ctx: &egui::Context, inputs: &Inputs, scene: String) {
         let (tx, rx) = mpsc::channel();
-        let (commands, game, ctx) = (self.commands.clone(), game.id.clone(), ctx.clone());
+        let (commands, dir, ctx) = (self.commands.clone(), inputs.dir.clone(), ctx.clone());
         self.screen.import = Some(rx);
         self.screen.import_message = None;
         std::thread::spawn(move || {
-            let outcome = match crate::platform::open_files("Add captures", "Images", &game::IMAGE_EXTENSIONS) {
+            let outcome = match crate::platform::open_files("Add captures", "Images", &package::IMAGE_EXTENSIONS) {
                 Ok(paths) if paths.is_empty() => None,
                 Ok(paths) => {
                     let mut frames = Vec::new();
                     let mut failed = Vec::new();
                     for path in &paths {
-                        match game::read_image(path) {
+                        match package::read_image(path) {
                             Ok(frame) => frames.push(frame),
                             Err(e) => {
                                 log::warn!("cannot read the image {}: {e:#}", path.display());
@@ -922,7 +924,7 @@ impl App {
                     }
                     let added = frames.len();
                     if added > 0 {
-                        let _ = commands.send(Command::AddCaptures { game, scene, frames });
+                        let _ = commands.send(Command::AddCaptures { dir, scene, frames });
                     }
                     Some(match (added, failed.is_empty()) {
                         (_, true) => (true, format!("{added} image{} added.", if added == 1 { "" } else { "s" })),
@@ -950,7 +952,7 @@ impl App {
     }
 
     /// The right column: the zone editor, once there is a capture to draw on.
-    fn zone_panel(&mut self, ui: &mut egui::Ui, game: &Game) -> Option<Game> {
+    fn zone_panel(&mut self, ui: &mut egui::Ui, inputs: &Inputs) -> Option<Inputs> {
         let inner = ui.available_size() - Vec2::splat(2.0 * PANEL_MARGIN + 2.0);
         let mut changed = None;
         card(PANEL).inner_margin(Margin::same(PANEL_MARGIN as i8)).show(ui, |ui| {
@@ -958,7 +960,7 @@ impl App {
             ui.set_height(inner.y);
             match self.screen.selected.clone().and_then(|f| self.screen.captures.get(&f).cloned().map(|c| (f, c))) {
                 Some((file, (frame, texture))) => {
-                    changed = self.zone_editor(ui, game, &file, &frame, &texture);
+                    changed = self.zone_editor(ui, inputs, &file, &frame, &texture);
                 }
                 None => {
                     ui.label(RichText::new("Zones").strong().size(16.0));
@@ -975,10 +977,10 @@ impl App {
 
     /// The zones, the places of the one selected, the capture shown to draw
     /// them on, the zone's and the place's settings. Returns the game to save.
-    fn zone_editor(&mut self, ui: &mut egui::Ui, game: &Game, file: &str, frame: &Frame, texture: &egui::TextureHandle) -> Option<Game> {
+    fn zone_editor(&mut self, ui: &mut egui::Ui, inputs: &Inputs, file: &str, frame: &Frame, texture: &egui::TextureHandle) -> Option<Inputs> {
         let now = ui.input(|i| i.time);
-        let tested = self.screen.draft_zone(game);
-        let problem = self.screen.problem(game);
+        let tested = self.screen.draft_zone(inputs);
+        let problem = self.screen.problem(inputs);
         let dirty = self.screen.dirty();
         let mut target: Option<Target> = None;
         let mut save_now = false;
@@ -991,7 +993,7 @@ impl App {
         let draft = &mut st.draft;
         let zone_name = draft.zone.clone();
         let places: Vec<usize> = match &zone_name {
-            Some(name) => game.zones.iter().enumerate().filter(|(_, z)| z.name == *name).map(|(i, _)| i).collect(),
+            Some(name) => inputs.zones.iter().enumerate().filter(|(_, z)| z.name == *name).map(|(i, _)| i).collect(),
             None => Vec::new(),
         };
 
@@ -1000,12 +1002,12 @@ impl App {
             ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
             ui.label(RichText::new("Zones").strong());
             let mut seen: Vec<&str> = Vec::new();
-            for zone in &game.zones {
+            for zone in &inputs.zones {
                 if seen.contains(&zone.name.as_str()) {
                     continue;
                 }
                 seen.push(&zone.name);
-                let n = game.zones.iter().filter(|z| z.name == zone.name).count();
+                let n = inputs.zones.iter().filter(|z| z.name == zone.name).count();
                 let kind = if zone.kind == ZoneKind::Bar { "bar" } else { "shown or not" };
                 let on = zone_name.as_deref() == Some(zone.name.as_str());
                 let text = if n > 1 { format!("{} · {kind} · {n}", zone.name) } else { format!("{} · {kind}", zone.name) };
@@ -1025,7 +1027,7 @@ impl App {
                     ui.label(RichText::new("Places").strong());
                     for (n, &i) in places.iter().enumerate() {
                         let on = draft.editing == Some(i);
-                        let scene = game.zones[i].scene.as_deref().unwrap_or("any scene");
+                        let scene = inputs.zones[i].scene.as_deref().unwrap_or("any scene");
                         let hover = if on { "Leave this place" } else { "Edit this place, on its capture" };
                         if ui.selectable_label(on, format!("{} · {scene}", n + 1)).on_hover_text(hover).clicked() {
                             target = Some(if on { Target::Zone(name.clone()) } else { Target::Place(i, true) });
@@ -1112,7 +1114,7 @@ impl App {
                 }
             }
             // The place of the zone selected under a point, when none is being edited.
-            let place_at = |p: Pos2| places.iter().copied().find(|&i| on_image(area, game.zones[i].rect).expand(3.0).contains(p));
+            let place_at = |p: Pos2| places.iter().copied().find(|&i| on_image(area, inputs.zones[i].rect).expand(3.0).contains(p));
             if let Some(pick) = draft.picking {
                 if hover.is_some() {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
@@ -1143,7 +1145,7 @@ impl App {
                     if let Some(origin) = ui.input(|i| i.pointer.press_origin()).or(response.interact_pointer_pos()) {
                         if draft.rect().is_none() && draft.editing.is_none() {
                             if let Some(i) = place_at(origin) {
-                                draft.take_place(i, &game.zones[i]);
+                                draft.take_place(i, &inputs.zones[i]);
                             }
                         }
                         let mut grab = grab_at(draft, origin);
@@ -1179,7 +1181,7 @@ impl App {
             // A click on another zone's place, or one of this zone, opens it.
             if response.clicked() && draft.picking.is_none() {
                 if let Some(p) = response.interact_pointer_pos() {
-                    let hit = game
+                    let hit = inputs
                         .zones
                         .iter()
                         .enumerate()
@@ -1192,7 +1194,7 @@ impl App {
                 }
             }
             // The other places; their name and reading when hovered.
-            for (i, zone) in game.zones.iter().enumerate() {
+            for (i, zone) in inputs.zones.iter().enumerate() {
                 let same = zone_name.as_deref() == Some(zone.name.as_str());
                 let shown = match st.show {
                     Show::All => true,
@@ -1307,8 +1309,8 @@ impl App {
                     });
                 }
                 // The scene this zone is a sure sign of (saved right away).
-                if let Some(name) = zone_name.as_ref().filter(|_| !game.scenes.is_empty()) {
-                    let current = game.scenes.iter().find(|sc| sc.zone.as_ref() == Some(name)).map(|sc| sc.name.clone());
+                if let Some(name) = zone_name.as_ref().filter(|_| !inputs.scenes.is_empty()) {
+                    let current = inputs.scenes.iter().find(|sc| sc.zone.as_ref() == Some(name)).map(|sc| sc.name.clone());
                     let mut chosen = current.clone();
                     ui.label("Sure sign of").on_hover_text(
                         "While this zone is shown (any of its places), GameViber is sure of the scene, right away (a \
@@ -1316,12 +1318,12 @@ impl App {
                     );
                     egui::ComboBox::from_id_salt("zone-scene").selected_text(chosen.clone().unwrap_or_else(|| "no scene".to_owned())).show_ui(ui, |ui| {
                         ui.selectable_value(&mut chosen, None, "no scene");
-                        for scene in &game.scenes {
+                        for scene in &inputs.scenes {
                             ui.selectable_value(&mut chosen, Some(scene.name.clone()), &scene.name);
                         }
                     });
                     if chosen != current {
-                        let mut g = game.clone();
+                        let mut g = inputs.clone();
                         for scene in &mut g.scenes {
                             if Some(&scene.name) == chosen.as_ref() {
                                 scene.zone = Some(name.clone());
@@ -1463,7 +1465,7 @@ impl App {
 
         // The place's own settings.
         if draft.rect().is_some() {
-            let saved = draft.editing.and_then(|i| game.zones.get(i));
+            let saved = draft.editing.and_then(|i| inputs.zones.get(i));
             ui.horizontal_wrapped(|ui| {
                 ui.label(RichText::new("Place").strong());
                 if draft.kind == ZoneKind::Visible {
@@ -1493,7 +1495,7 @@ impl App {
             if let Some(zone) = tested.as_ref().filter(|z| z.kind == ZoneKind::Visible) {
                 if let Some(scene) = &zone.scene {
                     let (mut shown_in, mut others) = (Vec::new(), Vec::new());
-                    for capture in game.captures.iter().filter(|c| !c.scene.is_empty()) {
+                    for capture in inputs.captures.iter().filter(|c| !c.scene.is_empty()) {
                         let Some((capture_frame, _)) = st.captures.get(&capture.file) else { continue };
                         let m = zones::measure(zone, capture_frame).unwrap_or(-1.0);
                         if capture.scene == *scene { shown_in.push(m) } else { others.push(m) }
@@ -1568,7 +1570,7 @@ impl App {
             st.selected = Some(capture);
         }
         if let Some(i) = delete_place {
-            let mut g = game.clone();
+            let mut g = inputs.clone();
             g.zones.remove(i);
             if let Some(name) = &zone_name {
                 st.select_zone(name, &g);
@@ -1577,7 +1579,7 @@ impl App {
         }
         if delete_zone {
             if let Some(name) = &zone_name {
-                let mut g = game.clone();
+                let mut g = inputs.clone();
                 g.zones.retain(|z| z.name != *name);
                 g.scenes.iter_mut().filter(|sc| sc.zone.as_ref() == Some(name)).for_each(|sc| sc.zone = None);
                 st.draft = Draft { zoom: st.draft.zoom, ..Draft::default() };
@@ -1586,7 +1588,7 @@ impl App {
             }
         }
         if save_now {
-            if let Some((g, place)) = st.applied(game) {
+            if let Some((g, place)) = st.applied(inputs) {
                 let name = st.draft.name.clone();
                 match place {
                     Some(i) => st.open_place(i, &g, false),
@@ -1598,14 +1600,14 @@ impl App {
         }
         if cancel {
             match (zone_name, st.draft.editing) {
-                (Some(_), Some(i)) => st.open_place(i, game, false),
-                (Some(name), None) => st.select_zone(&name, game),
+                (Some(_), Some(i)) => st.open_place(i, inputs, false),
+                (Some(name), None) => st.select_zone(&name, inputs),
                 (None, _) => st.draft = Draft { zoom: st.draft.zoom, ..Draft::default() },
             }
             return None;
         }
         if let Some(target) = target {
-            return st.go(target, game).or(linked);
+            return st.go(target, inputs).or(linked);
         }
         linked
     }
