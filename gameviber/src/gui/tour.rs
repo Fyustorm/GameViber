@@ -33,9 +33,11 @@ enum Stop {
     CommunityGame,
     /// The Community page searching a game nobody made a mode for.
     CommunityNothing,
+    /// The first-launch question about sharing stats.
+    StatsConsent,
 }
 
-const STOPS: [(&str, Stop); 23] = [
+const STOPS: [(&str, Stop); 24] = [
     ("games", Stop::Games(|_| Some(Route::Library))),
     ("add-game", Stop::AddGame),
     ("builtin-modes", Stop::Games(|_| Some(Route::BuiltIn))),
@@ -50,6 +52,7 @@ const STOPS: [(&str, Stop); 23] = [
     ("community", Stop::Page(Page::Community)),
     ("community-game", Stop::CommunityGame),
     ("community-nothing", Stop::CommunityNothing),
+    ("stats-consent", Stop::StatsConsent),
     ("live", Stop::Page(Page::Live)),
     ("toys", Stop::Page(Page::Toys)),
     ("setup-gamepad", Stop::Setup(setup::Tab::Gamepad)),
@@ -108,6 +111,8 @@ impl App {
         if request {
             tour.requested = true;
         }
+        // The consent window shows on its own stop only.
+        self.community.consent_preview = matches!(stop, Stop::StatsConsent);
         match stop {
             Stop::Page(page) => self.page = page,
             Stop::Games(route) => {
@@ -135,6 +140,7 @@ impl App {
                     }
                 }
             }
+            Stop::StatsConsent => {}
             Stop::CommunityNothing => {
                 self.page = Page::Community;
                 super::community::tour_search(self, "Hollow Knight: Silksong");

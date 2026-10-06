@@ -4,6 +4,7 @@ import java.time.Instant;
 import java.util.List;
 
 import fr.fyustorm.gameviber.auth.Author;
+import fr.fyustorm.gameviber.stats.Stats.Figures;
 
 /** What the API answers with. */
 public final class Views {
@@ -18,7 +19,8 @@ public final class Views {
     }
 
     /** `version` and `api`: its latest version's number and mode API. */
-    public record ModeSummary(String id, String name, String description, String author, long downloads, int version, int api, Instant updatedAt) {}
+    public record ModeSummary(
+            String id, String name, String description, String author, long downloads, int version, int api, Instant updatedAt, Figures figures) {}
 
     /** `visibility` and `shareCode` only for its author (and administrators). */
     public record ModeDetail(
@@ -34,22 +36,23 @@ public final class Views {
             String visibility,
             String shareCode,
             Instant withdrawnAt,
-            String withdrawnReason) {}
+            String withdrawnReason,
+            Figures figures) {}
 
     static GameView game(Game game) {
         long modes = Mode.count("gameId = ?1 and visibility = ?2 and withdrawnAt is null", game.id, Mode.PUBLIC);
         return new GameView(game.id, game.name, game.steamAppId, modes);
     }
 
-    static ModeSummary summary(Mode mode) {
+    static ModeSummary summary(Mode mode, Figures figures) {
         Author author = Author.findById(mode.authorId);
         var latest = ModeVersion.latest(mode);
         return new ModeSummary(
                 mode.publicId, mode.name, mode.description, author.pseudo, mode.downloads,
-                latest.map(v -> v.number).orElse(0), latest.map(v -> v.api).orElse(0), mode.updatedAt);
+                latest.map(v -> v.number).orElse(0), latest.map(v -> v.api).orElse(0), mode.updatedAt, figures);
     }
 
-    static ModeDetail detail(Mode mode, boolean owner) {
+    static ModeDetail detail(Mode mode, boolean owner, Figures figures) {
         Author author = Author.findById(mode.authorId);
         Game game = Game.findById(mode.gameId);
         List<VersionView> versions = ModeVersion.of(mode).stream().map(VersionView::of).toList();
@@ -66,6 +69,7 @@ public final class Views {
                 owner ? mode.visibility : null,
                 owner ? mode.shareCode : null,
                 mode.withdrawnAt,
-                mode.withdrawnReason);
+                mode.withdrawnReason,
+                figures);
     }
 }

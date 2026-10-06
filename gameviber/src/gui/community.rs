@@ -17,6 +17,8 @@ use crate::game::Game;
 
 /// Below this width the mode's page goes under the list.
 const TWO_COLUMNS_WIDTH: f32 = 900.0;
+/// How a game's modes are sorted: what the server takes, what players read.
+const SORTS: [(&str, &str); 4] = [("trending", "Trending"), ("rating", "Top rated"), ("played", "Most played"), ("new", "New")];
 const REASONS: [(&str, &str); 3] = [("broken", "Broken by a game update"), ("content", "Should not be there"), ("other", "Something else")];
 
 /// What a call to the server gives, once it came.
@@ -93,9 +95,9 @@ pub struct State {
     games: Remote<Vec<GameView>>,
     /// A game added to the library to make a mode for: the AI request opens once it is there.
     making_for: Option<String>,
-    /// The game whose modes are shown, and how they are sorted (the most downloaded first, else the newest).
+    /// The game whose modes are shown, and how they are sorted (`SORTS`; empty: the first).
     game: Option<GameView>,
-    newest: bool,
+    sort: &'static str,
     modes: Remote<Vec<ModeSummary>>,
     /// The mode whose page is shown, and how it was reached.
     selected: Option<Source>,
@@ -123,6 +125,10 @@ pub struct State {
     report: Option<(String, usize, String)>,
     /// How long the player's modes were played, read again now and then (by local id).
     usage: HashMap<String, (std::time::Instant, community::Usage)>,
+    /// The first-launch question was answered (until the engine saved it)...
+    consent_answered: bool,
+    /// ...or shown anyway (the screenshot tour).
+    pub(super) consent_preview: bool,
 }
 
 impl State {
@@ -416,16 +422,17 @@ impl App {
             ui.label(RichText::new(&game.name).strong().size(18.0));
         });
         ui.horizontal(|ui| {
-            for (newest, label) in [(false, "Most downloaded"), (true, "New")] {
-                if ui.selectable_label(self.community.newest == newest, label).clicked() {
-                    self.community.newest = newest;
+            let current = if self.community.sort.is_empty() { SORTS[0].0 } else { self.community.sort };
+            for (sort, label) in SORTS {
+                if ui.selectable_label(current == sort, label).clicked() {
+                    self.community.sort = sort;
                     self.community.modes = Remote::Idle;
                 }
             }
         });
         ui.add_space(8.0);
         if matches!(self.community.modes, Remote::Idle) {
-            let (client, id, sort) = (self.client(s), game.id, if self.community.newest { "new" } else { "downloads" });
+            let (client, id, sort) = (self.client(s), game.id, if self.community.sort.is_empty() { SORTS[0].0 } else { self.community.sort });
             self.community.modes.start(ui.ctx(), move || client.modes(id, sort));
         }
         let list = |app: &mut Self, ui: &mut egui::Ui| match &app.community.modes {
@@ -485,7 +492,11 @@ impl App {
             ui.horizontal(|ui| {
                 ui.vertical(|ui| {
                     ui.label(RichText::new(&mode.name).strong().size(15.0));
-                    ui.label(muted(format!("by {} · v{} · {}", mode.author, mode.version, downloads(mode.downloads))).size(12.0));
+                    let mut line = format!("by {} · v{}", mode.author, mode.version);
+                    for figure in [mode.figures.liked(), players(mode.figures.players)].into_iter().flatten() {
+                        line.push_str(&format!(" · {figure}"));
+                    }
+                    ui.label(muted(line).size(12.0));
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     match self.community.installed.get(&mode.id) {
@@ -527,6 +538,23 @@ impl App {
         let source = self.community.selected.clone().unwrap_or(Source::Id(detail.id.clone()));
         ui.label(RichText::new(&detail.name).strong().size(18.0));
         ui.label(muted(format!("by {} · {} · {}", detail.author, detail.game.name, downloads(detail.downloads))));
+        let f = &detail.figures;
+        if f.players > 0 || f.likes + f.dislikes > 0 {
+            ui.horizontal_wrapped(|ui| {
+                for (value, what) in [
+                    (f.players.to_string(), "players, 30 days".to_owned()),
+                    (format!("{} min", f.median_minutes), "median play time".to_owned()),
+                    (format!("{:.0} %", f.came_back * 100.0), "came back 3+ times".to_owned()),
+                    (f.liked().map_or("-".to_owned(), |l| l.replace(" liked", "")), format!("liked · {} votes", f.likes + f.dislikes)),
+                ] {
+                    ui.vertical(|ui| {
+                        ui.label(RichText::new(value).strong().size(17.0));
+                        ui.label(muted(what).size(11.5));
+                    });
+                    ui.add_space(12.0);
+                }
+            });
+        }
         if !detail.description.is_empty() {
             ui.add_space(6.0);
             ui.label(&detail.description);
@@ -567,6 +595,10 @@ impl App {
                 ui.spinner();
             }
         });
+        if let Some((local, origin)) = installed.as_ref().filter(|(_, o)| !o.own) {
+            ui.add_space(6.0);
+            self.vote_ui(ui, s, local, origin);
+        }
         ui.add_space(8.0);
         eyebrow(ui, "Versions");
         for version in detail.versions.iter().take(5) {
@@ -576,6 +608,36 @@ impl App {
         }
         ui.add_space(8.0);
         self.report_ui(ui, s, &detail.id);
+    }
+
+    /// Liked or not, for a mode installed from the community and played.
+    fn vote_ui(&mut self, ui: &mut egui::Ui, s: &Shared, local: &str, origin: &Origin) {
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Did you like it?");
+            if s.settings.share_stats != Some(true) {
+                ui.label(muted("Votes are sent with your stats: share them in Settings to vote.").size(12.0));
+                return;
+            }
+            if Usage::of(&ModeEntry::from_id(local)).played_secs < 60.0 {
+                ui.label(muted("Play it first, then say what you think.").size(12.0));
+                return;
+            }
+            for (value, label) in [(1i8, "👍 Liked it"), (-1, "👎 Not for me")] {
+                let chosen = origin.vote == value;
+                if ui.add_enabled(!self.community.busy(), egui::Button::new(label).selected(chosen)).clicked() {
+                    // Clicked again: taken back.
+                    let value = if chosen { 0 } else { value };
+                    let (client, installation, id, local, origin) =
+                        (self.client(s), s.settings.installation_id.clone(), origin.id.clone(), local.to_owned(), origin.clone());
+                    self.community.action.start(ui.ctx(), move || {
+                        client.vote(&installation, &id, value)?;
+                        Origin { vote: value, ..origin }.save(&ModeEntry::from_id(&local))?;
+                        let message = if value == 0 { "Vote taken back." } else { "Thanks: your vote counts." };
+                        Ok(Done { message: message.into(), game: None, select: None })
+                    });
+                }
+            }
+        });
     }
 
     fn report_ui(&mut self, ui: &mut egui::Ui, s: &Shared, id: &str) {
@@ -648,7 +710,7 @@ impl App {
             let mut remote = Remote::Idle;
             remote.start(ctx, move || {
                 let Some(found) = client.game_match(&name, app)? else { return Ok(None) };
-                let modes = client.modes(found.id, "downloads")?;
+                let modes = client.modes(found.id, SORTS[0].0)?;
                 Ok(Some((found, modes)))
             });
             self.community.matches.insert(game.id.clone(), remote);
@@ -879,6 +941,7 @@ impl App {
             }
         });
         ui.add_space(6.0);
+        self.vote_ui(ui, s, local, origin);
         self.report_ui(ui, s, &origin.id);
     }
 
@@ -1054,6 +1117,15 @@ impl App {
     }
 }
 
+/// "3 players" (none: nothing to say).
+fn players(n: u64) -> Option<String> {
+    match n {
+        0 => None,
+        1 => Some("1 player".to_owned()),
+        n => Some(format!("{n} players")),
+    }
+}
+
 fn downloads(n: u64) -> String {
     if n == 1 { "1 download".to_owned() } else { format!("{n} downloads") }
 }
@@ -1080,5 +1152,50 @@ pub(super) fn tour_search(app: &mut App, game: &str) {
         app.community.search = game.to_owned();
         app.community.searched = game.to_owned();
         app.community.games = Remote::Idle;
+    }
+}
+
+// --- the first launch: sharing stats or not
+
+impl App {
+    /// Asked once: whether play time and votes are sent to the community.
+    pub(super) fn stats_consent(&mut self, ctx: &egui::Context, s: &Shared) {
+        // The settings are only known after the engine's first tick.
+        let asked = s.settings.share_stats.is_some() || s.time == 0.0 || self.community.consent_answered;
+        if asked && !self.community.consent_preview {
+            return;
+        }
+        let mut answer = None;
+        egui::Modal::new(egui::Id::new("stats-consent")).show(ctx, |ui| {
+            ui.set_width(520.0);
+            heading(ui, "Help players find the best modes");
+            ui.label(
+                "GameViber can tell the community how long you play the modes you installed from it, and send your votes. \
+                 That is what ranks modes by how much players keep playing them, rather than by downloads, and shows \
+                 authors that their mode is played.",
+            );
+            ui.add_space(6.0);
+            ui.label(RichText::new("What is sent").strong());
+            ui.label(
+                "An id made up for this installation, which modes you played, for how many minutes and sessions, and your \
+                 votes. Never your name, your games' image or sound, your toys or how they ran; not linked to your author \
+                 account.",
+            );
+            ui.label(muted("You can change your mind any time in Settings."));
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                let size = Vec2::new(180.0, 36.0);
+                if ui.add(egui::Button::new("Share my stats").min_size(size)).clicked() {
+                    answer = Some(true);
+                }
+                if ui.add(egui::Button::new("Don't share").min_size(size)).clicked() {
+                    answer = Some(false);
+                }
+            });
+        });
+        if let Some(share) = answer {
+            self.community.consent_answered = true;
+            self.send(Command::SetShareStats(share));
+        }
     }
 }

@@ -29,16 +29,16 @@ import io.restassured.http.ContentType;
 import io.restassured.specification.RequestSpecification;
 
 @QuarkusTest
-class CatalogTest {
+public class CatalogTest {
     static final String SCRIPT = "mode { api = 1, name = \"Battles\" }\nfunction tick(dt, input) set(input.rumble.level) end\n";
 
     // --- helpers
 
-    static String unique(String prefix) {
+    public static String unique(String prefix) {
         return prefix + UUID.randomUUID().toString().substring(0, 8);
     }
 
-    static String register(String pseudo) {
+    public static String register(String pseudo) {
         return given().contentType(ContentType.JSON).body(Map.of("pseudo", pseudo, "password", "secret-password"))
                 .post("/api/authors").then().statusCode(200).extract().path("token");
     }
@@ -94,11 +94,11 @@ class CatalogTest {
         return zip(entries);
     }
 
-    static byte[] gameviber(String game, Long app) {
+    public static byte[] gameviber(String game, Long app) {
         return gameviber(game, app, SCRIPT, Map.of("variants/boss.luau", SCRIPT.getBytes(StandardCharsets.UTF_8), "captures/battle-1.png", png()));
     }
 
-    static io.restassured.response.ValidatableResponse publish(String token, byte[] file, String visibility) {
+    public static io.restassured.response.ValidatableResponse publish(String token, byte[] file, String visibility) {
         return as(token).multiPart("package", "mode.gameviber", file, "application/zip")
                 .multiPart("name", "Battle pulse").multiPart("description", "Waves in battles")
                 .multiPart("visibility", visibility).multiPart("changelog", "First version")

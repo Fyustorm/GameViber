@@ -1,5 +1,6 @@
 package fr.fyustorm.gameviber.catalog;
 
+import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
 
@@ -7,6 +8,7 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 import fr.fyustorm.gameviber.api.Problem;
 import fr.fyustorm.gameviber.api.RateLimiter;
+import fr.fyustorm.gameviber.stats.Stats;
 import io.vertx.core.http.HttpServerRequest;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.DefaultValue;
@@ -24,6 +26,8 @@ public class CatalogResource {
     ModeCatalog catalog;
     @Inject
     RateLimiter limits;
+    @Inject
+    Stats stats;
     @ConfigProperty(name = "limits.code-per-hour", defaultValue = "60")
     int codePerHour;
 
@@ -52,15 +56,26 @@ public class CatalogResource {
         return game.map(Views::game).filter(g -> g.modes() > 0).orElseThrow(() -> Problem.notFound("no public mode for this game"));
     }
 
-    /** A game, and its public modes: `sort` new (default) or downloads. */
+    /**
+     * A game, and its public modes, `sort`ed: trending (default: played lately,
+     * the latest days counting more), rating (the most liked, few votes
+     * counting little), played (players in the last 30 days), new, downloads.
+     */
     @GET
     @Path("/games/{id}/modes")
-    public List<Views.ModeSummary> modes(@PathParam("id") long id, @QueryParam("sort") @DefaultValue("new") String sort) {
+    public List<Views.ModeSummary> modes(@PathParam("id") long id, @QueryParam("sort") @DefaultValue("trending") String sort) {
         Game.<Game>findByIdOptional(id).orElseThrow(() -> Problem.notFound("no such game"));
-        String order = sort.equals("downloads") ? "downloads desc, updatedAt desc" : "updatedAt desc";
-        return Mode.<Mode>list("gameId = ?1 and visibility = ?2 and withdrawnAt is null order by " + order, id, Mode.PUBLIC)
+        Comparator<Views.ModeSummary> order = switch (sort) {
+            case "rating" -> Comparator.comparingDouble(m -> -m.figures().rating());
+            case "played" -> Comparator.comparingLong(m -> -m.figures().players());
+            case "downloads" -> Comparator.comparingLong(m -> -m.downloads());
+            case "new" -> Comparator.comparing(Views.ModeSummary::updatedAt).reversed();
+            default -> Comparator.comparingDouble(m -> -m.figures().trend());
+        };
+        return Mode.<Mode>list("gameId = ?1 and visibility = ?2 and withdrawnAt is null", id, Mode.PUBLIC)
                 .stream()
-                .map(Views::summary)
+                .map(m -> Views.summary(m, stats.figures(m.id)))
+                .sorted(order.thenComparing(Comparator.comparing(Views.ModeSummary::updatedAt).reversed()))
                 .toList();
     }
 

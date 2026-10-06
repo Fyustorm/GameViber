@@ -36,10 +36,13 @@ Maven comes with the wrapper (`./mvnw`).
 | | Endpoint | |
 |---|---|---|
 | Anyone | `GET /api/games?search=` | games with public modes |
-| | `GET /api/games/{id}/modes?sort=new\|downloads` | a game's public modes |
+| | `GET /api/games/{id}/modes?sort=trending\|rating\|played\|new\|downloads` | a game's public modes, with their `figures` (players in 30 days, median minutes, share who came back 3 times or more, likes, Wilson rating, trend) |
 | | `GET /api/modes/{id}`, `GET /api/modes/{id}/package?version=` | a public mode, its package (a download) |
 | | `GET /api/shared/{code}`, `GET /api/shared/{code}/package` | a mode by its share code (private ones too) |
 | | `POST /api/modes/{id}/reports` | `{"reason": "broken\|content\|other", "details"}` |
+| | `GET /api/games/match?name=&steamAppId=` | the game a player plays, when it has public modes |
+| | `POST /api/stats/plays` | `{"installation", "plays": [{"mode", "seconds", "sessions"}]}`, from players who share their stats |
+| | `POST /api/stats/votes` | `{"installation", "mode", "value": 1\|-1\|0}`, once the installation played the mode |
 | | `POST /api/authors`, `POST /api/authors/session` | `{"pseudo", "password"}` → `{"token", "pseudo"}` |
 | Author (`Authorization: Bearer <token>`) | `POST /api/modes` | multipart: `package` (a `.gameviber` file), `name`, `description`, `visibility` (`private` by default, or `public`), `changelog` |
 | | `POST /api/modes/{id}/versions` | multipart: `package`, `changelog` |
@@ -68,7 +71,8 @@ image (PNG metadata is dropped).
 | `DATA_DIR` | yes | the database and the packages; back it up as a whole (copy it with the service stopped, or `sqlite3 gameviber.db ".backup ..."`) |
 | `JWT_KEY_FILE` | yes | the HS256 key (JWK) tokens are signed with: generate one, keep it secret; the dev key is for dev and tests only |
 | `ADMIN_TOKEN` | — | the back-office's token; unset, nobody administers |
-| `LIMIT_SIGN_IN_PER_HOUR`, `LIMIT_PUBLISH_PER_HOUR`, `LIMIT_REPORT_PER_HOUR` | — | per client address: 20, 20, 10 |
+| `STATS_SALT` | yes | installation ids are stored hashed with it: set one, keep it (changing it makes every player look new) |
+| `LIMIT_SIGN_IN_PER_HOUR`, `LIMIT_PUBLISH_PER_HOUR`, `LIMIT_REPORT_PER_HOUR`, `LIMIT_STATS_PER_HOUR` | — | per client address: 20, 20, 10, 120 |
 
 It sits behind a reverse proxy (HTTPS, HTTP/2, gzip): the client address the
 limits count is the one the proxy forwards.

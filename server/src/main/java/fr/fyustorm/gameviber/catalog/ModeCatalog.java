@@ -11,6 +11,7 @@ import org.jboss.logging.Logger;
 
 import fr.fyustorm.gameviber.api.Problem;
 import fr.fyustorm.gameviber.auth.Author;
+import fr.fyustorm.gameviber.stats.Stats;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
@@ -26,6 +27,8 @@ public class ModeCatalog {
 
     @Inject
     PackageStore store;
+    @Inject
+    Stats stats;
 
     /** The author signed in, if they may still publish. */
     public Author author(JsonWebToken jwt) {
@@ -38,7 +41,7 @@ public class ModeCatalog {
     }
 
     public Views.ModeDetail detail(Mode mode, boolean owner) {
-        return Views.detail(mode, owner);
+        return Views.detail(mode, owner, stats.figures(mode.id));
     }
 
     /** A mode of `author`, by its public id (withdrawn ones too). */

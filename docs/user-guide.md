@@ -88,6 +88,18 @@ of play with a mode of your own that you did not change, GameViber suggests
 publishing it (never while you play; **Later**, or **Don't ask for this mode**).
 The server is set in **Settings › Community server**.
 
+### Stats and votes
+
+At first launch, GameViber asks whether to share your stats with the
+community: how long you play the modes you installed from it (minutes and
+sessions, sent every ten minutes or so) and your votes, under an id made up for
+this installation. Never your name, your games' image or sound, your toys or
+how they ran, and nothing linked to your author account. They rank a game's
+modes: **Trending** (played lately), **Top rated** (liked by the most, a few
+votes counting little), **Most played** (players in the last 30 days), or
+**New**. Once you played a mode you installed, say whether you liked it on its
+page or in its Sharing tab. Change your mind in **Settings › Community server**.
+
 ## A mode's inputs
 
 The rumble and the buttons do not say whether you are fighting, exploring or

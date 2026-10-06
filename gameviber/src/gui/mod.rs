@@ -277,6 +277,9 @@ impl eframe::App for App {
             Page::Settings => self.settings_ui(ui, &s),
         }
         self.generator_ui(ui.ctx(), &s);
+        if self.tour.is_none() || self.community.consent_preview {
+            self.stats_consent(ui.ctx(), &s);
+        }
         self.update_simulated_rumble();
         // The overlay copies the game's image while it is looked at, even when modes do not see it.
         let watching = self.page == Page::Games

@@ -2,3 +2,6 @@ databaseChangeLog:
   - include:
       file: changelog/001_catalog.sql
       relativeToChangelogFile: true
+  - include:
+      file: changelog/002_stats.sql
+      relativeToChangelogFile: true

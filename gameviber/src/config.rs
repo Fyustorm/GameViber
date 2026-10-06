@@ -106,6 +106,11 @@ pub struct Settings {
     pub language: String,
     /// The community server modes are shared on (`community.rs`).
     pub community_url: String,
+    /// Play time with the modes installed from the community and votes are
+    /// sent to it (None: not asked yet, the first-launch window asks).
+    pub share_stats: Option<bool>,
+    /// A random id of this installation, what those are sent under (made the first time).
+    pub installation_id: String,
 }
 
 /// Port of the local server other programs send values and events to.
@@ -204,6 +209,8 @@ impl Default for Settings {
             active_game: None,
             language: DEFAULT_LANGUAGE.into(),
             community_url: crate::community::DEFAULT_URL.into(),
+            share_stats: None,
+            installation_id: String::new(),
         }
     }
 }

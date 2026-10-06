@@ -36,6 +36,27 @@ pub struct GameView {
     pub modes: u64,
 }
 
+/// What players who share their stats make of a mode (`server/`, `Stats`).
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Figures {
+    /// Installations that played it in the last 30 days.
+    pub players: u64,
+    pub median_minutes: u64,
+    /// Share of its players who played it 3 sessions or more, 0..1.
+    pub came_back: f64,
+    pub likes: u64,
+    pub dislikes: u64,
+}
+
+impl Figures {
+    /// "92 % liked", once a few voted.
+    pub fn liked(&self) -> Option<String> {
+        let votes = self.likes + self.dislikes;
+        (votes > 0).then(|| format!("{:.0} % liked", 100.0 * self.likes as f64 / votes as f64))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModeSummary {
@@ -48,6 +69,8 @@ pub struct ModeSummary {
     pub version: u32,
     pub api: u32,
     pub updated_at: String,
+    #[serde(default)]
+    pub figures: Figures,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -77,6 +100,8 @@ pub struct ModeDetail {
     pub share_code: Option<String>,
     pub withdrawn_at: Option<String>,
     pub withdrawn_reason: Option<String>,
+    #[serde(default)]
+    pub figures: Figures,
 }
 
 impl ModeDetail {
@@ -123,6 +148,9 @@ pub struct Origin {
     /// The player keeps this version: no update is offered.
     #[serde(default)]
     pub pinned: bool,
+    /// What the player said of it: 1 liked, -1 not, 0 nothing.
+    #[serde(default)]
+    pub vote: i8,
 }
 
 impl Origin {
@@ -192,11 +220,11 @@ impl Usage {
     }
 }
 
-/// `secs` more of play with the mode `mode` (a user mode not from the
-/// community); the count starts over when its script changed.
+/// `secs` more of play with the mode `mode` (a user mode); the count starts
+/// over when its script changed.
 pub fn record_play(mode: &str, secs: f64) {
     let entry = ModeEntry::from_id(&ModeEntry::from_id(mode).main_id());
-    if entry.dir().is_none() || Origin::of(&entry).is_some() {
+    if entry.dir().is_none() {
         return;
     }
     let Ok(source) = entry.source() else { return };
@@ -207,6 +235,46 @@ pub fn record_play(mode: &str, secs: f64) {
     }
     usage.played_secs += secs;
     usage.save(&entry);
+}
+
+/// Play time with the modes installed from the community, gathered and sent
+/// now and then when the player shares their stats.
+#[derive(Debug, Default)]
+pub struct PlayReport {
+    /// By id on the server: seconds, sessions.
+    pending: std::collections::HashMap<String, (f64, u32)>,
+    sent: Option<std::time::Instant>,
+}
+
+/// Plays are sent at most this often.
+const REPORT_EVERY: Duration = Duration::from_secs(10 * 60);
+
+impl PlayReport {
+    /// `secs` more with the mode `mode`, and one more session when `session`;
+    /// nothing for a mode not installed from the community (or the player's own).
+    pub fn add(&mut self, mode: &str, secs: f64, session: bool) {
+        let entry = ModeEntry::from_id(&ModeEntry::from_id(mode).main_id());
+        let Some(origin) = Origin::of(&entry).filter(|o| !o.own) else { return };
+        let pending = self.pending.entry(origin.id).or_default();
+        pending.0 += secs;
+        pending.1 += u32::from(session);
+    }
+
+    /// Sends what was gathered, in a thread, unless it was sent lately (`now`:
+    /// whatever the time); the thread, to wait for it before quitting.
+    pub fn send(&mut self, url: &str, installation: &str, now: bool) -> Option<std::thread::JoinHandle<()>> {
+        if self.pending.is_empty() || (!now && self.sent.is_some_and(|t| t.elapsed() < REPORT_EVERY)) {
+            return None;
+        }
+        self.sent = Some(std::time::Instant::now());
+        let plays: Vec<(String, u64, u32)> = self.pending.drain().map(|(id, (secs, sessions))| (id, secs.round() as u64, sessions)).collect();
+        let (client, installation) = (Client::new(url, None), installation.to_owned());
+        Some(std::thread::spawn(move || {
+            if let Err(e) = client.send_plays(&installation, &plays) {
+                log::warn!("cannot send play time to the community: {e:#}");
+            }
+        }))
+    }
 }
 
 /// The player's author account on the server: their pseudo and its token.
@@ -408,6 +476,19 @@ impl Client {
         self.send_empty("DELETE", &format!("/api/modes/{id}"))
     }
 
+    /// Play time with modes installed from the community, under this installation's id.
+    pub fn send_plays(&self, installation: &str, plays: &[(String, u64, u32)]) -> anyhow::Result<()> {
+        let plays: Vec<_> = plays.iter().map(|(mode, seconds, sessions)| serde_json::json!({ "mode": mode, "seconds": seconds, "sessions": sessions })).collect();
+        self.send_json::<serde_json::Value>("POST", "/api/stats/plays", &serde_json::json!({ "installation": installation, "plays": plays }))?;
+        Ok(())
+    }
+
+    /// 1 liked, -1 not, 0 taken back: only for a mode played (with stats shared).
+    pub fn vote(&self, installation: &str, id: &str, value: i8) -> anyhow::Result<()> {
+        self.send_json::<serde_json::Value>("POST", "/api/stats/votes", &serde_json::json!({ "installation": installation, "mode": id, "value": value }))?;
+        Ok(())
+    }
+
     /// `reason`: "broken", "content" or "other".
     pub fn report(&self, id: &str, reason: &str, details: &str) -> anyhow::Result<()> {
         self.send_json::<serde_json::Value>("POST", &format!("/api/modes/{id}/reports"), &serde_json::json!({ "reason": reason, "details": details }))?;
@@ -429,6 +510,11 @@ fn multipart_form(fields: &[(&str, &str)], package: &[u8]) -> (String, Vec<u8>) 
     out.extend(package);
     out.extend(format!("\r\n--{boundary}--\r\n").as_bytes());
     (format!("multipart/form-data; boundary={boundary}"), out)
+}
+
+/// A random id for this installation: 32 hexadecimal digits.
+pub fn new_installation_id() -> String {
+    format!("{:016x}{:016x}", rand_u64(), rand_u64().rotate_left(17) ^ std::process::id() as u64)
 }
 
 fn rand_u64() -> u64 {
@@ -469,7 +555,7 @@ pub fn install(client: &Client, source: &Source, detail: &ModeDetail) -> anyhow:
         Source::Id(_) => None,
     };
     let script = entry.source()?;
-    Origin { id: detail.id.clone(), code, version: version.number, own: false, script_sha256: script_sha256(&script), pinned: false }.save(&entry)?;
+    Origin { id: detail.id.clone(), code, version: version.number, own: false, script_sha256: script_sha256(&script), pinned: false, vote: 0 }.save(&entry)?;
     Ok(imported)
 }
 
@@ -517,7 +603,7 @@ pub fn publish(
     };
     let script = entry.source()?;
     let version = detail.latest().map_or(1, |v| v.number);
-    Origin { id: detail.id.clone(), code: None, version, own: true, script_sha256: script_sha256(&script), pinned: false }.save(&entry)?;
+    Origin { id: detail.id.clone(), code: None, version, own: true, script_sha256: script_sha256(&script), pinned: false, vote: 0 }.save(&entry)?;
     Ok(detail)
 }
 
@@ -573,11 +659,14 @@ mod tests {
         let usage = Usage::of(&entry);
         Usage { remind_at_secs: usage.played_secs + SUGGEST_AFTER_SECS, ..usage }.save(&entry);
         assert!(!Usage::of(&entry).suggest());
-        // A mode from the community is not counted.
-        Origin { id: "x".into(), code: None, version: 1, own: false, script_sha256: String::new(), pinned: false }.save(&entry).unwrap();
-        let before = Usage::of(&entry).played_secs;
-        record_play(&mode, 600.0);
-        assert_eq!(Usage::of(&entry).played_secs, before);
+        // A mode from the community counts in play reports, the player's own does not.
+        let mut report = PlayReport::default();
+        report.add(&mode, 60.0, true);
+        assert!(report.pending.is_empty());
+        Origin { id: "x".into(), code: None, version: 1, own: false, script_sha256: String::new(), pinned: false, vote: 0 }.save(&entry).unwrap();
+        report.add(&mode, 60.0, true);
+        report.add(&mode, 30.0, false);
+        assert_eq!(report.pending["x"], (90.0, 1));
         let _ = fs::remove_dir_all(root);
     }
 

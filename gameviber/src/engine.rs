@@ -33,6 +33,8 @@ use crate::rumble::RumbleState;
 use crate::session::{self, Player, Recorder, RecordingInfo, Senses};
 pub use crate::source::SourceHealth;
 use crate::source::{ActiveSource, EventSender, SourceEvent, SourceKind, SourceOptions, Sources};
+/// Play with a mode in one go that counts as a session of it (community stats).
+const SESSION_SECS: f64 = 120.0;
 
 const TICK: Duration = Duration::from_millis(20);
 /// How often user mode files are checked for changes.
@@ -76,6 +78,8 @@ pub enum Command {
     SetLanguage(String),
     /// The community server's address.
     SetCommunityUrl(String),
+    /// Play time with the modes installed from the community and votes are sent to it.
+    SetShareStats(bool),
     /// Deletes a user mode; the default mode takes over if it was active.
     DeleteMode(String),
     SetParam(String, ParamValue),
@@ -402,8 +406,12 @@ struct Engine {
     external: ExternalInputs,
     shortcuts: Option<Shortcuts>,
     ticks: u64,
-    /// Seconds a game ran with the active mode, not yet counted (`community::record_play`).
+    /// Seconds a game ran with the active mode, not yet counted (`community::record_play`)...
     played: f64,
+    /// ...how long it has run with it in one go, and whether that made a session (2 minutes)...
+    session: (String, f64, bool),
+    /// ...and what is sent to the community when the player shares their stats.
+    plays: crate::community::PlayReport,
 }
 
 type PhaseTexts = (Sense, Vec<(String, String)>, Result<Vec<Embedding>, String>);
@@ -422,6 +430,10 @@ async fn run_async(
     mut commands: mpsc::UnboundedReceiver<Command>,
 ) -> anyhow::Result<()> {
     let mut settings = Settings::load();
+    if settings.installation_id.is_empty() {
+        settings.installation_id = crate::community::new_installation_id();
+        settings.save();
+    }
     let shortcuts = settings.keyboard_shortcuts.then(Shortcuts::start);
     if let Some(url) = &opts.url {
         settings.url = url.clone();
@@ -495,6 +507,8 @@ async fn run_async(
         shortcuts,
         ticks: 0,
         played: 0.0,
+        session: (String::new(), 0.0, false),
+        plays: Default::default(),
     };
     engine.apply_combos();
     engine.start_source();
@@ -674,6 +688,11 @@ impl Engine {
             Command::SetLanguage(language) => {
                 let language = language.trim();
                 self.settings.language = if language.is_empty() { config::DEFAULT_LANGUAGE.into() } else { language.into() };
+                self.settings.save();
+            }
+            Command::SetShareStats(on) => {
+                log::info!("community stats shared: {on}");
+                self.settings.share_stats = Some(on);
                 self.settings.save();
             }
             Command::SetCommunityUrl(url) => {
@@ -1194,12 +1213,23 @@ impl Engine {
         let time = self.time();
         self.check_reload();
         self.retry_source();
-        // Play time with the active mode, counted a minute at a time.
+        // Play time with the active mode, counted a minute at a time; a session is 2 minutes in one go.
+        let active = self.mode.as_ref().map(|m| m.entry.id.clone()).unwrap_or_default();
+        if self.running.is_none() || self.session.0 != active {
+            self.session = (active.clone(), 0.0, false);
+        }
         if self.running.is_some() {
             self.played += dt;
-            if self.played >= 60.0 {
-                if let Some(active) = &self.mode {
-                    crate::community::record_play(&active.entry.id, self.played);
+            self.session.1 += dt;
+            let session = self.session.1 >= SESSION_SECS && !self.session.2;
+            if session {
+                self.session.2 = true;
+            }
+            if self.played >= 60.0 || session {
+                crate::community::record_play(&active, self.played);
+                if self.settings.share_stats == Some(true) {
+                    self.plays.add(&active, self.played, session);
+                    let _ = self.plays.send(&self.settings.community_url, &self.settings.installation_id, false);
                 }
                 self.played = 0.0;
             }
@@ -1830,6 +1860,15 @@ impl Engine {
 
     async fn shutdown(mut self) {
         log::info!("shutting down");
+        // The play time gathered since the last report.
+        if self.settings.share_stats == Some(true) {
+            if let Some(active) = self.mode.as_ref().map(|m| m.entry.id.clone()) {
+                self.plays.add(&active, self.played, false);
+            }
+            if let Some(sending) = self.plays.send(&self.settings.community_url, &self.settings.installation_id, true) {
+                let _ = tokio::task::spawn_blocking(move || sending.join()).await;
+            }
+        }
         self.stop_recording();
         if self.mark_save.take().is_some() {
             self.save_recent();

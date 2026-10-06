@@ -69,6 +69,13 @@ impl App {
                         self.send(Command::SetCommunityUrl(url));
                         self.settings.community_url = None;
                     }
+                    ui.add_space(6.0);
+                    let mut share = s.settings.share_stats == Some(true);
+                    let hint = "How long you play the modes you installed from the community, and your votes, under an id made \
+                                up for this installation: never your name, your games' image or sound, your toys";
+                    if ui.checkbox(&mut share, "Share my stats: they rank modes by how much players keep playing them").on_hover_text(hint).changed() {
+                        self.send(Command::SetShareStats(share));
+                    }
                 });
                 ui.add_space(8.0);
                 card(PANEL).inner_margin(Margin::same(16)).show(ui, |ui| {
