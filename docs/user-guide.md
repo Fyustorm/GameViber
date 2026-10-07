@@ -11,15 +11,15 @@ intensity and **STOP ALL**.
 
 | Page | What it is for |
 |---|---|
-| **Community** | Where GameViber opens: type the game you play (it searches as you type), and install a mode other players made for it in a click (the best rated first), open one shared with you by its code, report one that a game update broke. No mode for your game yet? **Create a mode for it**: an AI assistant writes it, then share it from its Sharing tab. A game's page shows its community modes too, and the library tells when the game you play has some and you have no mode of your own. |
-| **Games** | Your games, added by name. Each game has its **Modes** and its recorded **Sessions**; each mode has its page, in tabs: **Overview** (what it does, its variants, presets and settings), **Inputs** (what GameViber reads from the game for it, see below) and **Sharing**. A game linked to its executable becomes the game being played by itself, and so does a game Steam starts once GameViber saw its Steam app id. |
+| **Community** | Where GameViber opens: type the game you play (it searches as you type), and install a mode other players made for it in a click (the best rated first), open one shared with you by its code, report one that a game update broke. No mode for your game yet? **Create a mode for it**: an AI assistant writes it, then share it from its page. Creating a mode for a game shows its community modes too, and the library tells when the game you play has some and you have no mode of your own. |
+| **Library** | Your modes, by game, and the built-in ones (**Any game**). **Create a mode** asks for its game, then opens the Creator. Opening a mode plays it and shows its page: its settings, what it reads, sharing it, and its **game** (how GameViber recognizes it, which sound it listens to). A game linked to its executable becomes the game being played by itself, and so does a game Steam starts once GameViber saw its Steam app id. |
 | **Live** | What happens while you play, to keep on a second screen: the mode and its main settings, what goes to the toys, the phase, the sound, the gamepad. |
 | **Toys** | The connection to Intiface Central, the toys it found, a test buzz, and how each toy plays: which mode channels, weakest and strongest intensity, response curve. |
 | **Setup** | What does not depend on the game: the gamepad and how it is captured, the shortcuts (panic stop, mark a moment, capture the screen) on the gamepad or the keyboard, the in-game overlay, the sound listened to by default, other programs. |
 | **Settings** | The language AI assistants answer in, the requests sent to them (editable). |
-| **Creator** | Writing modes by hand: hot reload, graphs, a simulator, replay of recorded sessions, the log. |
+| **Creator** | The workspace of the mode being played, in tabs to visit in any order: **Phases**, **Captures & indicators**, **Other programs** (see A mode's inputs), its **Script** (asked of an AI assistant, started from a built-in mode, or written by hand, with hot reload), **Sessions** (recorded sessions to replay, and a simulator to try the mode without the game) and **Logs**. The mode runs while you edit it: every change can be felt at once, and **Live ›** shows what it does; **? How a mode works** shows how the parts fit. |
 
-A mode's own page (its **Overview** tab) shows its explanation, its main
+A mode's own page shows its explanation, its main
 settings, all its settings and named **presets**, and its **variants**: other scripts of the same mode
 (a "boss only" version, a calmer one), reading the same inputs, each with its
 own settings and presets. **+ Variant** copies the script played now, to change
@@ -27,17 +27,25 @@ in Creator; a variant is shared with its mode.
 
 ## A mode for your game
 
-The best experience is a mode written for the game you play. In a game's
-**Modes**, **New mode** guides you through getting one from any AI assistant:
+The best experience is a mode written for the game you play. In the
+**Library**, **Create a mode**:
 
-1. Type the game's name, and pick **Quick** (a couple of minutes) or
-   **Advanced** (the assistant may also use the active mode's inputs, and ask
-   you to draw indicators).
-2. Copy the request GameViber builds and paste it into a new conversation. An
-   assistant with web search can check the game's default controls.
-3. Paste the answer back (or just its code, or drop the `.luau` file on the
-   window). GameViber checks that the mode loads and activates it. If it does
-   not load, copy the fix request and send it back to the assistant.
+1. Type the game's name (the game running is filled in). The page shows how a
+   mode works: what it reads, the phases, the script, your toys.
+2. **Open the Creator**. Name the game's phases first if you like (**Phases**):
+   the request then gives each its own feel.
+3. In **Script**, **Ask an AI assistant**: copy the request GameViber builds
+   and paste it into a new conversation. An assistant with web search can
+   check the game's default controls. Indicators or values from other
+   programs make it an advanced request, which uses them.
+4. Paste the answer back (or just its code, or drop the `.luau` file on the
+   window) and **Use this script**. GameViber checks that it loads first; if it
+   does not, copy the fix request and send it back to the assistant.
+
+There is no fixed order: the mode runs while you make it, so play, feel,
+change the phases or the script, and play again. **Start from a built-in
+mode** instead copies one made for a genre, and **Write it yourself** opens the
+script.
 
 ### When it does not feel right
 
@@ -60,7 +68,7 @@ tuned copy of a built-in one.
 ### Sharing a mode
 
 A mode written for a game reads the phases and indicators set up for it, so it
-is shared with them. **Export**, in a mode's **Sharing** tab, saves it in a `.gameviber` file
+is shared with them. **Export**, on a mode's page, saves it in a `.gameviber` file
 with its inputs (phases, indicators, captures filed under a phase, captures to
 sort stay home; external inputs) and the game's name and executables. Captures
 are images of your screen: look at them before sharing the file.
@@ -72,17 +80,16 @@ only drive your toys, never reach your files or the network.
 
 ### Publishing a mode
 
-In a mode's **Sharing** tab, **In the community**: pick a name players see
+On a mode's page, **In the community**: pick a name players see
 and a password (there is no email yet: a lost password cannot be recovered),
 then publish it for the people you give its code to (testers, first) or for
 everyone. Look at the captures it sends, and leave out those showing your name,
 a chat or a notification. Modes are published under the MIT license. Once
-published, the same tab gives its tester code (and a new one, the old one then
+published, the same place gives its tester code (and a new one, the old one then
 stops working), lists it for everyone or makes it private again, publishes its
 next version with a word on what changed, or withdraws it.
 
-A mode installed from the community offers its updates (in the game's modes
-and its Sharing tab), unless you keep its version. If you changed it, the
+A mode installed from the community offers its updates (on its page), unless you keep its version. If you changed it, the
 update installs beside your version, which stays as it is. After a few hours
 of play with a mode of your own that you did not change, GameViber suggests
 publishing it (never while you play; **Later**, or **Don't ask for this mode**).
@@ -96,17 +103,17 @@ this installation. Never your name, your games' image or sound, your toys or
 how they ran, and nothing linked to your author account. A game's modes
 come the best rated first (a few votes counting little, then the most played),
 each with its share of likes, its players and its median play time. Once you played a mode you installed, say whether you liked it on its
-page or in its Sharing tab. Change your mind in **Settings › Community**.
+page. Change your mind in **Settings › Community**.
 
 ## A mode's inputs
 
 The rumble and the buttons do not say whether you are fighting, exploring or
 watching a cutscene; the music and the screen usually do. GameViber reads the
-rumble, the gamepad, the sound and the image by itself; a mode's **Inputs**
-teach it more about the game, step by step, for the mode being played: each
-mode of yours keeps its own (a new mode made from the game's page starts with
-those of the active mode), and shares them with the mode. Built-in modes read
-none: duplicate one to set some up.
+rumble, the gamepad, the sound and the image by itself; the Creator's tabs
+teach it more about the game, for the mode being played: each mode of yours
+keeps its own (a new mode for a game starts with those of the game's active
+mode), and shares them with the mode. Built-in modes read none: duplicate one
+to set some up.
 
 - **Phases**: name the parts of the game that should not feel the same
   (battle, exploration, story, menu), and describe how each sounds if the music
@@ -129,7 +136,8 @@ none: duplicate one to set some up.
   (not its icon), take its look on a capture where it is full, then add its
   empty look from captures where it is low.
 - **Sound**: which application to listen to (by default, the game showing the
-  overlay, otherwise everything the computer plays).
+  overlay, otherwise everything the computer plays), shared by the game's
+  modes.
 - **External inputs**: a mod of the game, or a script reading its
   API, can send values to GameViber (`{"set": {"hp": 0.4}}`,
   `{"event": "kill"}`) on `ws://127.0.0.1:12350`. Declare what it sends so AI

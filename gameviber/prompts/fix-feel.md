@@ -49,9 +49,9 @@ Mode **{{NAME}}**, with the player's current settings:
    the existing parameters' names and types where you can, and bump `version`. A phase
    that is often wrong is usually fixed by rewording it as sound only heard there (or as
    what only shows on screen there), or by merging phases neither tells apart; when the
-   player set up the phases, tell them what to change in the mode's Inputs (a sound
+   player set up the phases, tell them what to change in GameViber's Creator (a sound
    description, more captures). An indicator that is missing or misplaced is fixed by the
-   player in the mode's Inputs: say which.
+   player in GameViber's Creator: say which.
 3. Give a short **tuning guide**: which parameters to adjust first if it still feels off.
 
 <!-- full -->

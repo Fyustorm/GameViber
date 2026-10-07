@@ -6,7 +6,7 @@
 use eframe::egui::{self, Margin, RichText, Vec2};
 
 use super::theme::*;
-use super::{gamepad_inputs, App, GameView, Page, Route};
+use super::{gamepad_inputs, App, Page, Route};
 use crate::engine::{Command, Shared, HISTORY_SECS};
 use crate::gamepad::combo_text;
 use crate::mode::{ParamDef, IndicatorValue};
@@ -26,14 +26,15 @@ impl App {
                     heading(ui, "Live");
                     let game = s.game.as_ref().map_or("No game".to_owned(), |g| g.name.clone());
                     ui.label(muted(format!("· {game}")).size(16.0));
-                    // Straight to the game's pages.
-                    if let Some(game) = &s.game {
+                    // Straight to the mode's pages.
+                    if !s.mode.id.is_empty() {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            for (label, view) in [("Captures and indicators ›", GameView::Screen), ("Inputs ›", GameView::Inputs), ("Game ›", GameView::Modes)] {
-                                if ui.button(label).clicked() {
-                                    self.page = Page::Games;
-                                    self.route = Route::Game { id: game.id.clone(), view };
-                                }
+                            if ui.button("In the Creator ›").clicked() {
+                                self.page = Page::Creator;
+                            }
+                            if ui.button("Its page ›").clicked() {
+                                self.page = Page::Library;
+                                self.route = Route::Mode;
                             }
                         });
                     }
@@ -113,17 +114,13 @@ impl App {
             }
             ui.add_space(4.0);
             ui.horizontal_wrapped(|ui| {
-                let page = match &s.game {
-                    Some(game) => Route::Game { id: game.id.clone(), view: GameView::Mode },
-                    None => Route::FreeMode,
-                };
                 if ui.button("All settings ›").clicked() {
-                    self.page = Page::Games;
-                    self.route = page.clone();
+                    self.page = Page::Library;
+                    self.route = Route::Mode;
                 }
                 if ui.add(primary("Doesn't feel right?")).on_hover_text("Get the mode fixed by an AI assistant").clicked() {
-                    self.page = Page::Games;
-                    self.route = page;
+                    self.page = Page::Library;
+                    self.route = Route::Mode;
                     self.open_feedback(s);
                 }
             });
@@ -209,7 +206,7 @@ fn inputs_card(ui: &mut egui::Ui, s: &Shared) {
         // The phase, and how likely each is.
         match &s.phases.phase {
             Some(phase) => ui.label(RichText::new(phase).size(22.0).strong().color(ACCENT_TEXT)),
-            None if s.phases.phases.is_empty() => ui.label(muted("No phases: name them in the mode's Inputs.")),
+            None if s.phases.phases.is_empty() => ui.label(muted("No phases: name them in the Creator.")),
             None => ui.label(RichText::new("No phase yet").size(18.0).color(MUTED)),
         };
         for (name, p) in &s.phases.phases {

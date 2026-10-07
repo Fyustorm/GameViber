@@ -1,6 +1,6 @@
 //! Setup › Sound: which sound GameViber listens to by default (a game can
 //! pick its own in its Inputs), what it hears right now, and the sound phase
-//! model. The model and phase cards are shared with a mode's Inputs.
+//! model. The model and phase cards are shared with the Creator's Phases tab.
 
 use eframe::egui::{self, Margin, RichText};
 

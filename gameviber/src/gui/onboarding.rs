@@ -98,7 +98,7 @@ impl App {
 
     fn finish_setup(&mut self) {
         self.onboarding = None;
-        self.page = Page::Games;
+        self.page = Page::Library;
         self.send(Command::SetOnboarded(true));
     }
 
@@ -267,7 +267,8 @@ impl App {
             ui.label(muted("GameViber prepares the request; you paste the answer back. It takes a minute."));
             ui.add_space(8.0);
             if ui.add(primary("  Make a mode for my game  ").min_size(Vec2::new(0.0, 38.0))).clicked() {
-                self.open_generator();
+                self.finish_setup();
+                self.open_create(None);
             }
         });
         if s.modes.iter().any(|e| !e.builtin) {
@@ -285,7 +286,7 @@ impl App {
             .show(ui, |ui| {
                 ui.label(muted(
                     "These modes suit a whole genre but know nothing about your game. Good for a first test; \
-                     make a mode for your game afterwards from the Play page.",
+                     make a mode for your game afterwards from the Library.",
                 ));
                 ui.add_space(6.0);
                 if let Some(id) = mode_tiles(ui, s, false) {

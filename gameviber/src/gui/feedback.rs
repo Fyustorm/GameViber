@@ -476,11 +476,12 @@ impl App {
             None => {
                 *f = State { game: std::mem::take(&mut f.game), short: f.short, ..State::default() };
                 // The history follows the tuned copy.
-                if let Some(copy) = self.create_mode(&format!("{}-tuned", entry.key), &script, Some(&entry.id)) {
+                let game = s.game.as_ref().filter(|g| g.modes.contains(&entry.id)).map(|g| g.id.clone());
+                if let Some(copy) = self.create_mode(&format!("{}-tuned", entry.key), &script, Some(&entry.id), game.as_deref()) {
                     copy.save_feedback(&history);
                 }
                 // The mode's page, within its game.
-                self.page = Page::Games;
+                self.page = Page::Library;
             }
         }
     }

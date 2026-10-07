@@ -138,7 +138,7 @@ pub struct ModeInfo {
     pub phase_window: f64,
 }
 
-/// What an indicator of the game's screen reads, set up in a mode's Inputs
+/// What an indicator of the game's screen reads, set up in the Creator
 /// (§6.5); recorded `visible` and `bar` before the terms changed.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

@@ -1,14 +1,15 @@
-//! "A mode for this game" dialog, opened from a game's modes: builds a
-//! request for an AI assistant from the game's name (and, for an advanced
-//! mode, its inputs), copies it to the clipboard, then creates a mode from
-//! the answer pasted back (or a dropped .luau file), checking that it loads,
-//! and adds it to the game.
+//! The Creator's Script tab: the active mode's script, asked of an AI
+//! assistant (a request built from the game's name and what the mode reads,
+//! the answer pasted back or a .luau file dropped, checked before it replaces
+//! the script), started from a built-in mode, or written by hand.
 
-use eframe::egui::{self, RichText};
+use eframe::egui::{self, Margin, RichText};
 
+use super::creator::{is_draft, with_name, Way};
 use super::theme::*;
-use super::{App, GameView, Route};
-use crate::engine::Shared;
+use super::{App, Page, Route};
+use crate::config::{self, ModeEntry};
+use crate::engine::{Command, Shared};
 use crate::game::Game;
 use crate::mode::{prompt, ModeRuntime};
 
@@ -21,170 +22,207 @@ const ASSISTANTS: [(&str, &str); 4] = [
 
 #[derive(Default)]
 pub struct State {
-    pub open: bool,
-    game: String,
-    /// The game the mode is for, by id; None: a game typed in the dialog.
-    game_id: Option<String>,
-    depth: prompt::Depth,
-    /// Game name the request was copied for.
+    /// The mode the request was copied for.
     copied: Option<String>,
     answer: String,
     error: Option<String>,
     fix_copied: bool,
+    /// What the last script applied did.
+    note: Option<String>,
 }
 
 impl App {
-    pub(super) fn open_generator(&mut self) {
-        self.generator.open = true;
-    }
-
-    /// The dialog for a mode of `game`.
-    pub(super) fn open_generator_for(&mut self, game: &Game, depth: prompt::Depth) {
-        self.generator = State { open: true, game: game.name.clone(), game_id: Some(game.id.clone()), depth, ..State::default() };
-    }
-
-    pub(super) fn generator_ui(&mut self, ctx: &egui::Context, s: &Shared) {
-        if !self.generator.open {
+    pub(super) fn script_tab(&mut self, ui: &mut egui::Ui, s: &Shared, game: Option<&Game>) {
+        let entry = ModeEntry::from_id(&s.mode.id);
+        if entry.builtin {
+            self.script_editor(ui, s);
             return;
         }
-        self.take_dropped_file(ctx);
-        let mut create = false;
-        let modal = egui::Modal::new(egui::Id::new("mode-generator")).show(ctx, |ui| {
-            ui.set_width(560.0);
-            let g = &mut self.generator;
-            heading(ui, "A mode made for your game");
-            let for_game = g.game_id.as_ref().and_then(|id| s.games.iter().find(|game| game.id == *id));
-            ui.label(muted(
-                "Built-in modes are generic. An AI assistant can write a mode tailored to your game, \
-                 its controls and its mechanics in a minute. GameViber prepares the request; you paste \
-                 the answer back.",
-            ));
-            ui.add_space(12.0);
-
-            step(ui, 1, "Which game are you playing?");
-            match for_game {
-                Some(game) => {
-                    ui.label(RichText::new(&game.name).size(15.0));
-                }
-                None => {
-                    ui.add(egui::TextEdit::singleline(&mut g.game).hint_text("e.g. Hades II").desired_width(f32::INFINITY));
+        let draft = is_draft(&self.creator.editor.text);
+        let way = self.creator.way.unwrap_or(if draft { Way::Ai } else { Way::Write });
+        ui.horizontal(|ui| {
+            for (option, label) in [(Way::Ai, "✨ Ask an AI assistant"), (Way::BuiltIn, "Start from a built-in mode"), (Way::Write, "Write it yourself")] {
+                if ui.selectable_label(way == option, RichText::new(label).size(14.0)).clicked() {
+                    self.creator.way = Some(option);
                 }
             }
-            ui.add_space(10.0);
-
-            step(ui, 2, "Quick or advanced?");
-            ui.radio_value(&mut g.depth, prompt::Depth::Quick, "Quick (a couple of minutes)").on_hover_text(
-                "The rumble, the buttons, and the phases, impacts and intensity GameViber gets from the sound and image",
-            );
-            ui.radio_value(&mut g.depth, prompt::Depth::Advanced, "Advanced").on_hover_text(
-                "Also the raw sound and image, and the game's indicators, captures and values from other programs (its \
-                 Inputs)",
-            );
-            // The inputs of the active mode, when it is one of the game's: the new mode starts with them.
-            let inputs = for_game.filter(|game| game.modes.contains(&super::main_of(&s.mode.id))).and(s.mode_inputs.as_ref());
-            let described = for_game.zip(inputs).map(|(game, inputs)| (game.name.clone(), inputs.describe()));
-            match (&described, g.depth) {
-                (Some((game, text)), prompt::Depth::Advanced) if !text.is_empty() => {
-                    ui.label(muted(format!("The request includes the inputs set up for {game}.")).size(12.0));
-                }
-                (_, prompt::Depth::Advanced) => {
-                    ui.label(muted("No inputs set up yet: the assistant may ask you to draw indicators in the mode's Inputs.").size(12.0));
-                }
-                (Some((_, text)), prompt::Depth::Quick) if text.contains("input.phase") => {
-                    ui.label(muted("The request names the game's phases.").size(12.0));
-                }
-                _ => {}
+        });
+        if let Some(note) = &self.generator.note {
+            ui.label(RichText::new(note).color(OK));
+        }
+        ui.add_space(6.0);
+        match way {
+            Way::Ai => {
+                egui::ScrollArea::vertical().show(ui, |ui| self.ask_assistant(ui, s, game, draft));
             }
-            ui.add_space(10.0);
+            Way::BuiltIn => {
+                egui::ScrollArea::vertical().show(ui, |ui| self.builtin_script(ui, s, draft));
+            }
+            Way::Write => self.script_editor(ui, s),
+        }
+    }
 
-            step(ui, 3, "Send the request to an AI assistant");
+    /// The request to copy, the answer to paste back.
+    fn ask_assistant(&mut self, ui: &mut egui::Ui, s: &Shared, game: Option<&Game>, draft: bool) {
+        self.take_dropped_file(ui.ctx());
+        let Some(game) = game else {
+            ui.label(muted("The request names the mode's game: give it one on its page first."));
+            return;
+        };
+        let inputs = s.mode_inputs.as_ref();
+        // Indicators and values from other programs make an advanced request.
+        let depth = if inputs.is_some_and(|i| !i.zones.is_empty() || !i.external.is_empty()) { prompt::Depth::Advanced } else { prompt::Depth::Quick };
+        let phases: Vec<String> = inputs.iter().flat_map(|i| i.phases.iter().map(|p| p.name.clone())).collect();
+        let g = &mut self.generator;
+        card(PANEL).inner_margin(Margin::symmetric(18, 14)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            step(ui, 1, "Send the request to an AI assistant");
+            let what = match (phases.is_empty(), depth) {
+                (_, prompt::Depth::Advanced) => format!("For {}, with what the mode reads: its phases, indicators and values from other programs.", game.name),
+                (true, _) => format!("For {}. Name its phases first (Phases tab): the assistant then gives each its own feel.", game.name),
+                (false, _) => format!("For {}, with its phases {}.", game.name, phases.join(", ")),
+            };
+            ui.label(muted(what));
             ui.horizontal(|ui| {
-                let game = g.game.trim().to_owned();
-                if ui.add_enabled(!game.is_empty(), primary("📋 Copy the request")).clicked() {
-                    let described = described.as_ref().map(|(_, text)| text.as_str());
-                    let phases: Vec<String> = inputs.iter().flat_map(|i| i.phases.iter().map(|s| s.name.clone())).collect();
-                    let request = prompt::new_mode_prompt(&prompt::Templates::load(), &game, &s.settings.language, g.depth, described, &phases);
+                if ui.add(primary("📋 Copy the request")).clicked() {
+                    let described = inputs.map(|i| i.describe()).filter(|d| !d.is_empty());
+                    let request = prompt::new_mode_prompt(&prompt::Templates::load(), &game.name, &s.settings.language, depth, described.as_deref(), &phases);
                     ui.ctx().copy_text(request);
-                    g.copied = Some(game.clone());
+                    g.copied = Some(s.mode.id.clone());
                 }
-                if g.copied.as_deref() == Some(game.as_str()) {
+                if g.copied.as_deref() == Some(s.mode.id.as_str()) {
                     ui.label(RichText::new("✔ Copied").color(OK));
                 }
             });
-            ui.label(muted("Paste it in a new conversation with any assistant:"));
             ui.horizontal(|ui| {
+                ui.label(muted("Paste it in a new conversation:"));
                 for (name, url) in ASSISTANTS {
                     ui.hyperlink_to(format!("{name} ↗"), url);
                 }
             });
-            ui.label(
-                muted("Tip: enable web search if the assistant has it, so it checks the game's default controls.")
-                    .size(12.0),
-            );
-            ui.add_space(10.0);
-
-            step(ui, 4, "Paste the answer");
-            ui.label(muted("The whole answer or just the code. You can also drop a .luau file on this window."));
-            egui::ScrollArea::vertical().max_height(200.0).show(ui, |ui| {
-                let edit = egui::TextEdit::multiline(&mut g.answer)
-                    .code_editor()
-                    .hint_text("mode { api = 1, ... }")
-                    .desired_width(f32::INFINITY)
-                    .desired_rows(8);
+            ui.label(muted("Tip: turn web search on if the assistant has it, so it checks the game's controls.").size(12.0));
+        });
+        ui.add_space(10.0);
+        let mut apply = false;
+        card(PANEL).inner_margin(Margin::symmetric(18, 14)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            step(ui, 2, "Paste the answer");
+            ui.label(muted("The whole answer or just the code (Ctrl+V), or drop a .luau file on this window. It is checked before it is used."));
+            egui::ScrollArea::vertical().id_salt("answer").max_height(220.0).show(ui, |ui| {
+                let edit = egui::TextEdit::multiline(&mut g.answer).code_editor().hint_text("mode { api = 1, ... }").desired_width(f32::INFINITY).desired_rows(8);
                 if ui.add(edit).changed() {
                     g.error = None;
                 }
             });
             if let Some(error) = &g.error {
+                ui.label(RichText::new("Does not load yet").strong().color(DANGER_TEXT));
                 ui.label(RichText::new(error).color(DANGER_TEXT).monospace().size(12.0));
                 ui.horizontal(|ui| {
-                    if ui.button("📋 Copy a fix request").clicked() {
+                    if ui.add(primary("📋 Copy the fix request")).clicked() {
                         ui.ctx().copy_text(prompt::fix_prompt(error));
                         g.fix_copied = true;
                     }
-                    let note = if g.fix_copied { "✔ Copied: send it to the assistant, then paste its new answer." } else { "and send it to the assistant." };
+                    let note = if g.fix_copied { "✔ Copied: send it to the assistant, then paste its new answer." } else { "Assistants make such slips: send them this." };
                     ui.label(muted(note));
                 });
             }
-            ui.add_space(12.0);
+            ui.add_space(4.0);
             ui.horizontal(|ui| {
-                create = ui.add_enabled(!g.answer.trim().is_empty(), primary("Create the mode")).clicked();
-                if ui.button("Close").clicked() {
-                    g.open = false;
+                apply = ui.add_enabled(!g.answer.trim().is_empty(), primary("Use this script")).clicked();
+                if !draft {
+                    ui.label(muted("It replaces the current script, kept as a .bak copy.").size(12.0));
                 }
             });
         });
-        if modal.should_close() {
-            self.generator.open = false;
+        if !draft {
+            ui.add_space(6.0);
+            if ui.link("The mode works but does not feel right? Ask for a fix instead ›").clicked() {
+                self.page = Page::Library;
+                self.route = Route::Mode;
+                self.open_feedback(s);
+            }
         }
-        if create {
-            self.create_generated_mode();
+        if apply {
+            let script = prompt::extract_script(&self.generator.answer);
+            match ModeRuntime::probe("generated", &script) {
+                Ok(_) => {
+                    if self.replace_script(s, &script, draft) {
+                        self.generator.answer.clear();
+                        self.generator.note = Some("✔ The script loads and runs now: play to try it, or use the simulator (Sessions).".to_owned());
+                    }
+                }
+                Err(e) => {
+                    self.generator.error = Some(e);
+                    self.generator.fix_copied = false;
+                }
+            }
         }
     }
 
-    fn create_generated_mode(&mut self) {
-        let g = &mut self.generator;
-        let script = prompt::extract_script(&g.answer);
-        if let Err(e) = ModeRuntime::probe("generated", &script) {
-            g.error = Some(e);
-            g.fix_copied = false;
-            return;
+    /// The built-in modes, to start from one.
+    fn builtin_script(&mut self, ui: &mut egui::Ui, s: &Shared, draft: bool) {
+        ui.label(muted(if draft {
+            "Each one suits a genre. Its script becomes this mode's: tune it, or ask an assistant to adapt it later."
+        } else {
+            "Its script replaces this mode's, kept as a .bak copy."
+        }));
+        ui.add_space(6.0);
+        let mut chosen = None;
+        for entry in s.modes.iter().filter(|e| e.builtin) {
+            let Some(Ok(info)) = s.catalog.get(&entry.id) else { continue };
+            card(PANEL).inner_margin(Margin::symmetric(14, 10)).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(&info.name).strong().size(15.0));
+                            ui.label(muted(&info.category).size(12.0));
+                        });
+                        ui.label(muted(&info.description).size(12.5));
+                    });
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("Start from it").clicked() {
+                            chosen = Some(entry.clone());
+                        }
+                    });
+                });
+            });
         }
-        let stem = match prompt::file_stem(&g.game) {
-            stem if stem.is_empty() => "my-game".to_owned(),
-            stem => stem,
+        if let Some(builtin) = chosen {
+            match builtin.source() {
+                Ok(source) => {
+                    let name = s.mode.info.as_ref().map_or_else(|| ModeEntry::from_id(&s.mode.id).key, |i| i.name.clone());
+                    if self.replace_script(s, &with_name(&source, &name), draft) {
+                        self.generator.note = Some(format!("✔ Started from {}: tune it on its page or in Live.", builtin.key));
+                    }
+                }
+                Err(e) => log::error!("cannot read {}: {e}", builtin.id),
+            }
+        }
+    }
+
+    /// Writes `script` as the active mode's (keeping the previous one unless it
+    /// was the new mode's template), reloads it and shows it.
+    fn replace_script(&mut self, s: &Shared, script: &str, draft: bool) -> bool {
+        let entry = ModeEntry::from_id(&s.mode.id);
+        let Some(path) = entry.path() else { return false };
+        let backup = (!draft).then(|| path.with_extension("luau.bak"));
+        let written = match &backup {
+            Some(backup) => std::fs::copy(&path, backup).map(|_| ()).and_then(|_| config::write_file(&path, script)),
+            None => config::write_file(&path, script),
         };
-        let game = g.game_id.clone();
-        *g = State::default();
-        // Created from the game's page, the mode is added to the game.
-        if let Some(id) = &game {
-            self.route = Route::Game { id: id.clone(), view: GameView::Modes };
+        if let Err(e) = written {
+            self.generator.error = Some(format!("cannot save the mode: {e}"));
+            return false;
         }
-        self.create_mode(&stem, &script, None);
-        self.page = super::Page::Games;
-        if let Some(id) = game {
-            self.route = Route::Game { id, view: GameView::Mode };
-        }
+        log::info!("new script for {}", path.display());
+        self.generator.error = None;
+        // The editor reads it again.
+        self.creator.editor = Default::default();
+        self.creator.way = Some(super::creator::Way::Write);
+        self.send(Command::ReloadMode);
+        self.send(Command::RefreshModes);
+        true
     }
 
     /// Loads a .luau file dropped on the window into the answer field.
@@ -204,6 +242,6 @@ impl App {
 fn step(ui: &mut egui::Ui, n: usize, text: &str) {
     ui.horizontal(|ui| {
         ui.label(RichText::new(n.to_string()).strong().color(ACCENT));
-        ui.label(RichText::new(text).strong());
+        ui.label(RichText::new(text).strong().size(15.0));
     });
 }

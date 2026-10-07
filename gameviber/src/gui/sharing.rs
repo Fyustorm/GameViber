@@ -9,7 +9,7 @@ use std::sync::mpsc::{self, Receiver};
 use eframe::egui::{self, Margin, RichText};
 
 use super::theme::*;
-use super::{App, GameView};
+use super::{App, Route};
 use crate::config::ModeEntry;
 use crate::engine::{Command, Shared};
 use crate::game::Game;
@@ -57,7 +57,7 @@ impl App {
         });
     }
 
-    /// The active mode's Sharing tab: as a file now, in the community later.
+    /// The active mode's sharing: as a file, in the community.
     pub(super) fn mode_sharing(&mut self, ui: &mut egui::Ui, s: &Shared, game: &Game) {
         if ModeEntry::from_id(&s.mode.id).builtin {
             ui.label(muted("Built-in modes come with every GameViber: there is no need to share them."));
@@ -117,8 +117,9 @@ impl App {
                     Some((true, format!("Exported to {}: send this file to share the mode with its inputs.", path.display())))
                 }
                 Outcome::Imported(imported) => {
-                    // Opened once the engine lists it.
-                    self.games.open_when_listed(&imported.name, GameView::Modes);
+                    // Shown once the engine lists it.
+                    self.library.show_when_listed(&imported.name);
+                    self.route = Route::Library;
                     let what = match (imported.new_game, imported.mode_existed) {
                         (true, _) => format!("{} was added with its mode.", imported.name),
                         (false, false) => format!("The mode joined {}, with its inputs.", imported.name),

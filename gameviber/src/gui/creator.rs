@@ -1,5 +1,9 @@
-//! Creator page, for mode authors: mode files, the Luau editor with hot
-//! reload, and tools to watch and drive the mode (graphs, simulator, logs).
+//! Creator page: the active mode's workspace, in tabs that can be visited in
+//! any order — its phases, captures and indicators, values from other
+//! programs, its script (written by an AI assistant, started from a built-in
+//! mode, or by hand), sessions and a simulator to try it without the game,
+//! logs — and how a mode works one click away. What the mode does while
+//! playing is on the Live page.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -7,34 +11,63 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::text::LayoutJob;
 use eframe::egui::{self, Margin, RichText};
-use egui_plot::{Legend, Line, Plot, PlotPoints};
 
+use super::diagram::{mode_diagram, Part};
+use super::library::mode_game;
 use super::luau;
 use super::theme::*;
-use super::App;
+use super::{main_of, App, Page, Route};
 use crate::config::{self, ModeEntry, NEW_MODE_TEMPLATE};
-use crate::engine::{Command, Sample, Shared, HISTORY_SECS, RECENT_SECS};
+use crate::engine::{Command, Shared, RECENT_SECS};
 use crate::gamepad::BUTTONS;
 use crate::session::RecordingInfo;
 
 const SIM_HIT: Duration = Duration::from_millis(300);
+/// From this width the header's buttons sit on its first line, on the right.
+const WIDE_HEADER: f32 = 860.0;
 
+/// The Creator's tabs.
 #[derive(PartialEq, Clone, Copy, Default)]
-enum Tool {
+pub(super) enum Tab {
     #[default]
-    Graphs,
-    Simulator,
+    Phases,
+    /// Captures and indicators.
+    Screen,
+    /// Values from other programs.
+    Programs,
+    Script,
     Sessions,
-    Log,
+    Logs,
+}
+
+impl Tab {
+    /// Where the tab's part is in the diagram.
+    fn part(self) -> Option<Part> {
+        match self {
+            Tab::Phases => Some(Part::Phases),
+            Tab::Screen => Some(Part::Image),
+            Tab::Programs => Some(Part::Programs),
+            Tab::Script => Some(Part::Script),
+            Tab::Sessions | Tab::Logs => None,
+        }
+    }
+}
+
+/// How the script is got.
+#[derive(PartialEq, Clone, Copy)]
+pub(super) enum Way {
+    Ai,
+    BuiltIn,
+    Write,
 }
 
 #[derive(Default)]
-struct Editor {
+pub(super) struct Editor {
     /// Mode id the buffer was loaded from.
-    id: String,
-    text: String,
+    pub(super) id: String,
+    pub(super) text: String,
     dirty: bool,
-    message: Option<String>,
+    pub(super) message: Option<String>,
     /// Last highlighted text and error line, with its layout.
     highlighted: Option<(String, Option<usize>, LayoutJob)>,
     /// Line to scroll to on the next frame.
@@ -68,9 +101,12 @@ impl Simulator {
 
 #[derive(Default)]
 pub struct State {
-    tool: Tool,
-    editor: Editor,
-    new_mode_name: String,
+    pub(super) tab: Tab,
+    /// How a mode works, shown above the tab.
+    pub(super) help: bool,
+    /// How the script is got; None: as fits the script (an AI assistant for a new mode).
+    pub(super) way: Option<Way>,
+    pub(super) editor: Editor,
     pub sim: Simulator,
     only_mode_logs: bool,
     /// Replays drive the toys too.
@@ -81,82 +117,218 @@ pub struct State {
 
 impl State {
     pub fn show_sessions(&mut self) {
-        self.tool = Tool::Sessions;
+        self.tab = Tab::Sessions;
+    }
+
+    /// A mode just made: its phases first, its script asked of an AI assistant.
+    pub(super) fn open_new(&mut self) {
+        self.tab = Tab::Phases;
+        self.help = false;
+        self.way = None;
+    }
+
+    /// The tab shows the game's image (captures, phases recognized from it).
+    pub(super) fn watches_screen(&self) -> bool {
+        matches!(self.tab, Tab::Phases | Tab::Screen)
     }
 }
 
 impl App {
     pub(super) fn creator_ui(&mut self, ui: &mut egui::Ui, s: &Shared) {
-        let frame = egui::Frame::new().fill(SIDEBAR).inner_margin(Margin::symmetric(12, 16));
-        egui::Panel::left("mode-files").frame(frame).default_size(210.0).resizable(true).show(ui, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| self.mode_files(ui, s));
-        });
-        let frame = egui::Frame::new().fill(SIDEBAR).inner_margin(Margin::symmetric(14, 12));
-        egui::Panel::right("mode-tools").frame(frame).default_size(380.0).resizable(true).show(ui, |ui| {
-            ui.horizontal(|ui| {
-                for (tool, label) in
-                    [(Tool::Graphs, "Graphs"), (Tool::Simulator, "Simulator"), (Tool::Sessions, "Sessions"), (Tool::Log, "Log")]
-                {
-                    ui.selectable_value(&mut self.creator.tool, tool, label);
+        self.load_editor(s);
+        let frame = egui::Frame::new().fill(BG).inner_margin(Margin::symmetric(22, 14));
+        egui::CentralPanel::default().frame(frame).show(ui, |ui| {
+            self.creator_header(ui, s);
+            self.creator_tabs(ui, s);
+            if self.creator.help {
+                ui.add_space(8.0);
+                self.help_panel(ui);
+            }
+            ui.add_space(10.0);
+            let game = mode_game(s).cloned();
+            let tab = self.creator.tab;
+            match (tab, &game) {
+                (Tab::Sessions, _) => {
+                    egui::ScrollArea::vertical().show(ui, |ui| self.sessions(ui, s));
                 }
-            });
-            ui.separator();
-            match self.creator.tool {
-                Tool::Graphs => graphs(ui, s),
-                Tool::Simulator => self.simulator(ui),
-                Tool::Sessions => self.sessions(ui, s),
-                Tool::Log => self.log(ui),
+                (Tab::Logs, _) => self.log(ui),
+                (Tab::Script, _) => self.script_tab(ui, s, game.as_ref()),
+                (_, None) => self.no_game(ui, s),
+                (Tab::Screen, Some(game)) => self.screen_page(ui, s, game),
+                (Tab::Phases, Some(game)) => {
+                    egui::ScrollArea::vertical().show(ui, |ui| self.phases_tab(ui, s, game));
+                }
+                (Tab::Programs, Some(game)) => {
+                    egui::ScrollArea::vertical().show(ui, |ui| self.programs_tab(ui, s, game));
+                }
             }
         });
-        let frame = egui::Frame::new().fill(BG).inner_margin(Margin::symmetric(14, 12));
-        egui::CentralPanel::default().frame(frame).show(ui, |ui| self.editor(ui, s));
     }
 
-    fn mode_files(&mut self, ui: &mut egui::Ui, s: &Shared) {
-        eyebrow(ui, "My modes");
-        for entry in s.modes.iter().filter(|e| !e.builtin) {
-            if ui.selectable_label(entry.id == s.mode.id, &entry.key).clicked() && entry.id != s.mode.id {
-                self.send(Command::SelectMode(entry.id.clone()));
-            }
-        }
-        ui.horizontal(|ui| {
-            ui.add(egui::TextEdit::singleline(&mut self.creator.new_mode_name).hint_text("new mode").desired_width(110.0));
-            if ui.button("➕ New").clicked() {
-                let name = std::mem::take(&mut self.creator.new_mode_name);
-                let display = if name.trim().is_empty() { "My mode" } else { name.trim() };
-                self.create_mode(&name, &NEW_MODE_TEMPLATE.replace("NAME", display), None);
-            }
-        });
-        if ui.button("✨ Generate with an AI").clicked() {
-            self.open_generator();
-        }
-        if ui.button("Duplicate active mode").clicked() {
-            self.duplicate_mode(&s.mode.id);
-        }
-        if ui.button("😕 Active mode feels wrong").clicked() {
-            self.open_feedback(s);
-        }
-        ui.add_space(12.0);
-        eyebrow(ui, "Built-in (read-only)");
-        for entry in s.modes.iter().filter(|e| e.builtin) {
-            if ui.selectable_label(entry.id == s.mode.id, &entry.key).clicked() && entry.id != s.mode.id {
-                self.send(Command::SelectMode(entry.id.clone()));
-            }
-        }
-        ui.add_space(12.0);
-        ui.label(muted("Mode API: docs/spec-modes.md").size(12.0));
-    }
-
-    fn editor(&mut self, ui: &mut egui::Ui, s: &Shared) {
-        let mode = &s.mode;
+    /// The editor holds the active mode's script (unless changes to another wait).
+    fn load_editor(&mut self, s: &Shared) {
         let editor = &mut self.creator.editor;
-        if editor.id != mode.id && !editor.dirty {
-            *editor = Editor { id: mode.id.clone(), ..Default::default() };
-            match ModeEntry::from_id(&mode.id).source() {
+        if editor.id != s.mode.id && !editor.dirty {
+            *editor = Editor { id: s.mode.id.clone(), ..Default::default() };
+            match ModeEntry::from_id(&s.mode.id).source() {
                 Ok(text) => editor.text = text,
                 Err(e) => editor.message = Some(format!("cannot read: {e}")),
             }
         }
+    }
+
+    /// The mode's name, its game, the way to its page, other modes, the help.
+    fn creator_header(&mut self, ui: &mut egui::Ui, s: &Shared) {
+        let entry = ModeEntry::from_id(&s.mode.id);
+        let name = s.mode.info.as_ref().map_or_else(|| entry.key.clone(), |i| i.name.clone());
+        let wide = ui.available_width() >= WIDE_HEADER;
+        let draft = is_draft(&self.creator.editor.text);
+        let title = |ui: &mut egui::Ui| {
+            ui.label(RichText::new(&name).size(20.0).strong());
+            let game = mode_game(s).map_or_else(|| if entry.builtin { "any game".to_owned() } else { "no game".to_owned() }, |g| g.name.clone());
+            ui.label(muted(format!("for {game}")).size(14.0));
+            if entry.builtin {
+                pill(ui, "Built-in", TEXT, RAISED);
+            } else if draft {
+                pill(ui, "To write", ON_ACCENT, WARN);
+            }
+        };
+        let mut buttons = |ui: &mut egui::Ui| {
+                if ui.button("Live ›").on_hover_text("What the mode does while you play, its main settings").clicked() {
+                    self.page = Page::Live;
+                }
+                let help = egui::Button::new(RichText::new("?  How a mode works").color(if self.creator.help { ON_ACCENT } else { TEXT }))
+                    .fill(if self.creator.help { GAME } else { RAISED })
+                    .corner_radius(14);
+                if ui.add(help).clicked() {
+                    self.creator.help = !self.creator.help;
+                }
+                if ui.button("Its page ›").on_hover_text("Its settings, sharing it, its game").clicked() {
+                    self.page = Page::Library;
+                    self.route = Route::Mode;
+                }
+                egui::ComboBox::from_id_salt("creator-mode").selected_text("Another mode").width(150.0).show_ui(ui, |ui| {
+                    for entry in s.modes.iter().filter(|e| !e.builtin) {
+                        let name = s.catalog.get(&entry.id).and_then(|r| r.as_ref().ok()).map_or(entry.key.clone(), |i| i.name.clone());
+                        if ui.selectable_label(main_of(&s.mode.id) == entry.id, name).clicked() {
+                            if let Some(game) = s.games.iter().find(|g| g.modes.contains(&entry.id)) {
+                                if s.game.as_ref().is_none_or(|p| p.id != game.id) {
+                                    self.send(Command::SelectGame(Some(game.id.clone())));
+                                }
+                            }
+                            self.send(Command::SelectMode(entry.id.clone()));
+                        }
+                    }
+                    ui.separator();
+                    if ui.selectable_label(false, "+ Create a mode").clicked() {
+                        self.open_create(None);
+                    }
+                });
+        };
+        if wide {
+            ui.horizontal(|ui| {
+                title(ui);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| buttons(ui));
+            });
+        } else {
+            ui.horizontal_wrapped(title);
+            ui.horizontal_wrapped(|ui| ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| buttons(ui)));
+        }
+        if entry.builtin {
+            let mut duplicate = false;
+            card(PANEL).inner_margin(Margin::symmetric(14, 10)).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("Built-in modes read nothing set up for a game and cannot be changed.");
+                    duplicate = ui.button("Duplicate it to make your own").clicked();
+                    if ui.add(primary("+ Create a mode")).clicked() {
+                        self.open_create(None);
+                    }
+                });
+            });
+            if duplicate {
+                self.duplicate_mode(&s.mode.id);
+            }
+        }
+    }
+
+    fn creator_tabs(&mut self, ui: &mut egui::Ui, s: &Shared) {
+        let inputs = s.mode_inputs.as_ref();
+        let count = |n: usize, none: &str| if n == 0 { none.to_owned() } else { n.to_string() };
+        let phases = inputs.map_or(0, |i| i.phases.len());
+        let screen = inputs.map_or(0, |i| i.captures.len() + i.zones.len());
+        let programs = inputs.map_or(0, |i| i.external.len());
+        let script = if s.mode.error.is_some() || s.mode.info.is_none() {
+            ("does not load", DANGER_TEXT)
+        } else if is_draft(&self.creator.editor.text) {
+            ("to write", WARN)
+        } else {
+            ("loads", OK)
+        };
+        ui.add_space(8.0);
+        ui.horizontal_wrapped(|ui| {
+            let mut tab = |ui: &mut egui::Ui, tab: Tab, label: &str, state: String, color: egui::Color32| {
+                let selected = self.creator.tab == tab;
+                let mut job = LayoutJob::default();
+                let strong = egui::TextFormat { font_id: egui::FontId::proportional(15.0), color: if selected { TEXT } else { MUTED }, ..Default::default() };
+                job.append(label, 0.0, strong);
+                if !state.is_empty() {
+                    let color = if selected { TEXT } else { color };
+                    job.append(&format!(" · {state}"), 0.0, egui::TextFormat { font_id: egui::FontId::proportional(12.5), color, ..Default::default() });
+                }
+                if ui.selectable_label(selected, job).clicked() {
+                    self.creator.tab = tab;
+                }
+            };
+            tab(ui, Tab::Phases, "Phases", count(phases, "recommended"), if phases > 0 { OK } else { GAME });
+            tab(ui, Tab::Screen, "Captures & indicators", count(screen, "optional"), MUTED);
+            tab(ui, Tab::Programs, "Other programs", count(programs, "optional"), MUTED);
+            tab(ui, Tab::Script, "Script", script.0.to_owned(), script.1);
+            ui.label(muted("|"));
+            tab(ui, Tab::Sessions, "Sessions", String::new(), MUTED);
+            tab(ui, Tab::Logs, "Logs", String::new(), MUTED);
+        });
+        ui.separator();
+    }
+
+    /// How a mode works, the tab open outlined.
+    fn help_panel(&mut self, ui: &mut egui::Ui) {
+        card(SIDEBAR).inner_margin(Margin::symmetric(16, 12)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("How a mode works").strong().size(15.0));
+                ui.label(muted("No fixed order: play, feel, change anything, play again."));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("Hide").clicked() {
+                        self.creator.help = false;
+                    }
+                });
+            });
+            ui.add_space(4.0);
+            mode_diagram(ui, self.creator.tab.part());
+        });
+    }
+
+    /// The mode's inputs need its game.
+    fn no_game(&mut self, ui: &mut egui::Ui, s: &Shared) {
+        card(PANEL).inner_margin(Margin::symmetric(18, 14)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            if ModeEntry::from_id(&s.mode.id).builtin {
+                ui.label("Built-in modes read no inputs set up for a game: duplicate it, or create a mode for your game.");
+                return;
+            }
+            ui.label("What a mode reads belongs to a game: give this mode one on its page.");
+            if ui.button("Its page ›").clicked() {
+                self.page = Page::Library;
+                self.route = Route::Mode;
+            }
+        });
+    }
+
+    /// The script, to read or write by hand.
+    pub(super) fn script_editor(&mut self, ui: &mut egui::Ui, s: &Shared) {
+        let mode = &s.mode;
+        let editor = &mut self.creator.editor;
         let editing = ModeEntry::from_id(&editor.id);
         let save = ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::S));
         let mut duplicate = false;
@@ -166,6 +338,8 @@ impl App {
             // A full path would widen the page past the tools panel.
             let name = if editing.builtin { editing.id.clone() } else { editing.chunk_name() };
             ui.add(egui::Label::new(RichText::new(name).monospace()).truncate()).on_hover_text(&editing.id);
+            let spec = format!("https://github.com/{}/blob/main/docs/spec-modes.md", crate::update::REPOSITORY);
+            ui.hyperlink_to(muted("Mode API ↗").size(12.0), spec);
             if editing.builtin {
                 ui.label(muted("built-in modes are read-only"));
                 duplicate = ui.button("Duplicate to edit").clicked();
@@ -220,18 +394,18 @@ impl App {
             self.send(Command::RefreshModes);
         }
         if duplicate {
-            let source = self.creator.editor.text.clone();
-            self.create_mode(&format!("{}-copy", editing.key), &source, Some(&editing.id));
+            self.duplicate_mode(&editing.id);
         }
     }
 
     fn simulator(&mut self, ui: &mut egui::Ui) {
         let sim = &mut self.creator.sim;
-        ui.label(muted("Fake game rumble and button presses, to test modes without a game."));
+        ui.label(muted("Fake game rumble and button presses.").size(12.5));
+        ui.spacing_mut().slider_width = 260.0;
         ui.add(egui::Slider::new(&mut sim.strong, 0.0..=1.0).text("strong motor"));
         ui.add(egui::Slider::new(&mut sim.weak, 0.0..=1.0).text("weak motor"));
         ui.horizontal(|ui| {
-            if ui.button("Hit (0.3 s at full strength)").clicked() {
+            if ui.button("Hit").on_hover_text("0.3 s at full strength").clicked() {
                 sim.hit_until = Some(Instant::now() + SIM_HIT);
             }
             if ui.button("Reset").clicked() {
@@ -239,8 +413,7 @@ impl App {
                 sim.weak = 0.0;
             }
         });
-        ui.separator();
-        ui.label("Buttons (hold with the mouse):");
+        ui.label(muted("Buttons (hold with the mouse):").size(12.5));
         let mut changes = Vec::new();
         ui.horizontal_wrapped(|ui| {
             for name in BUTTONS {
@@ -262,6 +435,12 @@ impl App {
 
     /// Recording real play sessions and replaying them into the mode.
     fn sessions(&mut self, ui: &mut egui::Ui, s: &Shared) {
+        card(PANEL).inner_margin(Margin::symmetric(16, 12)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(RichText::new("Without the game").strong().size(15.0));
+            self.simulator(ui);
+        });
+        ui.add_space(10.0);
         ui.label(muted(
             "Record the game's rumble and your buttons while you play, then replay them here to tune the mode \
              on a real fight without playing it again.",
@@ -431,48 +610,15 @@ fn clock(secs: f64) -> String {
     format!("{}:{:02}", secs / 60, secs % 60)
 }
 
-fn graphs(ui: &mut egui::Ui, s: &Shared) {
-    let series = |f: &dyn Fn(&Sample) -> Option<f64>| -> PlotPoints<'static> {
-        s.history.iter().filter_map(|x| f(x).map(|v| [x.t - s.time, v])).collect::<Vec<_>>().into()
-    };
-    let channels: BTreeSet<String> = s.history.iter().flat_map(|x| x.channels.keys().cloned()).collect();
-    ui.label(muted(format!("Game rumble and mode output (last {HISTORY_SECS:.0} s)")));
-    Plot::new("rumble")
-        .height(200.0)
-        .legend(Legend::default())
-        .include_x(-HISTORY_SECS)
-        .include_x(0.0)
-        .include_y(0.0)
-        .include_y(1.0)
-        .allow_drag(false)
-        .allow_zoom(false)
-        .allow_scroll(false)
-        .show(ui, |plot| {
-            plot.line(Line::new("rumble strong", series(&|x| Some(x.strong))).color(GAME));
-            plot.line(Line::new("rumble weak", series(&|x| Some(x.weak))).color(GAME.gamma_multiply(0.5)));
-            for channel in &channels {
-                plot.line(Line::new(format!("out: {channel}"), series(&|x| x.channels.get(channel).copied())).width(2.0));
-            }
-        });
-    if !s.plots.is_empty() {
-        ui.label(muted("Mode plot() values"));
-        Plot::new("plots")
-            .height(180.0)
-            .legend(Legend::default())
-            .include_x(-HISTORY_SECS)
-            .include_x(0.0)
-            .allow_drag(false)
-            .allow_zoom(false)
-            .allow_scroll(false)
-            .show(ui, |plot| {
-                for (name, points) in &s.plots {
-                    let points: Vec<[f64; 2]> = points.iter().map(|p| [p[0] - s.time, p[1]]).collect();
-                    plot.line(Line::new(name.clone(), PlotPoints::from(points)));
-                }
-            });
-    }
-    ui.horizontal(|ui| {
-        ui.label(muted("Held buttons:"));
-        ui.label(if s.held.is_empty() { "-".into() } else { s.held.join(" ") });
-    });
+/// `source` with the mode named `name`.
+pub(super) fn with_name(source: &str, name: &str) -> String {
+    const KEY: &str = "name = \"";
+    let Some(start) = source.find(KEY).map(|i| i + KEY.len()) else { return source.to_owned() };
+    let Some(len) = source[start..].find('"') else { return source.to_owned() };
+    format!("{}{}{}", &source[..start], name.replace('"', "'"), &source[start + len..])
+}
+
+/// The script is still the one a new mode starts with.
+pub(super) fn is_draft(source: &str) -> bool {
+    with_name(source, "NAME").trim() == NEW_MODE_TEMPLATE.trim()
 }

@@ -1,7 +1,7 @@
 //! The community (`crate::community`): the Community page (games, their
 //! modes, a mode's page to install or update it, a mode by its share code),
-//! what a game's page and the library say of it, and publishing a mode from
-//! its Sharing tab. Calls to the server run in threads (`Remote`).
+//! what the Create page and the library say of it, and publishing a mode from
+//! its page. Calls to the server run in threads (`Remote`).
 
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{self, Receiver};
@@ -9,7 +9,7 @@ use std::sync::mpsc::{self, Receiver};
 use eframe::egui::{self, Margin, RichText, Vec2};
 
 use super::theme::*;
-use super::{App, GameView as View, Page, Route};
+use super::{App, Page, Route};
 use crate::community::{self, Account, Client, GameView, ModeDetail, ModeSummary, Origin, Source, Usage};
 use crate::config::ModeEntry;
 use crate::engine::{Command, Shared};
@@ -93,8 +93,6 @@ pub struct State {
     /// What the games shown were searched with.
     searched: String,
     games: Remote<Vec<GameView>>,
-    /// A game added to the library to make a mode for: the AI request opens once it is there.
-    making_for: Option<String>,
     /// The game whose modes are shown.
     game: Option<GameView>,
     /// When the search was last typed in, to search once typing stops.
@@ -220,7 +218,7 @@ impl App {
     }
 
     /// The origin of the user mode `id` (or of the mode it is a variant of).
-    fn origin_of(&self, id: &str) -> Option<&Origin> {
+    pub(super) fn origin_of(&self, id: &str) -> Option<&Origin> {
         let main = ModeEntry::from_id(id).main_id();
         self.community.installed.values().find(|(local, _)| *local == main).map(|(_, o)| o)
     }
@@ -246,7 +244,6 @@ impl App {
 
     pub(super) fn community_ui(&mut self, ui: &mut egui::Ui, s: &Shared) {
         self.community_poll(s);
-        self.open_pending_generator(s);
         let frame = egui::Frame::new().fill(BG).inner_margin(Margin::symmetric(24, 18));
         egui::CentralPanel::default().frame(frame).show(ui, |ui| {
             self.sharing_ui(ui);
@@ -338,7 +335,7 @@ impl App {
             }
             Remote::Ready(games) if games.is_empty() => {
                 let searched = self.community.searched.clone();
-                self.make_your_own(ui, s, &searched);
+                self.make_your_own(ui, &searched);
             }
             Remote::Ready(games) => {
                 let mine: Vec<String> = s.games.iter().map(|g| crate::game::slug(&g.name)).collect();
@@ -373,7 +370,7 @@ impl App {
     }
 
     /// Nothing found: the player makes the first mode for their game, then shares it.
-    fn make_your_own(&mut self, ui: &mut egui::Ui, s: &Shared, game: &str) {
+    fn make_your_own(&mut self, ui: &mut egui::Ui, game: &str) {
         let mut make = false;
         card(SELECTED_BG).stroke(egui::Stroke::new(1.0, ACCENT)).inner_margin(Margin::symmetric(18, 16)).show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -388,25 +385,10 @@ impl App {
             if !game.is_empty() {
                 make = ui.add(primary(&format!("Create a mode for {game}"))).clicked();
             }
-            ui.label(muted("Already have one? Publish it from its page, Sharing tab.").size(12.0));
+            ui.label(muted("Already have one? Publish it from its page in the Library.").size(12.0));
         });
         if make {
-            match s.games.iter().find(|g| crate::game::slug(&g.name) == crate::game::slug(game)) {
-                Some(local) => self.open_generator_for(&local.clone(), crate::mode::prompt::Depth::Quick),
-                None => {
-                    self.send(Command::CreateGame { name: game.to_owned(), executable: None });
-                    self.community.making_for = Some(game.to_owned());
-                }
-            }
-        }
-    }
-
-    /// The game added to make a mode for is in the library: its AI request opens.
-    fn open_pending_generator(&mut self, s: &Shared) {
-        let Some(name) = &self.community.making_for else { return };
-        if let Some(game) = s.games.iter().find(|g| crate::game::slug(&g.name) == crate::game::slug(name)).cloned() {
-            self.community.making_for = None;
-            self.open_generator_for(&game, crate::mode::prompt::Depth::Quick);
+            self.open_create(Some(game));
         }
     }
 
@@ -702,10 +684,10 @@ impl App {
             if s.game.as_ref().is_none_or(|g| g.id != game.id) {
                 self.send(Command::SelectGame(Some(game.id.clone())));
             }
-            self.route = Route::Game { id: game.id.clone(), view: View::Mode };
         }
+        self.route = Route::Mode;
         self.send(Command::SelectMode(local.to_owned()));
-        self.page = Page::Games;
+        self.page = Page::Library;
     }
 
     fn update_mode(&mut self, ctx: &egui::Context, s: &Shared, local: String) {
@@ -721,7 +703,7 @@ impl App {
         });
     }
 
-    // --- a game's page and the library
+    // --- the Create page and the library
 
     /// What the server has for `game`: started once per game.
     fn community_match(&mut self, ctx: &egui::Context, game: &Game) -> Option<&Remote<Option<(GameView, Vec<ModeSummary>)>>> {
@@ -738,7 +720,7 @@ impl App {
         self.community.matches.get(&game.id)
     }
 
-    /// The card on a game's page: the community's modes for it.
+    /// The card on the Create page: the community's modes for the game.
     pub(super) fn community_card(&mut self, ui: &mut egui::Ui, s: &Shared, game: &Game) {
         self.community_poll(s);
         let found = match self.community_match(ui.ctx(), game) {
@@ -756,7 +738,7 @@ impl App {
                 None => {
                     ui.horizontal_wrapped(|ui| {
                         ui.label(RichText::new("From the community").strong());
-                        ui.label(muted(format!("No mode for {} yet: publish yours from its Sharing tab.", game.name)));
+                        ui.label(muted(format!("No mode for {} yet: yours could be the first.", game.name)));
                     });
                 }
                 Some((remote, modes)) => {
@@ -821,7 +803,7 @@ impl App {
         }
     }
 
-    /// In a game's modes list: the update of a mode installed from the community, if one came.
+    /// On a mode's page: the update of a mode installed from the community, if one came.
     pub(super) fn community_update_button(&mut self, ui: &mut egui::Ui, s: &Shared, local: &str) {
         let Some(origin) = self.origin_of(local).cloned() else { return };
         if origin.own || origin.pinned {
@@ -882,11 +864,11 @@ impl App {
                 self.send(Command::SelectGame(Some(game.id.clone())));
             }
             self.send(Command::SelectMode(local.to_owned()));
-            self.route = Route::Game { id: game.id.clone(), view: View::Sharing };
+            self.route = Route::Mode;
         }
     }
 
-    // --- the Sharing tab: publishing
+    // --- the mode's page: publishing
 
     fn account_ui(&mut self, ui: &mut egui::Ui) -> Option<Account> {
         if let Some(account) = self.account() {
@@ -919,7 +901,7 @@ impl App {
         None
     }
 
-    /// The Sharing tab's community part, for the active mode of `game`.
+    /// The community part of sharing the active mode of `game`.
     pub(super) fn community_sharing(&mut self, ui: &mut egui::Ui, s: &Shared, game: &Game) {
         self.community_poll(s);
         self.community_message(ui);

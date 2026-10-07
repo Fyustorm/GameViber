@@ -1,22 +1,24 @@
 //! egui front end. A first-launch setup guides players through Intiface
 //! Central, their toys, the gamepad and a first mode; afterwards a status bar
-//! (the game being played, the panic stop) sits above the pages: Games (the
-//! library, then each game by breadcrumb: its modes, each with a page of its
-//! own, its inputs — phases, captures, indicators, sound — and its sessions),
-//! Toys (with Intiface Central), Setup (gamepad, combos, overlay, default
-//! sound, other programs: what does not depend on the game) and Creator (mode
-//! editor, graphs, simulator, sessions, logs). Dialogs help players get a
-//! mode made for their game by an AI assistant, and get one fixed when it
-//! does not feel right; modes are shared with their game as files.
+//! (the game being played, the panic stop) sits above the pages: Library (the
+//! player's modes by game, each with a page of its own, and creating a mode
+//! for a game), Toys (with Intiface Central), Setup (gamepad, combos, overlay,
+//! default sound, other programs: what does not depend on the game) and
+//! Creator (the active mode's workspace: its phases, captures, indicators,
+//! values from other programs and script, sessions and a simulator).
+//! Players get a mode written by an AI assistant from the Creator, and get
+//! one fixed when it does not feel right; modes are shared with their game
+//! as files.
 
 mod audio;
 mod creator;
+mod diagram;
 mod feedback;
 mod gamepad;
 mod community;
-mod games;
 mod generator;
 mod keybindings;
+mod library;
 mod live;
 mod luau;
 mod onboarding;
@@ -53,7 +55,7 @@ const RECENT_RUMBLE_SECS: f64 = 5.0;
 
 #[derive(PartialEq, Clone, Copy)]
 enum Page {
-    Games,
+    Library,
     Community,
     Live,
     Toys,
@@ -62,28 +64,15 @@ enum Page {
     Settings,
 }
 
-/// Where the Games page is.
-#[derive(PartialEq, Clone, Debug)]
-enum Route {
-    Library,
-    /// The built-in modes, to play without a game.
-    BuiltIn,
-    /// The active mode's page, without a game.
-    FreeMode,
-    Game { id: String, view: GameView },
-}
-
+/// Where the Library page is.
 #[derive(PartialEq, Clone, Copy, Debug)]
-enum GameView {
-    /// The game's modes and sessions.
-    Modes,
-    Sessions,
-    /// The active mode's tabs: what it does and its settings, its inputs, sharing it.
+enum Route {
+    /// The player's modes, by game.
+    Library,
+    /// Creating a mode: for which game, and how a mode works.
+    Create,
+    /// The active mode's page: its settings, what it reads, sharing it, its game.
     Mode,
-    Inputs,
-    Sharing,
-    /// Inputs › captures and indicators.
-    Screen,
 }
 
 pub struct App {
@@ -109,7 +98,7 @@ pub struct App {
     generator: generator::State,
     feedback: feedback::State,
     screen: screen::State,
-    games: games::State,
+    library: library::State,
     inputs: inputs::State,
     sharing: sharing::State,
     /// The engine was told the Screen page is open.
@@ -152,7 +141,7 @@ impl App {
             generator: generator::State::default(),
             feedback: feedback::State::default(),
             screen: screen::State::default(),
-            games: games::State::default(),
+            library: library::State::default(),
             inputs: inputs::State::default(),
             sharing: sharing::State::default(),
             watching_screen: false,
@@ -166,10 +155,10 @@ impl App {
         let _ = self.commands.send(command);
     }
 
-    /// Creates a user mode, activates it and opens it in the Creator. It starts
-    /// with the inputs of the mode `copy_of`, or else, made from a game's page,
-    /// with those of the active mode when it is one of that game's.
-    fn create_mode(&mut self, stem: &str, source: &str, copy_of: Option<&str>) -> Option<ModeEntry> {
+    /// Creates a user mode for `game`, activates it and opens it in the Creator.
+    /// It starts with the inputs of the mode `copy_of`, or else with those of
+    /// the active mode when it is one of that game's.
+    fn create_mode(&mut self, stem: &str, source: &str, copy_of: Option<&str>, game: Option<&str>) -> Option<ModeEntry> {
         let stem: String = stem
             .trim()
             .chars()
@@ -182,20 +171,19 @@ impl App {
                 log::info!("created {}", path.display());
                 let id = path.to_string_lossy().into_owned();
                 let from = copy_of.map(str::to_owned).or_else(|| {
-                    let Route::Game { id: game, .. } = &self.route else { return None };
                     let s = self.shared.lock().unwrap();
-                    s.games.iter().find(|g| g.id == *game).filter(|g| g.modes.contains(&main_of(&s.mode.id))).map(|_| s.mode.id.clone())
+                    s.games.iter().find(|g| Some(g.id.as_str()) == game).filter(|g| g.modes.contains(&main_of(&s.mode.id))).map(|_| s.mode.id.clone())
                 });
                 let inputs = from.map(|from| crate::package::Inputs::of(&ModeEntry::from_id(&from))).filter(|i| !i.is_empty());
                 if let (Some(inputs), Some(dir)) = (inputs, ModeEntry::from_id(&id).dir()) {
                     inputs.copy_to(&dir).save();
                 }
                 self.send(Command::RefreshModes);
-                self.send(Command::SelectMode(id.clone()));
-                // A mode made from a game's page belongs to that game.
-                if let Route::Game { id: game, .. } = &self.route {
-                    self.send(Command::AddGameMode { game: game.clone(), mode: id.clone() });
+                if let Some(game) = game {
+                    self.send(Command::AddGameMode { game: game.to_owned(), mode: id.clone() });
+                    self.send(Command::SelectGame(Some(game.to_owned())));
                 }
+                self.send(Command::SelectMode(id.clone()));
                 self.page = Page::Creator;
                 Some(ModeEntry::from_id(&id))
             }
@@ -227,9 +215,14 @@ impl App {
 
     fn duplicate_mode(&mut self, id: &str) {
         let entry = ModeEntry::from_id(id);
+        // The copy stays in the game being played, when the mode is one of its.
+        let game = {
+            let s = self.shared.lock().unwrap();
+            s.game.as_ref().filter(|g| g.modes.contains(&main_of(id))).map(|g| g.id.clone())
+        };
         match entry.source() {
             Ok(source) => {
-                self.create_mode(&format!("{}-copy", entry.key), &source, Some(id));
+                self.create_mode(&format!("{}-copy", entry.key), &source, Some(id), game.as_deref());
             }
             Err(e) => log::error!("cannot read {}: {e}", entry.id),
         }
@@ -255,14 +248,13 @@ impl eframe::App for App {
         self.tour(ui.ctx(), &s);
         if let Some(step) = self.onboarding.filter(|_| self.tour.is_none()) {
             self.onboarding_ui(ui, &s, step);
-            self.generator_ui(ui.ctx(), &s);
             return;
         }
 
         self.status_bar(ui, &s);
         self.update_banner(ui);
         self.rail(ui);
-        let mode_page = self.page == Page::Games && matches!(self.route, Route::FreeMode | Route::Game { view: GameView::Mode, .. });
+        let mode_page = self.page == Page::Library && self.route == Route::Mode;
         // The fix page needs the room.
         let fixing = mode_page && self.feedback.open;
         if (mode_page || self.page == Page::Toys) && !fixing {
@@ -272,7 +264,7 @@ impl eframe::App for App {
             gamepad_strip(ui, &s);
         }
         match self.page {
-            Page::Games => self.games_ui(ui, &s),
+            Page::Library => self.library_ui(ui, &s),
             Page::Community => self.community_ui(ui, &s),
             Page::Live => self.live_ui(ui, &s),
             Page::Toys => self.toys_ui(ui, &s),
@@ -280,14 +272,12 @@ impl eframe::App for App {
             Page::Creator => self.creator_ui(ui, &s),
             Page::Settings => self.settings_ui(ui, &s),
         }
-        self.generator_ui(ui.ctx(), &s);
         if self.tour.is_none() || self.community.consent_preview {
             self.stats_consent(ui.ctx(), &s);
         }
         self.update_simulated_rumble();
         // The overlay copies the game's image while it is looked at, even when modes do not see it.
-        let watching = self.page == Page::Games
-            && matches!(self.route, Route::Game { view: GameView::Screen | GameView::Inputs, .. });
+        let watching = self.page == Page::Creator && self.creator.watches_screen();
         if watching != self.watching_screen {
             self.watching_screen = watching;
             self.send(Command::WatchScreen(watching));
@@ -374,7 +364,7 @@ impl App {
             ui.vertical_centered(|ui| {
                 for (page, icon, label) in [
                     (Page::Community, "🌐", "Community"),
-                    (Page::Games, "🎮", "Games"),
+                    (Page::Library, "📚", "Library"),
                     (Page::Live, "📺", "Live"),
                     (Page::Toys, "📳", "Toys"),
                     (Page::Setup, "🛠", "Setup"),
@@ -385,8 +375,8 @@ impl App {
                             // Check the installed overlay files again.
                             self.overlay.forget_install_state();
                         }
-                        // The Games button always leads back to the library.
-                        if page == Page::Games && self.page == Page::Games {
+                        // The Library button always leads back to the list of modes.
+                        if page == Page::Library && self.page == Page::Library {
                             self.route = Route::Library;
                         }
                         self.page = page;

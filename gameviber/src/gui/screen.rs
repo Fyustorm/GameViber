@@ -1,5 +1,5 @@
-//! The active mode's captures and indicators (Games › game › Inputs ›
-//! Captures and indicators), in two columns: on the left its captures (saved images of its
+//! The active mode's captures and indicators (the Creator's Captures &
+//! indicators tab), in two columns: on the left its captures (saved images of its
 //! phases, which are also the examples phases are recognized with), filtered
 //! by phase, each with what the indicator selected reads on it, and how to add
 //! some; on the right the indicator editor — the mode's indicators, the zones of the
@@ -638,13 +638,15 @@ fn reading(zone: &Zone, measure: Option<f32>) -> (String, Color32) {
 }
 
 impl App {
-    /// The page, fitting the window (the Games page does not scroll it): the
+    /// The tab, fitting the window (the Creator does not scroll it): the
     /// image edited takes what the rest leaves.
     pub(super) fn screen_page(&mut self, ui: &mut egui::Ui, s: &Shared, game: &Game) {
         let Some(inputs) = self.inputs_of(ui, s, game) else { return };
         self.load_captures(ui.ctx(), Some(inputs));
-        heading(ui, "Captures and indicators");
-        ui.label(muted("Indicators are drawn on captures and checked on all of them. Captures stay on your computer."));
+        ui.label(muted(
+            "Captures show GameViber what each phase looks like. Indicators (a health bar, a menu) are drawn on them \
+             and checked on all of them. Captures stay on your computer.",
+        ));
         ui.add_space(4.0);
         // What the indicator selected reads on each capture: its zones, the one edited as drawn now.
         let st = &self.screen;
@@ -737,7 +739,7 @@ impl App {
             let top = ui.cursor().top();
             let analysed = inputs.captures.iter().filter(|c| !c.embedding.is_empty()).count();
             if analysed < inputs.captures.len() {
-                let why = if Model::Image.ready() { "analysing..." } else { "download the image model in Inputs, step 2, to use them for phases" };
+                let why = if Model::Image.ready() { "analysing..." } else { "download the image model (Phases tab) to use them for phases" };
                 ui.label(muted(format!("{analysed} of {} analysed: {why}", inputs.captures.len())).size(11.5));
             }
             self.add_captures(ui, s, game, inputs);
@@ -1321,7 +1323,7 @@ impl App {
                     let mut chosen = current.clone();
                     ui.label("Sure sign of").on_hover_text(
                         "While this indicator is shown (any of its zones), GameViber is sure of the phase, right away (a \
-                         battle menu: battle). How long the phase is kept once it hides is set with the phase, in Inputs.",
+                         battle menu: battle). How long the phase is kept once it hides is set with the phase, in the Phases tab.",
                     );
                     egui::ComboBox::from_id_salt("indicator-phase").selected_text(chosen.clone().unwrap_or_else(|| "no phase".to_owned())).show_ui(ui, |ui| {
                         ui.selectable_value(&mut chosen, None, "no phase");

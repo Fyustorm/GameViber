@@ -352,7 +352,7 @@ end
   last 10 s" for a fight (with the delay as a parameter).
 
 - Phases need the models, downloaded once (the sound model, about 200 MB, and the image
-  model, about 150 MB, from a mode's Inputs or Setup › Sound), and cost a little processor
+  model, about 150 MB, from the Creator's Phases tab or Setup › Sound), and cost a little processor
   time while the mode is active. Without them, or without sound and image,
   `input.phase` stays nil: **a mode must work without phases**.
 
@@ -401,7 +401,7 @@ it when it is shared; built-in modes have none. Everything here exists only once
 player set it up: **read it defensively** (`input.indicators.hp or 1`).
 
 **Captures**: images of the game the player captured per phase ("battle", "dungeon"...),
-in game with a gamepad combo or from the mode's Inputs. They are the examples phases are
+in game with a gamepad combo or from the Creator. They are the examples phases are
 recognized with, and indicators are drawn on them.
 
 **Indicators**: parts of the game's interface whose state is read, in one or more
@@ -436,7 +436,7 @@ web pages are refused) or, one message per line, to the pipe
 - `set` keeps values in `input.external.<name>` (numbers, booleans, strings, or tables);
   `null` removes one. Names are letters, digits and `_`, starting with a letter.
 - `event` calls `on_event(ev)` with `ev.name` and `ev.data` (nil without `data`).
-- The player declares in the mode's Inputs what the program sends ("hp: health, 0 to
+- The player declares in the Creator (Other programs) what the program sends ("hp: health, 0 to
   100"), so that an AI assistant writing a mode for the game knows it.
 
 ## 7. The `input` table (current state, read-only)

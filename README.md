@@ -32,9 +32,10 @@ toys, and PipeWire for the game's sound (the default on recent systems).
 2. Start **GameViber** (from your applications menu, or `gameviber`). Do not use
    `sudo`: GameViber asks for your password itself when it needs it.
 3. Check that your toys show up in **Toys**, and your gamepad in **Setup**.
-4. Get a mode made for your game: in **Games**, add your game, then
-   **New mode**. GameViber prepares a request to paste into any AI assistant
-   (ChatGPT, Claude, Gemini, Le Chat...), and you paste its answer back.
+4. Get a mode made for your game: in **Library**, **Create a mode**, type
+   your game's name, then in the Creator's **Script** tab ask an AI assistant.
+   GameViber prepares a request to paste into any AI assistant (ChatGPT,
+   Claude, Gemini, Le Chat...), and you paste its answer back.
 5. Start your game and play.
 
 If something feels wrong, open the mode's page and click **Doesn't feel

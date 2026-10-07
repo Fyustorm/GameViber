@@ -6,10 +6,10 @@ use std::path::PathBuf;
 
 use eframe::egui;
 
+use super::creator::Tab;
 use super::pad_setup::{Labels, PadSetup};
-use super::{setup, App, GameView, Page, Route};
+use super::{setup, App, Page, Route};
 use crate::engine::Shared;
-use crate::mode::prompt::Depth;
 
 /// Frames to wait on a page before its screenshot (data loads, layout settles).
 const SETTLE_FRAMES: u32 = 30;
@@ -24,11 +24,11 @@ pub struct Tour {
 #[derive(Clone, Copy)]
 enum Stop {
     Page(Page),
-    Games(fn(&Shared) -> Option<Route>),
+    Library(Route),
+    /// The Creator on a tab, how a mode works shown or not.
+    Creator(Tab, bool),
     Setup(setup::Tab),
-    AddGame,
-    Generator,
-    /// The captures and indicators page, editing a bar indicator (else the first indicator).
+    /// The captures and indicators tab, editing a bar indicator (else the first indicator).
     IndicatorEdit,
     /// The Community page on its first game, and that game's first mode.
     CommunityGame,
@@ -40,18 +40,18 @@ enum Stop {
     PadSetup(Labels),
 }
 
-const STOPS: [(&str, Stop); 26] = [
-    ("games", Stop::Games(|_| Some(Route::Library))),
-    ("add-game", Stop::AddGame),
-    ("builtin-modes", Stop::Games(|_| Some(Route::BuiltIn))),
-    ("game-modes", Stop::Games(|s| game(s, GameView::Modes))),
-    ("generator", Stop::Generator),
-    ("mode", Stop::Games(|s| game(s, GameView::Mode))),
-    ("inputs", Stop::Games(|s| game(s, GameView::Inputs))),
-    ("captures-indicators", Stop::Games(|s| game(s, GameView::Screen))),
+const STOPS: [(&str, Stop); 25] = [
+    ("library", Stop::Library(Route::Library)),
+    ("create-mode", Stop::Library(Route::Create)),
+    ("mode", Stop::Library(Route::Mode)),
+    ("creator-phases", Stop::Creator(Tab::Phases, false)),
+    ("creator-help", Stop::Creator(Tab::Phases, true)),
+    ("creator-captures-indicators", Stop::Creator(Tab::Screen, false)),
     ("indicator-edit", Stop::IndicatorEdit),
-    ("mode-sharing", Stop::Games(|s| game(s, GameView::Sharing))),
-    ("sessions", Stop::Games(|s| game(s, GameView::Sessions))),
+    ("creator-programs", Stop::Creator(Tab::Programs, false)),
+    ("creator-script", Stop::Creator(Tab::Script, false)),
+    ("creator-sessions", Stop::Creator(Tab::Sessions, false)),
+    ("creator-logs", Stop::Creator(Tab::Logs, false)),
     ("community", Stop::Page(Page::Community)),
     ("community-game", Stop::CommunityGame),
     ("community-nothing", Stop::CommunityNothing),
@@ -65,15 +65,8 @@ const STOPS: [(&str, Stop); 26] = [
     ("setup-overlay", Stop::Setup(setup::Tab::Overlay)),
     ("setup-sound", Stop::Setup(setup::Tab::Sound)),
     ("setup-programs", Stop::Setup(setup::Tab::Programs)),
-    ("creator", Stop::Page(Page::Creator)),
     ("settings", Stop::Page(Page::Settings)),
 ];
-
-/// The first game's page, in `view`.
-fn game(s: &Shared, view: GameView) -> Option<Route> {
-    let id = s.game.as_ref().or(s.games.first())?.id.clone();
-    Some(Route::Game { id, view })
-}
 
 impl Tour {
     pub fn from_env() -> Option<Self> {
@@ -107,8 +100,6 @@ impl App {
             tour.step += 1;
             tour.frames = 0;
             tour.requested = false;
-            self.generator.open = false;
-            self.games.close_dialog();
             self.pad_setup = None;
             return;
         }
@@ -121,29 +112,26 @@ impl App {
         self.community.consent_preview = matches!(stop, Stop::StatsConsent);
         match stop {
             Stop::Page(page) => self.page = page,
-            Stop::Games(route) => {
-                self.page = Page::Games;
-                if let Some(route) = route(s) {
-                    self.route = route;
-                }
+            Stop::Library(route) => {
+                self.page = Page::Library;
+                self.route = route;
+            }
+            Stop::Creator(tab, help) => {
+                self.page = Page::Creator;
+                self.creator.tab = tab;
+                self.creator.help = help;
             }
             Stop::Setup(tab) => {
                 self.page = Page::Setup;
                 self.setup_tab = tab;
             }
-            Stop::AddGame => {
-                self.page = Page::Games;
-                self.route = Route::Library;
-                self.games.open_dialog();
-            }
             Stop::IndicatorEdit => {
-                self.page = Page::Games;
-                if let Some(game) = s.game.as_ref().or(s.games.first()).cloned() {
-                    self.route = Route::Game { id: game.id.clone(), view: GameView::Screen };
-                    if let Some(inputs) = s.mode_inputs.as_ref().filter(|_| tour.frames == 1) {
-                        let zone = inputs.zones.iter().position(|z| z.kind == crate::package::IndicatorKind::Gauge).unwrap_or(0);
-                        self.screen.edit_zone(zone, inputs);
-                    }
+                self.page = Page::Creator;
+                self.creator.tab = Tab::Screen;
+                self.creator.help = false;
+                if let Some(inputs) = s.mode_inputs.as_ref().filter(|_| tour.frames == 1) {
+                    let zone = inputs.zones.iter().position(|z| z.kind == crate::package::IndicatorKind::Gauge).unwrap_or(0);
+                    self.screen.edit_zone(zone, inputs);
                 }
             }
             Stop::StatsConsent => {}
@@ -161,13 +149,6 @@ impl App {
             Stop::CommunityGame => {
                 self.page = Page::Community;
                 super::community::tour_first_game(self, ctx);
-            }
-            Stop::Generator => {
-                if !self.generator.open {
-                    if let Some(game) = s.game.as_ref().or(s.games.first()).cloned() {
-                        self.open_generator_for(&game, Depth::Advanced);
-                    }
-                }
             }
         }
         if request {

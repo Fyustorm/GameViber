@@ -1,12 +1,12 @@
-//! A mode's page (Games › game › Modes › mode): its explanation, presets and
-//! settings; and tiles of modes, for the built-in modes and the setup guide.
+//! A mode's page (Library › game › mode): its explanation, presets and
+//! settings; and tiles of modes, for the setup guide.
 
 use std::collections::BTreeMap;
 
 use eframe::egui::{self, Margin, RichText, Vec2};
 
 use super::theme::*;
-use super::{mode_icon, App, GameView, Page, Route};
+use super::{mode_icon, App, Page, Route};
 use crate::config::ModeEntry;
 use crate::models::Model;
 use crate::engine::{Command, ModeView, Shared};
@@ -70,10 +70,7 @@ impl App {
                         self.play.confirm_delete_mode = None;
                         // A variant gives way to its mode, on this page.
                         if entry.is_none_or(|e| e.variant.is_none()) {
-                            self.route = match &s.game {
-                                Some(game) => Route::Game { id: game.id.clone(), view: GameView::Modes },
-                                None => Route::Library,
-                            };
+                            self.route = Route::Library;
                         }
                     }
                     let what = if entry.is_some_and(|e| e.variant.is_some()) { "this variant" } else { "this mode, its variants" };
@@ -128,10 +125,8 @@ impl App {
                 ui.set_width(ui.available_width());
                 ui.horizontal_wrapped(|ui| {
                     ui.label(format!("Phases are recognized from the game's {what}. It needs a phase model:"));
-                    if let Some(game) = &s.game {
-                        if ui.button("Get it in the mode's Inputs").clicked() {
-                            self.route = Route::Game { id: game.id.clone(), view: GameView::Inputs };
-                        }
+                    if ui.button("Get it in the Creator's Phases").clicked() {
+                        self.page = Page::Creator;
                     }
                 });
             });

@@ -64,7 +64,7 @@ fn inputs_text(depth: Depth, described: Option<&str>, phases: &[String]) -> Stri
         ),
         (Depth::Advanced, None) => "The player has not set up anything for this game yet. If an indicator of the screen \
              would help (an interface shown only in battles, a health bar), tell the player which indicators to draw in \
-             the mode's Inputs: a name, its kind (visibility or gauge) and where to draw it. Read them defensively: \
+             GameViber's Creator (Captures & indicators tab): a name, its kind (visibility or gauge) and where to draw it. Read them defensively: \
              `input.indicators.<name>` is nil until the indicator exists."
             .to_owned(),
     }

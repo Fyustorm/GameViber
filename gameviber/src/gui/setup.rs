@@ -68,7 +68,7 @@ impl App {
                     ui.label(muted(
                         "A game's mod, or a script reading a game's API, can send values and events to modes \
                          (input.custom, on_event) as JSON: {\"set\": {\"hp\": 0.4}} or {\"event\": \"kill\"}. Declare \
-                         what it sends in a mode's Inputs, so that AI assistants know it.",
+                         what it sends in the Creator (Other programs), so that AI assistants know it.",
                     ));
                     ui.horizontal(|ui| match (&view.address, &view.error) {
                         (Some(address), _) => {
