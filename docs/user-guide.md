@@ -17,7 +17,7 @@ intensity and **STOP ALL**.
 | **Toys** | The connection to Intiface Central, the toys it found, a test buzz, and how each toy plays: which mode channels, weakest and strongest intensity, response curve. |
 | **Setup** | What does not depend on the game: the gamepad and how it is captured, the shortcuts (panic stop, mark a moment, capture the screen) on the gamepad or the keyboard, the in-game overlay, the sound listened to by default, other programs. |
 | **Settings** | The language AI assistants answer in, the requests sent to them (editable). |
-| **Creator** | The workspace of the mode being played, in tabs to visit in any order: **Phases**, **Captures & indicators**, **Other programs** (see A mode's inputs), its **Script** (asked of an AI assistant, started from a built-in mode, or written by hand, with hot reload), **Sessions** (recorded sessions to replay, and a simulator to try the mode without the game) and **Logs**. The mode runs while you edit it: every change can be felt at once, and **Live ›** shows what it does; **? How a mode works** shows how the parts fit. |
+| **Creator** | The workspace of the mode being played, in tabs to visit in any order: **Phases**, **Captures & indicators**, **Other programs** (see A mode's inputs), its **Script** (asked of an AI assistant, started from a built-in mode, or written by hand, with hot reload), **Sessions** (recorded sessions to watch again like a video, replayed into the mode as it is now — the game's images, its rumble, your buttons, the phases, what the mode's inputs said and what it sent to the toys, at any moment — while the toys play it; images to add to the captures; and a simulator to try the mode without the game). A recorded session keeps 1 to 10 images of the game a second (2 by default, about 250 MB an hour, written to disk as they come; a recording stops after an hour); the last 2 minutes, always kept in memory, keep 2 a second and **Logs**. The mode runs while you edit it: every change can be felt at once, and **Live ›** shows what it does; **? How a mode works** shows how the parts fit. |
 
 A mode's own page shows its explanation, its main
 settings, all its settings and named **presets**, and its **variants**: other scripts of the same mode
@@ -125,7 +125,8 @@ to set some up.
   on the gamepad (or press the capture key, Ctrl + Alt + C suggested). The image
   is captured without leaving the game. A few captures per phase make the
   recognition much more reliable. Needs the in-game overlay. Screenshots on
-  your computer can be added too (**From files...** under the captures).
+  your computer can be added too (**From files...** under the captures), and
+  images of a recorded session (**From a session**).
 - **Indicators**: on a capture, draw a zone (a rectangle) around something
   shown only at times (the battle interface: a visibility indicator) or around
   a bar (health: a gauge). Modes read whether it is shown, or how full the bar

@@ -1,13 +1,17 @@
 //! Recorded play sessions: the game's rumble, the player's buttons and axes,
 //! what was heard of the game's sound and seen of its image (levels, hits,
-//! flashes, indicators, phase embeddings — never the sound or the images), and the
-//! values other programs sent, as the mode saw them, so that a mode can be
-//! tuned on a real session without playing it again.
+//! flashes, indicators, phase embeddings — never the sound), about two images
+//! of the game a second, and the values other programs sent, as the mode saw
+//! them, so that a mode can be tuned on a real session without playing it
+//! again, and its images used as captures.
 //!
 //! A recording is a JSON Lines file in `~/.config/gameviber/recordings/`: a
-//! header line, then one line per change (`[time, change]`).
+//! header line, then one line per change (`[time, change]`); its images are
+//! JPEG files beside it, in a directory of the same name ending in `.frames`,
+//! each named after its time in milliseconds.
 
 use std::collections::{BTreeMap, VecDeque};
+use std::fmt;
 use std::fs;
 use std::io::{self, BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -21,7 +25,7 @@ use crate::gamepad::{ButtonEvent, PadState, AXES, BUTTONS};
 use crate::mode::rumble_events::RumbleLevels;
 use crate::mode::{ModeEvent, IndicatorValue};
 use crate::platform::local_time;
-use crate::screen::ScreenLevels;
+use crate::screen::{Frame, ScreenLevels};
 
 /// 2: audio changes. 3: image, indicators, values from other programs. 4: the
 /// names of the modes' Inputs (indicator, external values and events); the
@@ -34,6 +38,12 @@ pub const MAX_SECS: f64 = 60.0 * 60.0;
 const AXIS_STEP: f64 = 0.01;
 const RUMBLE_STEP: f64 = 0.001;
 const AUDIO_STEP: f64 = 0.02;
+/// Images of the game recorded per second, unless set otherwise (`Recorder::images`).
+pub const FRAME_RATE: f64 = 2.0;
+/// Images per second a recording can keep: the overlay copies about 10.
+pub const FRAME_RATES: [f64; 4] = [1.0, 2.0, 5.0, 10.0];
+const FRAMES_EXTENSION: &str = "frames";
+const JPEG_QUALITY: u8 = 80;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Header {
@@ -48,6 +58,9 @@ pub struct Header {
     /// Moments the player marked as feeling wrong.
     #[serde(default)]
     pub marks: u32,
+    /// Images of the game recorded.
+    #[serde(default)]
+    pub frames: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -95,10 +108,103 @@ pub struct Senses {
 pub struct RecordingInfo {
     pub path: PathBuf,
     pub header: Header,
+    /// Bytes it takes on disk, its images included.
+    pub size: u64,
 }
 
 pub fn recordings_dir() -> PathBuf {
     config::config_dir().join("recordings")
+}
+
+/// Where the images of the recording at `path` are.
+pub fn frames_dir(path: &Path) -> PathBuf {
+    path.with_extension(FRAMES_EXTENSION)
+}
+
+/// Where the images of the recording in progress are written until it is saved.
+fn spool_dir() -> PathBuf {
+    recordings_dir().join(format!(".recording.{FRAMES_EXTENSION}"))
+}
+
+/// Deletes a recording and its images.
+pub fn delete(path: &Path) -> io::Result<()> {
+    fs::remove_file(path)?;
+    let frames = frames_dir(path);
+    if frames.is_dir() {
+        fs::remove_dir_all(frames)?;
+    }
+    Ok(())
+}
+
+/// An image of the game, JPEG encoded: in memory, or in a file.
+#[derive(Clone, PartialEq)]
+pub enum FrameData {
+    Jpeg(Arc<[u8]>),
+    File(PathBuf),
+}
+
+impl fmt::Debug for FrameData {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            FrameData::Jpeg(bytes) => write!(f, "Jpeg({} bytes)", bytes.len()),
+            FrameData::File(path) => write!(f, "File({})", path.display()),
+        }
+    }
+}
+
+impl FrameData {
+    /// The image, decoded.
+    pub fn load(&self) -> anyhow::Result<Frame> {
+        let image = match self {
+            FrameData::Jpeg(bytes) => image::load_from_memory_with_format(bytes, image::ImageFormat::Jpeg)?,
+            FrameData::File(path) => image::ImageReader::open(path)?.with_guessed_format()?.decode()?,
+        };
+        let rgba = image.into_rgba8();
+        let (width, height) = rgba.dimensions();
+        Ok(Frame { width, height, source_width: width, source_height: height, count: 0, pixels: rgba.into_raw() })
+    }
+}
+
+/// An image of the game recorded `t` seconds into its session.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SessionFrame {
+    pub t: f64,
+    pub data: FrameData,
+}
+
+/// `frame` as a JPEG image.
+pub fn encode_frame(frame: &Frame) -> anyhow::Result<Arc<[u8]>> {
+    let (w, h) = (frame.width as usize, frame.height as usize);
+    anyhow::ensure!(w > 0 && h > 0 && frame.pixels.len() >= w * h * 4, "empty image");
+    let rgb: Vec<u8> = frame.pixels[..w * h * 4].chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
+    let mut bytes = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, JPEG_QUALITY).encode(
+        &rgb,
+        frame.width,
+        frame.height,
+        image::ExtendedColorType::Rgb8,
+    )?;
+    Ok(bytes.into())
+}
+
+/// File name of an image `t` seconds into its session.
+fn frame_file(t: f64) -> String {
+    format!("{:09}.jpg", (t * 1000.0).round().max(0.0) as u64)
+}
+
+/// The images of a recording, by time.
+fn read_frames(dir: &Path) -> Vec<SessionFrame> {
+    let Ok(entries) = fs::read_dir(dir) else { return Vec::new() };
+    let mut frames: Vec<SessionFrame> = entries
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter_map(|path| {
+            let ms: u64 = path.file_stem()?.to_str()?.parse().ok()?;
+            Some(SessionFrame { t: ms as f64 / 1000.0, data: FrameData::File(path) })
+        })
+        .collect();
+    frames.sort_by(|a, b| a.t.total_cmp(&b.t));
+    frames
 }
 
 /// Recordings, newest first.
@@ -117,18 +223,26 @@ fn list_in(dir: &Path) -> Vec<RecordingInfo> {
             let mut line = String::new();
             BufReader::new(fs::File::open(&path).ok()?).read_line(&mut line).ok()?;
             let header = serde_json::from_str(&line).ok()?;
-            Some(RecordingInfo { path, header })
+            let images: u64 = fs::read_dir(frames_dir(&path))
+                .into_iter()
+                .flatten()
+                .filter_map(|e| e.ok()?.metadata().ok())
+                .map(|m| m.len())
+                .sum();
+            let size = fs::metadata(&path).map_or(0, |m| m.len()) + images;
+            Some(RecordingInfo { path, header, size })
         })
         .collect();
     found.sort_by(|a, b| b.path.cmp(&a.path));
     found
 }
 
-/// A session in memory: its header and its changes, in seconds from its start.
+/// A session in memory: its header, its changes and its images, in seconds from its start.
 #[derive(Debug, Clone)]
 pub struct Session {
     pub header: Header,
     pub changes: Vec<(f64, Change)>,
+    pub frames: Vec<SessionFrame>,
 }
 
 impl Session {
@@ -138,7 +252,7 @@ impl Session {
         let header: Header = serde_json::from_str(lines.next().unwrap_or_default())?;
         anyhow::ensure!(header.version <= FORMAT_VERSION, "recording made by a newer GameViber");
         let changes = lines.filter(|l| !l.trim().is_empty()).map(serde_json::from_str).collect::<Result<_, _>>()?;
-        Ok(Self { header, changes })
+        Ok(Self { header, changes, frames: read_frames(&frames_dir(path)) })
     }
 
     /// Writes the session to the recordings directory; returns its path.
@@ -154,7 +268,7 @@ impl Session {
             .collect();
         let mut path = dir.join(format!("{stem}.{EXTENSION}"));
         let mut n = 2;
-        while path.exists() {
+        while path.exists() || frames_dir(&path).exists() {
             path = dir.join(format!("{stem} ({n}).{EXTENSION}"));
             n += 1;
         }
@@ -163,6 +277,22 @@ impl Session {
         for change in &self.changes {
             text.push_str(&serde_json::to_string(change).map_err(io::Error::other)?);
             text.push('\n');
+        }
+        if !self.frames.is_empty() {
+            let dir = frames_dir(&path);
+            config::create_dir(&dir)?;
+            for frame in &self.frames {
+                let to = dir.join(frame_file(frame.t));
+                match &frame.data {
+                    FrameData::Jpeg(bytes) => fs::write(&to, bytes)?,
+                    // Moved out of the spool, else copied.
+                    FrameData::File(from) => {
+                        if fs::rename(from, &to).is_err() {
+                            fs::copy(from, &to)?;
+                        }
+                    }
+                }
+            }
         }
         config::write_file(&path, &text)?;
         Ok(path)
@@ -184,6 +314,12 @@ pub struct Recorder {
     changes: VecDeque<(f64, Change)>,
     /// State at the start of the window: changes dropped from it, latest per key.
     base: BTreeMap<String, Change>,
+    /// Images of the game, when the last one came, and the seconds between two.
+    frames: VecDeque<SessionFrame>,
+    last_frame: f64,
+    frame_step: f64,
+    /// Where images are written as they come (long recordings); None: kept in memory.
+    spool: Option<PathBuf>,
 }
 
 impl Recorder {
@@ -200,7 +336,50 @@ impl Recorder {
             screen: None,
             changes: VecDeque::new(),
             base: BTreeMap::new(),
+            frames: VecDeque::new(),
+            last_frame: f64::NEG_INFINITY,
+            frame_step: 1.0 / FRAME_RATE,
+            spool: None,
         }
+    }
+
+    /// A recording whose images are written to disk as they come, not kept in memory.
+    pub fn spooled(mut self) -> Self {
+        let dir = spool_dir();
+        let _ = fs::remove_dir_all(&dir);
+        match config::create_dir(&dir) {
+            Ok(()) => self.spool = Some(dir),
+            Err(e) => log::warn!("images of the game kept in memory: cannot create {}: {e}", dir.display()),
+        }
+        self
+    }
+
+    /// Keeps `per_second` images of the game a second (at most what the overlay copies).
+    pub fn images(mut self, per_second: f64) -> Self {
+        self.frame_step = 1.0 / per_second.clamp(0.1, 30.0);
+        self
+    }
+
+    /// An image of the game is due (images come about every 0.1 s).
+    pub fn wants_frame(&self, time: f64) -> bool {
+        self.elapsed(time) - self.last_frame >= self.frame_step * 0.9
+    }
+
+    /// Records an image of the game, JPEG encoded (`encode_frame`).
+    pub fn frame(&mut self, time: f64, jpeg: Arc<[u8]>) {
+        let t = round(self.elapsed(time), 1000.0);
+        self.last_frame = t;
+        let data = match &self.spool {
+            Some(dir) => {
+                let path = dir.join(frame_file(t));
+                if let Err(e) = fs::write(&path, &jpeg) {
+                    return log::warn!("cannot write an image of the game: {e}");
+                }
+                FrameData::File(path)
+            }
+            None => FrameData::Jpeg(jpeg),
+        };
+        self.frames.push_back(SessionFrame { t, data });
     }
 
     /// Keeps only the last `secs` seconds.
@@ -256,6 +435,9 @@ impl Recorder {
                     | Change::ExternalEvent { .. } => continue,
                 };
                 self.base.insert(key, change);
+            }
+            while self.frames.front().is_some_and(|f| f.t < t - window) {
+                self.frames.pop_front();
             }
         }
     }
@@ -347,6 +529,12 @@ impl Recorder {
             .map(|c| (0.0, c))
             .chain(self.changes.iter().map(|(t, c)| (round(t - from, 1000.0).max(0.0), c.clone())))
             .collect();
+        let frames: Vec<SessionFrame> = self
+            .frames
+            .iter()
+            .filter(|f| f.t >= from)
+            .map(|f| SessionFrame { t: round(f.t - from, 1000.0), data: f.data.clone() })
+            .collect();
         let marks = changes.iter().filter(|(_, c)| *c == Change::Mark).count() as u32;
         let started = if self.window.is_some() { local_time() } else { self.started.clone() };
         Session {
@@ -357,15 +545,16 @@ impl Recorder {
                 mode: mode.map(str::to_owned).unwrap_or_else(|| self.mode.clone()),
                 duration: round(elapsed - from, 1000.0),
                 marks,
+                frames: frames.len() as u32,
             },
             changes,
+            frames,
         }
     }
 }
 
-/// Plays a session back in real time.
+/// Plays a session back into a mode (`mode::report`, offline).
 pub struct Player {
-    pub info: RecordingInfo,
     changes: Vec<(f64, Change)>,
     next: usize,
     start: f64,
@@ -377,14 +566,9 @@ pub struct Player {
 }
 
 impl Player {
-    pub fn open(path: &Path, time: f64) -> anyhow::Result<Self> {
-        let session = Session::open(path)?;
-        Ok(Self::new(session, path, time))
-    }
-
-    pub fn new(session: Session, path: &Path, time: f64) -> Self {
+    /// Plays `session` from `time`.
+    pub fn new(session: Session, time: f64) -> Self {
         Self {
-            info: RecordingInfo { path: path.to_owned(), header: session.header },
             changes: session.changes,
             next: 0,
             start: time,
@@ -398,14 +582,6 @@ impl Player {
     /// Events of the sound, the image and other programs replayed since the last call.
     pub fn take_events(&mut self) -> Vec<ModeEvent> {
         std::mem::take(&mut self.events)
-    }
-
-    pub fn position(&self, time: f64) -> f64 {
-        (time - self.start).min(self.info.header.duration)
-    }
-
-    pub fn finished(&self, time: f64) -> bool {
-        self.position(time) >= self.info.header.duration && self.next >= self.changes.len()
     }
 
     /// Applies the changes due by `time` to the rumble and to `pad`; returns the
@@ -483,7 +659,7 @@ mod tests {
         assert_eq!(listed[0].header.game.as_deref(), Some("Game"));
         assert_eq!(listed[0].header.duration, 2.0);
 
-        let mut player = Player::open(&path, 100.0).unwrap();
+        let mut player = Player::new(Session::open(&path).unwrap(), 100.0);
         let mut pad = PadState::default();
         assert!(player.advance(100.2, &mut pad).is_empty());
         assert_eq!(player.rumble.strong, 0.0);
@@ -491,10 +667,8 @@ mod tests {
         assert_eq!(events, vec![ButtonEvent { name: "A", pressed: true }]);
         assert_eq!(player.rumble.strong, 0.8);
         assert_eq!(pad.axes()["LX"], 0.5);
-        assert!(!player.finished(101.5));
         player.advance(101.5, &mut pad);
         assert!(!pad.held().contains("A"));
-        assert!(player.finished(102.0));
         fs::remove_dir_all(dir).unwrap();
     }
 
@@ -518,7 +692,7 @@ mod tests {
         assert!(text.contains(r#"{"audio_hit":{"strength":0.7,"band":"low"}}"#), "{text}");
         assert!(text.contains(r#""no_audio""#), "{text}");
 
-        let mut player = Player::new(session, Path::new(""), 10.0);
+        let mut player = Player::new(session, 10.0);
         let mut pad = PadState::default();
         player.advance(10.5, &mut pad);
         assert_eq!(player.audio, Some(loud));
@@ -556,13 +730,51 @@ mod tests {
         let old: Vec<Change> = serde_json::from_str(old).unwrap();
         assert!(matches!(old[..], [Change::Indicator { value: IndicatorValue::Gauge(_), .. }, Change::Indicator { value: IndicatorValue::Visibility(true), .. }, Change::ExternalValue { .. }, Change::ExternalEvent { .. }]));
 
-        let mut player = Player::new(session, Path::new(""), 0.0);
+        let mut player = Player::new(session, 0.0);
         let mut pad = PadState::default();
         player.advance(0.5, &mut pad);
         assert_eq!(player.screen, Some(seen));
         assert_eq!(player.take_events(), events[..6]);
         player.advance(1.0, &mut pad);
         assert_eq!(player.screen, None);
+    }
+
+    #[test]
+    fn images_are_recorded_saved_and_read_back() {
+        let dir = std::env::temp_dir().join(format!("gameviber-frames-{}", std::process::id()));
+        let image = |shade: u8| Frame {
+            width: 32,
+            height: 18,
+            source_width: 32,
+            source_height: 18,
+            count: 1,
+            pixels: [shade, shade, shade, 255].repeat(32 * 18),
+        };
+        let mut rec = Recorder::rolling(0.0, 1.0);
+        let pad = PadState::default();
+        for step in 0..=20 {
+            let time = step as f64 * 0.1;
+            rec.tick(time, RumbleLevels::default(), &[], &pad, Senses::default(), &[]);
+            if rec.wants_frame(time) {
+                rec.frame(time, encode_frame(&image(step as u8 * 10)).unwrap());
+            }
+        }
+        // Every 0.5 s, only those of the last second kept.
+        assert_eq!(rec.frames.iter().map(|f| f.t).collect::<Vec<_>>(), [1.0, 1.5, 2.0]);
+        let session = rec.session(2.0, Some("T"), None);
+        assert_eq!(session.header.frames, 3);
+        assert_eq!(session.frames.iter().map(|f| f.t).collect::<Vec<_>>(), [0.0, 0.5, 1.0], "timed from the window's start");
+
+        let path = session.save_in(&dir).unwrap();
+        let read = Session::open(&path).unwrap();
+        assert_eq!(read.frames.iter().map(|f| f.t).collect::<Vec<_>>(), [0.0, 0.5, 1.0]);
+        let last = read.frames[2].data.load().unwrap();
+        assert_eq!((last.width, last.height), (32, 18));
+        assert!(last.pixels[0].abs_diff(200) <= 2, "JPEG keeps the shade: {}", last.pixels[0]);
+        assert_eq!(list_in(&dir)[0].header.frames, 3);
+        delete(&path).unwrap();
+        assert!(!path.exists() && !frames_dir(&path).exists());
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

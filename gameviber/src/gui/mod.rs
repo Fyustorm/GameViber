@@ -29,6 +29,7 @@ mod setup;
 mod sharing;
 mod play;
 mod screen;
+mod sessions;
 mod inputs;
 mod theme;
 mod toys;
@@ -496,14 +497,21 @@ fn gamepad_strip(ui: &mut egui::Ui, s: &Shared) {
 /// The buttons, triggers and sticks the gamepad sends right now, so players
 /// can check their gamepad reaches GameViber.
 fn gamepad_inputs(ui: &mut egui::Ui, s: &Shared) {
+    pad_view(ui, |name| s.held.contains(&name), |name| s.axes.get(name).copied().unwrap_or(0.0));
+    ui.add_space(8.0);
+    if !s.buttons_seen {
+        ui.label(muted("Press a button: it lights up when GameViber receives it.").size(11.5));
+    }
+}
+
+/// The gamepad's buttons (`held`) and sticks and triggers (`axis`).
+fn pad_view(ui: &mut egui::Ui, held: impl Fn(&str) -> bool, axis: impl Fn(&str) -> f64) {
     const LABELS: [(&str, &str); 20] = [
         ("A", "A"), ("B", "B"), ("X", "X"), ("Y", "Y"), ("LB", "LB"), ("RB", "RB"), ("LS", "LS"), ("RS", "RS"),
         ("BACK", "Back"), ("START", "Start"), ("GUIDE", "Guide"),
         ("DPAD_UP", "⏶"), ("DPAD_DOWN", "⏷"), ("DPAD_LEFT", "⏴"), ("DPAD_RIGHT", "⏵"),
         ("P1", "P1"), ("P2", "P2"), ("P3", "P3"), ("P4", "P4"), ("SHARE", "Share"),
     ];
-    let axis = |name: &str| s.axes.get(name).copied().unwrap_or(0.0);
-    let held = |name: &str| s.held.contains(&name);
     ui.spacing_mut().item_spacing.x = 4.0;
     // Triggers show their travel; the half-way button press lights them fully.
     for name in ["LT", "RT"] {
@@ -516,10 +524,6 @@ fn gamepad_inputs(ui: &mut egui::Ui, s: &Shared) {
     ui.add_space(4.0);
     stick(ui, "Left stick", axis("LX"), axis("LY"));
     stick(ui, "Right stick", axis("RX"), axis("RY"));
-    ui.add_space(8.0);
-    if !s.buttons_seen {
-        ui.label(muted("Press a button: it lights up when GameViber receives it.").size(11.5));
-    }
 }
 
 fn gamepad_status(s: &Shared) -> (egui::Color32, String) {

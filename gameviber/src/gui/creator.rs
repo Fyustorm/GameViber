@@ -6,7 +6,6 @@
 //! playing is on the Live page.
 
 use std::collections::BTreeSet;
-use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use eframe::egui::text::LayoutJob;
@@ -18,9 +17,8 @@ use super::luau;
 use super::theme::*;
 use super::{main_of, App, Page, Route};
 use crate::config::{self, ModeEntry, NEW_MODE_TEMPLATE};
-use crate::engine::{Command, Shared, RECENT_SECS};
+use crate::engine::{Command, Shared};
 use crate::gamepad::BUTTONS;
-use crate::session::RecordingInfo;
 
 const SIM_HIT: Duration = Duration::from_millis(300);
 /// From this width the header's buttons sit on its first line, on the right.
@@ -66,7 +64,7 @@ pub(super) struct Editor {
     /// Mode id the buffer was loaded from.
     pub(super) id: String,
     pub(super) text: String,
-    dirty: bool,
+    pub(super) dirty: bool,
     pub(super) message: Option<String>,
     /// Last highlighted text and error line, with its layout.
     highlighted: Option<(String, Option<usize>, LayoutJob)>,
@@ -109,10 +107,7 @@ pub struct State {
     pub(super) editor: Editor,
     pub sim: Simulator,
     only_mode_logs: bool,
-    /// Replays drive the toys too.
-    replay_to_toys: bool,
-    /// Recording whose deletion is being confirmed.
-    deleting: Option<PathBuf>,
+    pub(super) sessions: super::sessions::State,
 }
 
 impl State {
@@ -148,9 +143,7 @@ impl App {
             let game = mode_game(s).cloned();
             let tab = self.creator.tab;
             match (tab, &game) {
-                (Tab::Sessions, _) => {
-                    egui::ScrollArea::vertical().show(ui, |ui| self.sessions(ui, s));
-                }
+                (Tab::Sessions, _) => self.sessions(ui, s),
                 (Tab::Logs, _) => self.log(ui),
                 (Tab::Script, _) => self.script_tab(ui, s, game.as_ref()),
                 (_, None) => self.no_game(ui, s),
@@ -398,7 +391,7 @@ impl App {
         }
     }
 
-    fn simulator(&mut self, ui: &mut egui::Ui) {
+    pub(super) fn simulator(&mut self, ui: &mut egui::Ui) {
         let sim = &mut self.creator.sim;
         ui.label(muted("Fake game rumble and button presses.").size(12.5));
         ui.spacing_mut().slider_width = 260.0;
@@ -429,101 +422,6 @@ impl App {
             }
         });
         for command in changes {
-            self.send(command);
-        }
-    }
-
-    /// Recording real play sessions and replaying them into the mode.
-    fn sessions(&mut self, ui: &mut egui::Ui, s: &Shared) {
-        card(PANEL).inner_margin(Margin::symmetric(16, 12)).show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.label(RichText::new("Without the game").strong().size(15.0));
-            self.simulator(ui);
-        });
-        ui.add_space(10.0);
-        ui.label(muted(
-            "Record the game's rumble and your buttons while you play, then replay them here to tune the mode \
-             on a real fight without playing it again.",
-        ));
-        ui.add_space(4.0);
-        match (s.recording, &s.replay) {
-            (Some(secs), _) => {
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new(format!("⏺ Recording {}", clock(secs))).strong().color(DANGER_TEXT));
-                    if ui.add(primary("⏹ Stop and save")).clicked() {
-                        self.send(Command::StopRecording);
-                    }
-                });
-            }
-            (None, Some(replay)) => {
-                let header = &replay.info.header;
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new(format!("▶ Replaying {}", title(&replay.info))).strong());
-                    ui.label(muted(format!("{} / {}", clock(replay.position), clock(header.duration))));
-                    if ui.button("⏹ Stop").clicked() {
-                        self.send(Command::StopReplay);
-                    }
-                });
-                let progress = if header.duration > 0.0 { replay.position / header.duration } else { 1.0 };
-                // Sized to the panel, which would otherwise grow with it.
-                meter(ui, ui.available_width(), progress, ACCENT);
-                if !replay.to_toys {
-                    ui.label(muted("Toys stay still: watch the Graphs tab.").size(12.0));
-                }
-            }
-            (None, None) => {
-                ui.horizontal(|ui| {
-                    if ui.add(primary("⏺ Record a session")).on_hover_text("Start it, then play the game").clicked() {
-                        self.send(Command::StartRecording);
-                    }
-                    let save = egui::Button::new(format!("Save the last {:.0} min", RECENT_SECS / 60.0));
-                    if ui.add(save).on_hover_text("GameViber always keeps the last minutes of play in memory").clicked() {
-                        self.send(Command::SaveRecent);
-                    }
-                });
-            }
-        }
-        ui.separator();
-        ui.horizontal(|ui| {
-            eyebrow(ui, "Recordings");
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.checkbox(&mut self.creator.replay_to_toys, "Toys play the replay");
-            });
-        });
-        if s.recordings.is_empty() {
-            ui.label(muted("No recording yet."));
-        }
-        let busy = s.recording.is_some();
-        let mut command = None;
-        egui::ScrollArea::vertical().auto_shrink([false, true]).show(ui, |ui| {
-            for info in &s.recordings {
-                card(PANEL).inner_margin(Margin::same(8)).show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    ui.label(RichText::new(title(info)).strong());
-                    ui.label(
-                        muted(format!("{} · {} · mode {}", info.header.started, clock(info.header.duration), info.header.mode))
-                            .size(12.0),
-                    );
-                    ui.horizontal(|ui| {
-                        if ui.add_enabled(!busy, egui::Button::new("▶ Replay")).on_hover_text("Restarts the active mode").clicked() {
-                            command = Some(Command::Replay { path: info.path.clone(), to_toys: self.creator.replay_to_toys });
-                        }
-                        if self.creator.deleting.as_ref() == Some(&info.path) {
-                            if ui.button("Cancel").clicked() {
-                                self.creator.deleting = None;
-                            }
-                            if ui.button(RichText::new("Delete").color(DANGER_TEXT)).clicked() {
-                                command = Some(Command::DeleteRecording(info.path.clone()));
-                                self.creator.deleting = None;
-                            }
-                        } else if ui.button("🗑").on_hover_text("Delete this recording").clicked() {
-                            self.creator.deleting = Some(info.path.clone());
-                        }
-                    });
-                });
-            }
-        });
-        if let Some(command) = command {
             self.send(command);
         }
     }
@@ -597,17 +495,6 @@ fn code_view(ui: &mut egui::Ui, editor: &mut Editor, editable: bool, error_line:
             }
         });
     });
-}
-
-/// The game a recording comes from, else its mode.
-fn title(info: &RecordingInfo) -> &str {
-    info.header.game.as_deref().unwrap_or(&info.header.mode)
-}
-
-/// "1:05"
-fn clock(secs: f64) -> String {
-    let secs = secs.max(0.0) as u64;
-    format!("{}:{:02}", secs / 60, secs % 60)
 }
 
 /// `source` with the mode named `name`.

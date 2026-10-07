@@ -270,7 +270,7 @@ fn inputs_card(ui: &mut egui::Ui, s: &Shared) {
 }
 
 /// A label of fixed width, then `content` on the same line.
-fn row<R>(ui: &mut egui::Ui, label: &str, content: impl FnOnce(&mut egui::Ui) -> R) -> egui::Response {
+pub(super) fn row<R>(ui: &mut egui::Ui, label: &str, content: impl FnOnce(&mut egui::Ui) -> R) -> egui::Response {
     ui.horizontal(|ui| {
         let layout = egui::Layout::left_to_right(egui::Align::Center);
         ui.allocate_ui_with_layout(Vec2::new(LABEL_WIDTH, 18.0), layout, |ui| {

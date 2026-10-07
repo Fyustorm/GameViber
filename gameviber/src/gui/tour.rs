@@ -28,6 +28,8 @@ enum Stop {
     /// The Creator on a tab, how a mode works shown or not.
     Creator(Tab, bool),
     Setup(setup::Tab),
+    /// The newest recording open in the session player, half way through.
+    SessionPlayer,
     /// The captures and indicators tab, editing a bar indicator (else the first indicator).
     IndicatorEdit,
     /// The Community page on its first game, and that game's first mode.
@@ -40,7 +42,7 @@ enum Stop {
     PadSetup(Labels),
 }
 
-const STOPS: [(&str, Stop); 25] = [
+const STOPS: [(&str, Stop); 26] = [
     ("library", Stop::Library(Route::Library)),
     ("create-mode", Stop::Library(Route::Create)),
     ("mode", Stop::Library(Route::Mode)),
@@ -51,6 +53,7 @@ const STOPS: [(&str, Stop); 25] = [
     ("creator-programs", Stop::Creator(Tab::Programs, false)),
     ("creator-script", Stop::Creator(Tab::Script, false)),
     ("creator-sessions", Stop::Creator(Tab::Sessions, false)),
+    ("session-player", Stop::SessionPlayer),
     ("creator-logs", Stop::Creator(Tab::Logs, false)),
     ("community", Stop::Page(Page::Community)),
     ("community-game", Stop::CommunityGame),
@@ -132,6 +135,13 @@ impl App {
                 if let Some(inputs) = s.mode_inputs.as_ref().filter(|_| tour.frames == 1) {
                     let zone = inputs.zones.iter().position(|z| z.kind == crate::package::IndicatorKind::Gauge).unwrap_or(0);
                     self.screen.edit_zone(zone, inputs);
+                }
+            }
+            Stop::SessionPlayer => {
+                self.page = Page::Creator;
+                self.creator.tab = Tab::Sessions;
+                if let Some(info) = s.recordings.first().filter(|_| tour.frames == 1) {
+                    self.creator.sessions.preview(info);
                 }
             }
             Stop::StatsConsent => {}

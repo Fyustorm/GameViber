@@ -6,7 +6,6 @@
 
 use std::collections::BTreeMap;
 use std::fmt::Write;
-use std::path::Path;
 
 use super::rumble_events::{RumbleEvent, RumbleTracker};
 use super::phases::Sense;
@@ -24,17 +23,20 @@ const MAX_VIBRATIONS: usize = 150;
 const MAX_PRESSES: usize = 200;
 const MAX_PLOTS: usize = 6;
 
-struct Tick {
-    t: f64,
-    rumble: f64,
-    held: Vec<&'static str>,
+/// What the mode did during one step.
+pub struct Tick {
+    pub t: f64,
+    pub rumble: f64,
+    pub held: Vec<&'static str>,
     /// Loudness of the game's sound, when it was captured.
-    sound: Option<f64>,
+    pub sound: Option<f64>,
     /// Action on the game's screen, when it was copied.
-    image: Option<f64>,
-    phase: Option<String>,
-    channels: BTreeMap<String, f64>,
-    plots: Vec<(String, f64)>,
+    pub image: Option<f64>,
+    pub phase: Option<String>,
+    /// How likely each phase is (averaged), when the mode has phases.
+    pub phases: Vec<(String, f64)>,
+    pub channels: BTreeMap<String, f64>,
+    pub plots: Vec<(String, f64)>,
 }
 
 /// The mode replayed on a session.
@@ -81,7 +83,7 @@ pub fn simulate(
     let info = rt.info().clone();
     let duration = session.header.duration;
     let marks = session.changes.iter().filter(|(_, c)| *c == Change::Mark).map(|(t, _)| *t).collect();
-    let mut player = Player::new(session, Path::new(""), 0.0);
+    let mut player = Player::new(session, 0.0);
     let mut pad = PadState::default();
     let mut tracker = RumbleTracker::new(info.rumble_threshold, info.rumble_release, 0.0);
     let mut sim = Simulation {
@@ -170,7 +172,7 @@ pub fn simulate(
             }
         };
         sim.hud_events.extend(out.hud_events.into_iter().map(|e| (t, e)));
-        let current = rt.phase_state().0;
+        let (current, likelihoods) = if sim.has_phases { rt.phase_state() } else { (None, Vec::new()) };
         if current != phase {
             sim.phase_changes.push((t, current.clone()));
             phase = current;
@@ -182,6 +184,7 @@ pub fn simulate(
             sound: player.audio.map(|a| a.level),
             image: player.screen.map(|l| l.action as f64),
             phase: phase.clone(),
+            phases: likelihoods,
             channels: out.channels,
             plots: out.plots,
         });
@@ -190,6 +193,26 @@ pub fn simulate(
 }
 
 impl Simulation {
+    /// What the mode did, step by step (every 20 ms).
+    pub fn ticks(&self) -> &[Tick] {
+        &self.ticks
+    }
+
+    /// Messages the mode showed with `hud_event`.
+    pub fn hud_events(&self) -> &[(f64, String)] {
+        &self.hud_events
+    }
+
+    /// When and why the mode stopped on a runtime error.
+    pub fn error(&self) -> Option<&(f64, String)> {
+        self.error.as_ref()
+    }
+
+    /// Why the phases could not be recognized.
+    pub fn phases_unavailable(&self) -> Option<&str> {
+        self.phases_unavailable.as_deref()
+    }
+
     /// The simulation as Markdown sections for an AI assistant.
     pub fn report(&self) -> String {
         let mut out = String::new();
@@ -404,7 +427,7 @@ function tick(dt, input)
 end
 "#;
         let session = Session {
-            header: Header { version: 1, started: "now".into(), game: None, mode: "T".into(), duration: 2.0, marks: 1 },
+            header: Header { version: 1, started: "now".into(), game: None, mode: "T".into(), duration: 2.0, marks: 1, frames: 0 },
             changes: vec![
                 (0.5, Change::Button { name: "LT".into(), pressed: true }),
                 (0.6, Change::Rumble { strong: 0.8, weak: 0.0 }),
@@ -412,6 +435,7 @@ end
                 (0.9, Change::Rumble { strong: 0.0, weak: 0.0 }),
                 (1.2, Change::Mark),
             ],
+            frames: Vec::new(),
         };
         let params = [("gain".to_owned(), ParamValue::Number(0.5))].into_iter().collect();
         let sim = simulate("t.luau", source, &params, &Inputs::default(), session).unwrap();
@@ -436,12 +460,13 @@ function on_audio_hit(ev) pulse(ev.strength, 0.1) end
 function tick(dt, input) end
 "#;
         let session = Session {
-            header: Header { version: 2, started: "now".into(), game: None, mode: "T".into(), duration: 1.0, marks: 0 },
+            header: Header { version: 2, started: "now".into(), game: None, mode: "T".into(), duration: 1.0, marks: 0, frames: 0 },
             changes: vec![
                 (0.1, Change::Audio { level: 0.6, low: 0.5, mid: 0.2, high: 0.1, intensity: 0.3 }),
                 (0.3, Change::AudioHit { strength: 0.9, band: crate::audio::Band::Low }),
                 (0.6, Change::NoAudio),
             ],
+            frames: Vec::new(),
         };
         let report = simulate("t.luau", source, &BTreeMap::new(), &Inputs::default(), session).unwrap().report();
         assert!(report.contains("### The game's sound\n\n1 hits heard"), "{report}");
@@ -457,8 +482,9 @@ function tick(dt, input) end
     fn runtime_errors_are_reported() {
         let source = "mode { api = 1, name = 'T' } function tick(dt, input) if input.time > 0.1 then error('boom') end end";
         let session = Session {
-            header: Header { version: 1, started: "now".into(), game: None, mode: "T".into(), duration: 1.0, marks: 0 },
+            header: Header { version: 1, started: "now".into(), game: None, mode: "T".into(), duration: 1.0, marks: 0, frames: 0 },
             changes: Vec::new(),
+            frames: Vec::new(),
         };
         let report = simulate("t.luau", source, &BTreeMap::new(), &Inputs::default(), session).unwrap().report();
         assert!(report.contains("stopped on an error"), "{report}");

@@ -97,6 +97,9 @@ pub struct Settings {
     pub external_port: u16,
     /// Keyboard shortcuts for the combos' actions, through the desktop's portal.
     pub keyboard_shortcuts: bool,
+    /// Images of the game a recorded session keeps per second (the last
+    /// minutes always keep `session::FRAME_RATE`).
+    pub recording_images: f64,
     /// New GameViber versions are looked for on GitHub (`update`).
     pub check_updates: bool,
     /// The game last played, by id (`game.rs`).
@@ -203,6 +206,7 @@ impl Default for Settings {
             screen: true,
             external_port: DEFAULT_EXTERNAL_PORT,
             keyboard_shortcuts: false,
+            recording_images: crate::session::FRAME_RATE,
             check_updates: true,
             active_game: None,
             language: DEFAULT_LANGUAGE.into(),

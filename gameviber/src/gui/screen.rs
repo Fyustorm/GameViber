@@ -886,6 +886,9 @@ impl App {
                     .add_enabled(!busy, egui::Button::new(if busy { "Importing..." } else { "🖼 From files..." }))
                     .on_hover_text("Add images from your computer: screenshots of the game (PNG, JPEG, WebP, BMP)")
                     .clicked();
+                if ui.button("🎞 From a session").on_hover_text("Pick images among those recorded with your play sessions").clicked() {
+                    self.creator.show_sessions();
+                }
             });
             if let Some((ok, message)) = &self.screen.import_message {
                 ui.label(RichText::new(message).color(if *ok { OK } else { WARN }).size(12.0));
