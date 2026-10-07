@@ -9,6 +9,8 @@
 
 use std::collections::VecDeque;
 
+use serde::{Deserialize, Serialize};
+
 use crate::models::{self, Embedding};
 
 pub const DEFAULT_WINDOW: f64 = 10.0;
@@ -31,6 +33,25 @@ pub struct PhaseDecl {
     pub indicator: Option<String>,
     /// Seconds the phase is kept after its last sign.
     pub hold: f64,
+    /// Events the mode does not get during the phase.
+    pub ignore: Ignored,
+}
+
+/// Guessed events a phase keeps from the mode, set up by the player (a menu's
+/// clicks heard as hits): the script never sees them while the phase is current.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Ignored {
+    /// Hits of the sound: `on_audio_hit`, and `on_impact` from the sound.
+    pub sound_hits: bool,
+    /// Flashes of the image: `on_impact` from the screen.
+    pub flashes: bool,
+}
+
+impl Ignored {
+    pub fn is_none(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -306,7 +327,7 @@ mod tests {
     }
 
     fn decls(names: &[&str]) -> Vec<PhaseDecl> {
-        names.iter().map(|n| PhaseDecl { name: (*n).to_owned(), sound: None, screen: None, indicator: None, hold: 0.0 }).collect()
+        names.iter().map(|n| PhaseDecl { name: (*n).to_owned(), sound: None, screen: None, indicator: None, hold: 0.0, ignore: Ignored::default() }).collect()
     }
 
     fn names() -> Vec<PhaseDecl> {

@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use crate::audio::{AudioHit, AudioLevels, Embedding};
 use crate::gamepad::{ButtonEvent, PadState, AXES, BUTTONS};
 use crate::screen::ScreenLevels;
-use phases::{PhaseChange, PhaseDecl, PhaseTracker, Sense};
+use phases::{Ignored, PhaseChange, PhaseDecl, PhaseTracker, Sense};
 use outputs::Outputs;
 use rumble_events::{RumbleEvent, RumbleLevels, RumbleTracker, DEFAULT_RELEASE, DEFAULT_THRESHOLD};
 
@@ -705,7 +705,7 @@ impl ModeRuntime {
                     self.call_opt(&self.callbacks.on_device, t)?;
                 }
                 ModeEvent::AudioHit(hit) => {
-                    if self.audio.is_none() {
+                    if self.audio.is_none() || self.ignored().sound_hits {
                         continue;
                     }
                     if self.callbacks.on_audio_hit.is_some() {
@@ -735,7 +735,7 @@ impl ModeRuntime {
                     }
                 }
                 ModeEvent::ScreenFlash(strength) => {
-                    if self.screen.is_some() {
+                    if self.screen.is_some() && !self.ignored().flashes {
                         self.impact(*strength, "screen", time)?;
                     }
                 }
@@ -812,6 +812,12 @@ impl ModeRuntime {
         let hud = ctx.hud.clone();
         let channels = ctx.outputs().map_err(lua_err)?.evaluate(time);
         Ok(TickOutput { channels, plots, hud, hud_events })
+    }
+
+    /// What the current phase keeps from the mode.
+    fn ignored(&self) -> Ignored {
+        let current = self.phases.current();
+        self.phase_decls.iter().find(|p| Some(p.name.as_str()) == current).map_or_else(Ignored::default, |p| p.ignore)
     }
 
     fn impact(&self, strength: f64, source: &str, time: f64) -> Result<(), String> {
@@ -1041,7 +1047,7 @@ fn parse_info(declared: &Table) -> LoadResult<ModeInfo> {
             if sound.is_none() && screen.is_none() {
                 return Err(format!("mode.{phases_key}: phase '{name}' needs a sound or a screen description"));
             }
-            phases.push(PhaseDecl { name, sound, screen, indicator: None, hold: 0.0 });
+            phases.push(PhaseDecl { name, sound, screen, indicator: None, hold: 0.0, ignore: Ignored::default() });
         }
         phases.sort_by(|a, b| a.name.cmp(&b.name));
         if !(2..=MAX_PHASES).contains(&phases.len()) {

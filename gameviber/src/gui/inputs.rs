@@ -20,6 +20,11 @@ const SURE_SIGN_HELP: &str = "An indicator shown only in this phase (the battle 
     while it is shown the phase is certain, right away, and the phase is only entered through it.";
 const HOLD_HELP: &str = "How long the phase is kept after its last sign (its indicator gone, or another phase sounding \
     or looking more likely). Longer for signs that come and go, like a battle menu hidden during attacks.";
+const IGNORE_HELP: &str = "Guessed events the mode does not get in this phase: the hits of the sound (on_audio_hit, and \
+    on_impact from the sound), loud clicks and music in a menu; the flashes of the image (on_impact from the screen).";
+const IGNORE_SURE: &str = "Right away: the phase comes from its indicator.";
+const IGNORE_LATE: &str = "Without a sure sign, the phase is guessed a few seconds late and can be wrong: a few events \
+    still pass when it starts, and some are lost when it is wrongly recognized. Tie it to an indicator to make it exact.";
 
 /// Captures per phase that make its recognition reliable.
 const CAPTURES_WANTED: usize = 5;
@@ -131,11 +136,12 @@ impl App {
                 indicator_names.dedup();
                 indicator_names.sort();
                 indicator_names.dedup();
-                egui::Grid::new("game-phases").num_columns(6).spacing([12.0, 6.0]).show(ui, |ui| {
+                egui::Grid::new("game-phases").num_columns(7).spacing([12.0, 6.0]).show(ui, |ui| {
                     ui.label(muted("Phase").size(12.0));
                     ui.label(muted("How it sounds (optional, for the sound model)").size(12.0));
                     ui.label(muted("Sure sign").size(12.0)).on_hover_text(SURE_SIGN_HELP);
                     ui.label(muted("Kept").size(12.0)).on_hover_text(HOLD_HELP);
+                    ui.label(muted("Ignored").size(12.0)).on_hover_text(IGNORE_HELP);
                     ui.label(muted("Right now").size(12.0));
                     ui.label("");
                     ui.end_row();
@@ -164,6 +170,7 @@ impl App {
                             .response
                             .on_hover_text(SURE_SIGN_HELP);
                         });
+                        let sure = indicator.is_some();
                         if indicator != phase.indicator.clone().filter(|z| indicator_names.contains(&z.as_str())) {
                             let mut g = inputs.clone();
                             g.phases[i].indicator = indicator;
@@ -180,6 +187,21 @@ impl App {
                         }
                         if !drag.dragged() && !drag.has_focus() && !done {
                             *hold = phase.hold;
+                        }
+                        let mut ignore = phase.ignore;
+                        ui.horizontal(|ui| {
+                            ui.checkbox(&mut ignore.sound_hits, "Sound hits");
+                            ui.checkbox(&mut ignore.flashes, "Flashes");
+                            if !ignore.is_none() && !sure {
+                                ui.label(RichText::new("⚠").color(WARN)).on_hover_text(IGNORE_LATE);
+                            }
+                        })
+                        .response
+                        .on_hover_text(format!("{IGNORE_HELP}\n\n{}", if sure { IGNORE_SURE } else { IGNORE_LATE }));
+                        if ignore != phase.ignore && changed.is_none() {
+                            let mut g = inputs.clone();
+                            g.phases[i].ignore = ignore;
+                            changed = Some(g);
                         }
                         match live.get(phase.name.as_str()) {
                             Some(p) => {

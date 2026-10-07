@@ -120,7 +120,10 @@ to set some up.
   changes between them. GameViber recognizes them from the sound and from your
   captures, with models (about 350 MB) downloaded the first time a mode needs
   them, running on your computer. Phases come a few seconds late: modes use
-  them for the mood of a phase.
+  them for the mood of a phase. A phase can **ignore** the sound's hits or the
+  image's flashes, for a menu whose clicks and music the mode would take for
+  hits: exact when the phase has a sure sign (an indicator), else a few seconds
+  late.
 - **Captures**: while the game shows a battle, a dialogue..., hold **BACK + LS**
   on the gamepad (or press the capture key, Ctrl + Alt + C suggested). The image
   is captured without leaving the game. A few captures per phase make the

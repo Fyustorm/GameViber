@@ -13,7 +13,10 @@
   weakest intensity, which the player sets per toy.
 - **Keep the game's rumble perceptible**, usually `math.max(effect, rumble * weight)`.
 - **Quiet moments fade to 0**: menus, pauses, cutscenes without rumble (`input.idle`;
-  `rumble_idle` counts from mode activation until the first vibration).
+  `rumble_idle` counts from mode activation until the first vibration). Pulses too:
+  sound impacts also come from menus, dialogue and music, so `on_impact` only plays when
+  the mode's own check says the game is in action (an indicator, else recent rumble with
+  a tunable delay, or a phase), never on its own.
 - Toys get at most 20 updates per second: keep pulses and pattern steps at least 0.1 s
   long, and waves slower than about 5 Hz.
 
@@ -35,7 +38,8 @@
   only heard (`sound`) and what is only seen (`screen`) there. Use them for the mood only
   (they come seconds late), never to time an effect. The mode must work when
   `input.phase` is nil.
-  Filter `on_impact` with a strength parameter. Prefer these high-level inputs; the raw
+  Filter `on_impact` with a strength parameter and the same action check as the
+  background. Prefer these high-level inputs; the raw
   ones (§6.4) only when they say something the high-level ones do not.
 - Indicators and external inputs (§6.5, in advanced requests) exist only once the player set them up:
   read them defensively (`input.indicators.hp or 1`). They say exactly what phases guess.

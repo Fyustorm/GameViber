@@ -296,6 +296,9 @@ phase_window = 10,   -- seconds the probabilities are averaged over (2 to 60), d
   that comes and goes does not flip it. When the indicator is gone and no other phase is
   likely, `ev.phase` is nil.
   Modes still get phases late and must not time effects on them.
+- A phase set up can also **ignore** the sound's hits (`on_audio_hit`, and `on_impact`
+  from the sound) or the image's flashes (`on_impact` from the screen): while it is the
+  current phase, the mode does not get them (a menu's clicks and music heard as hits).
 - **Describe what is only heard or only seen in a phase**: music style, tempo,
   instruments, voices for `sound`; the interface, framing and colors for `screen`. Two or
   three contrasted phases work much better than many close ones. Make them contrast:

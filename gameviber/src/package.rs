@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::{self, ModeEntry};
 use crate::game;
-use crate::mode::phases::PhaseDecl;
+use crate::mode::phases::{Ignored, PhaseDecl};
 use crate::screen::Frame;
 
 /// The inputs of a mode, in its package.
@@ -41,11 +41,14 @@ pub struct PhaseDef {
     pub indicator: Option<String>,
     /// Seconds the phase is kept after its last sign: longer for signs that come and go.
     pub hold: f64,
+    /// Events the mode does not get during the phase.
+    #[serde(skip_serializing_if = "Ignored::is_none")]
+    pub ignore: Ignored,
 }
 
 impl Default for PhaseDef {
     fn default() -> Self {
-        Self { name: String::new(), sound: None, screen: None, indicator: None, hold: DEFAULT_HOLD }
+        Self { name: String::new(), sound: None, screen: None, indicator: None, hold: DEFAULT_HOLD, ignore: Ignored::default() }
     }
 }
 
@@ -170,7 +173,7 @@ impl Default for Zone {
             kind: IndicatorKind::Visibility,
             rect: [0.0, 0.0, 0.1, 0.1],
             reference: Vec::new(),
-            threshold: 0.45,
+            threshold: 0.6,
             color: [0, 0, 0],
             empty_color: None,
             more_colors: Vec::new(),
@@ -365,6 +368,7 @@ impl Inputs {
                 // Only an indicator the mode still has.
                 indicator: s.indicator.clone().filter(|z| self.zones.iter().any(|zone| zone.indicator == *z)),
                 hold: s.hold,
+                ignore: s.ignore,
             })
             .collect()
     }

@@ -1,6 +1,6 @@
 use super::*;
 use crate::audio::AudioHit;
-use crate::mode::phases::Sense;
+use crate::mode::phases::{Ignored, PhaseDecl, Sense};
 use crate::mode::IndicatorValue;
 use crate::screen::ScreenLevels;
 
@@ -735,6 +735,55 @@ fn input_audio_and_hits_follow_the_game_sound() {
     rt.set_audio(None);
     let out = rt.step(DT, rumble(0.0, 0.0), &PadState::default(), 1e9, &[hit(0.9)]).unwrap();
     assert_eq!((plot_value(&out, "active"), plot_value(&out, "hits")), (0.0, 2.0));
+}
+
+#[test]
+fn a_phase_keeps_the_events_it_ignores_from_the_mode() {
+    let src = wrap(
+        "hits, sound, screen = 0, 0, 0
+         function on_audio_hit(ev) hits += 1 end
+         function on_impact(ev) if ev.source == 'sound' then sound += 1 else screen += 1 end end
+         function tick(dt, input)
+           plot('hits', hits); plot('sound', sound); plot('screen', screen)
+           plot('menu', input.phase == 'menu' and 1 or 0)
+         end",
+    );
+    let mut rt = load(&src);
+    rt.set_audio(Some(audio_levels(0.5)));
+    rt.set_screen(Some(ScreenLevels::default()));
+    let phase = |name: &str, indicator: Option<&str>, ignore| PhaseDecl {
+        name: name.into(),
+        sound: None,
+        screen: None,
+        indicator: indicator.map(Into::into),
+        hold: 0.0,
+        ignore,
+    };
+    rt.set_game_phases(&[
+        phase("menu", Some("menu_button"), Ignored { sound_hits: true, flashes: false }),
+        phase("play", None, Ignored::default()),
+    ]);
+    let events = [ModeEvent::AudioHit(AudioHit { strength: 0.8, band: crate::audio::Band::Mid }), ModeEvent::ScreenFlash(0.7)];
+    let counts = |out: &TickOutput| ["hits", "sound", "screen", "menu"].map(|k| plot_value(out, k));
+
+    // Outside the menu, the mode gets everything.
+    let out = rt.step(DT, rumble(0.0, 0.0), &PadState::default(), 1e9, &events).unwrap();
+    assert_eq!(counts(&out), [1.0, 1.0, 1.0, 0.0]);
+
+    // The menu's indicator shows: once it is the phase, the sound's hits stop, its flashes do not.
+    let shown = ModeEvent::Indicator { name: "menu_button".into(), value: IndicatorValue::Visibility(true) };
+    rt.step(DT, rumble(0.0, 0.0), &PadState::default(), 1e9, &[shown]).unwrap();
+    for _ in 0..30 {
+        step(&mut rt, rumble(0.0, 0.0));
+    }
+    let out = rt.step(DT, rumble(0.0, 0.0), &PadState::default(), 1e9, &events).unwrap();
+    assert_eq!(counts(&out), [1.0, 1.0, 2.0, 1.0]);
+
+    // The menu gone, hits come again.
+    let hidden = ModeEvent::Indicator { name: "menu_button".into(), value: IndicatorValue::Visibility(false) };
+    rt.step(DT, rumble(0.0, 0.0), &PadState::default(), 1e9, &[hidden]).unwrap();
+    let out = rt.step(DT, rumble(0.0, 0.0), &PadState::default(), 1e9, &events).unwrap();
+    assert_eq!(counts(&out), [2.0, 2.0, 3.0, 0.0]);
 }
 
 #[test]
