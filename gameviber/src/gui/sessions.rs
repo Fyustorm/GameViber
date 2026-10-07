@@ -37,6 +37,18 @@ const TEXTURES: usize = 48;
 /// What happened this many seconds before the moment shown is listed.
 const RECENT_EVENTS_SECS: f64 = 2.0;
 const SPEEDS: [f64; 4] = [0.25, 0.5, 1.0, 2.0];
+/// Seconds Shift + an arrow moves by.
+const JUMP_SECS: f64 = 5.0;
+/// The player's keyboard shortcuts, as shown to players.
+const SHORTCUTS: &str = "Space: play or pause\n\
+    Left / Right: previous or next image\n\
+    Shift + Left / Right: 5 seconds back or forward\n\
+    Home / End: start or end\n\
+    M / Shift + M: next or previous moment you marked\n\
+    + −: faster or slower\n\
+    P: pick the image shown (or unpick it)\n\
+    A: add the images picked (else the one shown) to the captures\n\
+    Esc: unpick all";
 /// About what an image of the game takes as JPEG, for the estimates.
 const IMAGE_BYTES: f64 = 35_000.0;
 
@@ -96,6 +108,8 @@ struct Player {
     picked: BTreeSet<usize>,
     phase: String,
     message: Option<(bool, String)>,
+    /// The images are to be added to the captures (A), by the filmstrip.
+    adding: bool,
 }
 
 impl Player {
@@ -125,6 +139,7 @@ impl Player {
             picked: BTreeSet::new(),
             phase: String::new(),
             message: None,
+            adding: false,
         }
     }
 
@@ -477,22 +492,8 @@ impl App {
         if p.playing || p.reading.is_some() || p.simulating.is_some() {
             ctx.request_repaint();
         }
-        // Space plays or pauses; the arrows move by an image.
         if ctx.memory(|m| m.focused().is_none()) {
-            let (space, left, right) = ui.input_mut(|i| {
-                (
-                    i.consume_key(egui::Modifiers::NONE, egui::Key::Space),
-                    i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowLeft),
-                    i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowRight),
-                )
-            });
-            if space {
-                p.toggle();
-            }
-            if left || right {
-                p.playing = false;
-                p.step(if left { -1 } else { 1 });
-            }
+            shortcuts(ui, p);
         }
 
         let mut close = false;
@@ -560,6 +561,7 @@ impl App {
                 inputs_card(ui, p, &moment, &session);
             });
         }
+        p.adding = false;
         p.sync(&commands, &info, s.recording.is_some());
         if let Some((dir, phase, frames)) = add {
             let count = frames.len();
@@ -586,6 +588,58 @@ impl App {
             ModeEntry::from_id(&s.mode.id).source().ok()?
         };
         Some(ModeKey { id: s.mode.id.clone(), source, values: s.mode.values.clone() })
+    }
+}
+
+/// The player's keyboard shortcuts, listed by `SHORTCUTS`.
+fn shortcuts(ui: &mut egui::Ui, p: &mut Player) {
+    use egui::{Key, Modifiers};
+    let (none, shift) = (Modifiers::NONE, Modifiers::SHIFT);
+    let key = |modifiers, key| ui.input_mut(|i| i.consume_key(modifiers, key));
+    if key(none, Key::Space) {
+        p.toggle();
+    }
+    for (k, by) in [(Key::ArrowLeft, -1), (Key::ArrowRight, 1)] {
+        if key(none, k) {
+            p.playing = false;
+            p.step(by);
+        }
+        if key(shift, k) {
+            p.seek(p.position + by as f64 * JUMP_SECS);
+        }
+    }
+    if key(none, Key::Home) {
+        p.seek(0.0);
+    }
+    if key(none, Key::End) {
+        p.playing = false;
+        p.seek(p.duration());
+    }
+    if key(none, Key::M) {
+        p.to_mark(1);
+    }
+    if key(shift, Key::M) {
+        p.to_mark(-1);
+    }
+    let faster = key(none, Key::Plus) || key(none, Key::Equals) || key(shift, Key::Equals);
+    let slower = key(none, Key::Minus);
+    if faster || slower {
+        let at = SPEEDS.iter().position(|s| *s == p.speed).unwrap_or(2);
+        let at = if faster { (at + 1).min(SPEEDS.len() - 1) } else { at.saturating_sub(1) };
+        p.speed = SPEEDS[at];
+    }
+    if key(none, Key::P) {
+        if let Some(i) = p.frame_index() {
+            if !p.picked.remove(&i) {
+                p.picked.insert(i);
+            }
+        }
+    }
+    if key(none, Key::Escape) {
+        p.picked.clear();
+    }
+    if key(none, Key::A) {
+        p.adding = true;
     }
 }
 
@@ -669,10 +723,10 @@ fn image_view(ui: &mut egui::Ui, ctx: &egui::Context, p: &mut Player, session: &
 fn transport(ui: &mut egui::Ui, p: &mut Player, cap: f64, session: &Session) {
     ui.add_space(6.0);
     ui.horizontal(|ui| {
-        if ui.button("⏮").on_hover_text("Back to the start").clicked() {
+        if ui.button("⏮").on_hover_text("Back to the start (Home)").clicked() {
             p.seek(0.0);
         }
-        if ui.button("⏴").on_hover_text("Previous image (←)").clicked() {
+        if ui.button("⏴").on_hover_text("Previous image (Left)").clicked() {
             p.playing = false;
             p.step(-1);
         }
@@ -680,7 +734,7 @@ fn transport(ui: &mut egui::Ui, p: &mut Player, cap: f64, session: &Session) {
         if ui.add(primary(play)).on_hover_text("Space: the toys play it too").clicked() {
             p.toggle();
         }
-        if ui.button("⏵").on_hover_text("Next image (→)").clicked() {
+        if ui.button("⏵").on_hover_text("Next image (Right)").clicked() {
             p.playing = false;
             p.step(1);
         }
@@ -688,14 +742,16 @@ fn transport(ui: &mut egui::Ui, p: &mut Player, cap: f64, session: &Session) {
             for speed in SPEEDS {
                 ui.selectable_value(&mut p.speed, speed, format!("×{speed}"));
             }
-        });
+        })
+        .response
+        .on_hover_text("Speed (+ −)");
         ui.label(RichText::new(format!("{} / {}", clock_tenths(p.position), clock(p.duration()))).monospace());
         if session.changes.iter().any(|(_, c)| *c == Change::Mark) {
             ui.add_space(8.0);
-            if ui.small_button("⚑ ‹").on_hover_text("Previous moment you marked").clicked() {
+            if ui.small_button("⚑ ‹").on_hover_text("Previous moment you marked (Shift + M)").clicked() {
                 p.to_mark(-1);
             }
-            if ui.small_button("› ⚑").on_hover_text("Next moment you marked").clicked() {
+            if ui.small_button("› ⚑").on_hover_text("Next moment you marked (M)").clicked() {
                 p.to_mark(1);
             }
         }
@@ -717,6 +773,9 @@ fn transport(ui: &mut egui::Ui, p: &mut Player, cap: f64, session: &Session) {
         if !p.picked.is_empty() {
             legend(ui, OK, "picked images");
         }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.label(muted("⌨ Shortcuts").size(11.0)).on_hover_text(SHORTCUTS);
+        });
     });
 }
 
@@ -969,7 +1028,7 @@ fn filmstrip(
                 1 => "📸 Add the image picked to the captures".to_owned(),
                 n => format!("📸 Add the {n} images picked to the captures"),
             };
-            let clicked = ui.button(label).on_hover_text("Pick images with the corner of each").clicked();
+            let clicked = ui.button(label).on_hover_text("A · Pick images with the corner of each, or P for the one shown").clicked();
             ui.label("under");
             let shown = if p.phase.is_empty() { "To sort later".to_owned() } else { p.phase.clone() };
             egui::ComboBox::from_id_salt("session-capture-phase").selected_text(shown).show_ui(ui, |ui| {
@@ -978,13 +1037,13 @@ fn filmstrip(
                     ui.selectable_value(&mut p.phase, phase.name.clone(), &phase.name);
                 }
             });
-            if picked > 0 && ui.small_button("Unpick all").clicked() {
+            if picked > 0 && ui.small_button("Unpick all").on_hover_text("Esc").clicked() {
                 p.picked.clear();
             }
             if let Some((ok, message)) = &p.message {
                 ui.label(RichText::new(message).color(if *ok { OK } else { WARN }).size(12.0));
             }
-            if clicked {
+            if clicked || p.adding {
                 let frames: Vec<_> = wanted.iter().filter_map(|i| session.frames.get(*i)?.data.load().ok()).collect();
                 if frames.len() < wanted.len() {
                     p.message = Some((false, "Some images could not be read.".to_owned()));
@@ -1038,7 +1097,7 @@ fn filmstrip(
                 if response.hovered() {
                     ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
                 }
-                let response = response.on_hover_text(if on_corner { "Pick it for the captures" } else { "See this moment" });
+                let response = response.on_hover_text(if on_corner { "Pick it for the captures (P: the image shown)" } else { "See this moment" });
                 if response.clicked() {
                     if on_corner {
                         if !p.picked.remove(&i) {
