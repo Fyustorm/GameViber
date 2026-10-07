@@ -16,6 +16,7 @@ use std::path::PathBuf;
 
 use tokio::sync::mpsc::UnboundedSender;
 
+use crate::gamepad::mapping::{Mapping, Origin, RawState};
 use crate::rumble::Effect;
 
 #[derive(Debug, Clone)]
@@ -66,6 +67,32 @@ pub struct SourceOptions {
     pub hide: bool,
 }
 
+/// Where the Xbox layout of the gamepad a source reads comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PadLayout {
+    /// Its driver's: games get a copy of it.
+    Driver,
+    /// A mapping: games get an Xbox 360 controller.
+    Mapped(Origin),
+    /// None: its buttons are to be set up before games get it.
+    Missing,
+}
+
+/// The gamepad a source reads, to set up its buttons.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PadInfo {
+    pub name: String,
+    /// SDL's GUID, what its mapping is saved under (`gamepad::mapping`).
+    pub guid: String,
+    pub layout: PadLayout,
+    /// Its mapping, when it has one.
+    pub mapping: Option<Mapping>,
+    /// Its buttons, axes and hats now, by SDL's numbering.
+    pub raw: RawState,
+    /// It can vibrate itself.
+    pub rumble: bool,
+}
+
 /// A running source.
 pub trait ActiveSource {
     /// One line for the logs and the GUI.
@@ -73,5 +100,13 @@ pub trait ActiveSource {
     fn health(&self) -> SourceHealth;
     /// Names of the gamepads it sees (none once it failed).
     fn gamepads(&self) -> Vec<String>;
+    /// The gamepad whose buttons can be set up (proxy).
+    fn pad(&self) -> Option<PadInfo> {
+        None
+    }
+    /// What players should know about their gamepads, in plain words.
+    fn hint(&self) -> Option<String> {
+        None
+    }
     fn shutdown(self: Box<Self>);
 }

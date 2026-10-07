@@ -3,8 +3,9 @@
 # write itself, which its packages must carry (packaging/linux/stage.sh):
 #   packaging/third-party/licenses.sh OUTPUT
 # The Rust crates come from cargo-about (in PATH; see about.toml), then what it
-# does not see: Luau (C++, built by a build dependency of mlua) and ONNX
-# Runtime (a prebuilt library, with the notices of what it contains).
+# does not see: Luau (C++, built by a build dependency of mlua), ONNX
+# Runtime (a prebuilt library, with the notices of what it contains) and the
+# gamepad mappings of SDL_GameControllerDB (gameviber/gamepads/).
 set -eu
 [ $# -eq 1 ] || { echo "usage: $0 OUTPUT" >&2; exit 2; }
 here=$(cd "$(dirname "$0")" && pwd)
@@ -53,4 +54,8 @@ HEAD
     printf '\nONNX Runtime includes the components below. Eigen is under the Mozilla Public\n'
     printf 'License 2.0: its source code is at https://gitlab.com/libeigen/eigen.\n\n'
     cat "$here/onnxruntime-ThirdPartyNotices.txt"
+    printf '\n================================================================================\n'
+    printf 'SDL_GameControllerDB (https://github.com/mdqinc/SDL_GameControllerDB): its Linux mappings\n'
+    printf -- '--------------------------------------------------------------------------------\n'
+    cat "$root/gameviber/gamepads/LICENSE"
 } > "$out"

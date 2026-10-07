@@ -49,8 +49,9 @@ Options: `--source proxy|ebpf|none` (remembered), `--device /dev/input/eventX`,
 `--mode <file or built-in name>`, `--preset <name>`, `-v`.
 
 Test helpers: `tools/sdl_rumble.py` simulates an SDL3 game,
-`tools/fake_gamepad.py` a physical gamepad. `prototype/` is the original
-Python prototype (reference only).
+`tools/fake_gamepad.py` a physical gamepad. `tools/update-gamecontrollerdb.sh`
+refreshes the gamepad mappings embedded from SDL_GameControllerDB. `prototype/`
+is the original Python prototype (reference only).
 
 ## How it works
 
@@ -129,10 +130,10 @@ API, dev mode and deployment. A package it accepts must stay one the app
 imports: when the `.gameviber` format changes (`sharing.rs`), change
 `SharedPackage` too.
 
-```sh
 The app talks to the server set at build time by `GAMEVIBER_COMMUNITY_URL`
 (`community::URL`; `http://localhost:8080` without it).
 
+```sh
 cd server
 ./mvnw test          # the API, against a database of its own
 ./mvnw quarkus:dev   # http://localhost:8080, back-office token "dev"

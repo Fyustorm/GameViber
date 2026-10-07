@@ -32,7 +32,7 @@ use crate::screen::{self, Frame, ImagePhases, ScreenLevels, ScreenView};
 use crate::rumble::RumbleState;
 use crate::session::{self, Player, Recorder, RecordingInfo, Senses};
 pub use crate::source::SourceHealth;
-use crate::source::{ActiveSource, EventSender, SourceEvent, SourceKind, SourceOptions, Sources};
+use crate::source::{ActiveSource, EventSender, PadInfo, SourceEvent, SourceKind, SourceOptions, Sources};
 /// Play with a mode in one go that counts as a session of it (community stats).
 const SESSION_SECS: f64 = 120.0;
 
@@ -101,6 +101,10 @@ pub enum Command {
     SetCaptureCombo(Vec<String>),
     SetToySettings { toy: String, settings: ToySettings },
     SetSource { source: SourceChoice, hide: bool },
+    /// The player's mapping of a gamepad's buttons (`gamepad::mapping`); the source restarts with it.
+    SaveMapping(gamepad::mapping::Mapping),
+    /// Forgets the player's mapping of a gamepad (by SDL GUID); the source restarts.
+    ForgetMapping(String),
     /// Intiface server address; reconnects.
     SetUrl(String),
     /// Short vibration of one toy at a 0..1 intensity (shaped by its settings), to
@@ -225,6 +229,10 @@ pub struct Shared {
     pub source_health: SourceHealth,
     /// Names of the gamepads the source listens to.
     pub gamepads: Vec<String>,
+    /// The gamepad whose buttons can be set up (proxy).
+    pub pad: Option<PadInfo>,
+    /// What players should know about their gamepads (one that cannot vibrate...).
+    pub source_hint: Option<String>,
     /// Engine time of the last rumble from a game (simulator excluded).
     pub last_rumble: Option<f64>,
     /// A real gamepad button or axis was received.
@@ -312,6 +320,20 @@ impl Source {
         match self {
             Source::Running(s) => s.gamepads(),
             Source::Failed(_) | Source::None => Vec::new(),
+        }
+    }
+
+    fn pad(&self) -> Option<PadInfo> {
+        match self {
+            Source::Running(s) => s.pad(),
+            Source::Failed(_) | Source::None => None,
+        }
+    }
+
+    fn hint(&self) -> Option<String> {
+        match self {
+            Source::Running(s) => s.hint(),
+            Source::Failed(_) | Source::None => None,
         }
     }
 
@@ -624,13 +646,18 @@ impl Engine {
             return;
         }
         log::info!("switching source to {source:?}{}", if hide && source == SourceChoice::Proxy { " (hidden)" } else { "" });
+        self.settings.source = source;
+        self.settings.hide = hide;
+        self.settings.save();
+        self.restart_source();
+    }
+
+    /// Starts the source over (a gamepad's mapping changed, another source).
+    fn restart_source(&mut self) {
         std::mem::replace(&mut self.source, Source::None).shutdown();
         self.states.clear();
         self.events.extend(self.pad.release_all().into_iter().map(ModeEvent::Button));
         self.buttons_seen = false;
-        self.settings.source = source;
-        self.settings.hide = hide;
-        self.settings.save();
         self.start_source();
     }
 
@@ -765,6 +792,19 @@ impl Engine {
                 }
             }
             Command::SetSource { source, hide } => self.switch_source(source, hide),
+            Command::SaveMapping(mapping) => {
+                match gamepad::mapping::save(&mapping) {
+                    Ok(()) => log::info!("buttons of {} set up", mapping.name),
+                    Err(e) => log::error!("{e:#}"),
+                }
+                self.restart_source();
+            }
+            Command::ForgetMapping(guid) => {
+                if let Err(e) = gamepad::mapping::forget(&guid) {
+                    log::error!("{e:#}");
+                }
+                self.restart_source();
+            }
             Command::SetUrl(url) => self.set_url(url),
             Command::TestToy(name, level) => self.test = Some((name, level.clamp(0.0, 1.0), Instant::now() + TEST_LENGTH)),
             Command::SetOverlay(overlay) => {
@@ -1398,6 +1438,8 @@ impl Engine {
         shared.source = self.source.status();
         shared.source_health = self.source.health();
         shared.gamepads = self.source.gamepads();
+        shared.pad = self.source.pad();
+        shared.source_hint = self.source.hint();
         shared.last_rumble = self.last_rumble;
         shared.buttons_seen = self.buttons_seen;
         shared.intiface = toys;

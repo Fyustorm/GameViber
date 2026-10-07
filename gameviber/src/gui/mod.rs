@@ -20,6 +20,7 @@ mod keybindings;
 mod live;
 mod luau;
 mod onboarding;
+mod pad_setup;
 mod overlay;
 mod settings;
 mod setup;
@@ -102,6 +103,8 @@ pub struct App {
     toys: toys::State,
     overlay: overlay::State,
     settings: settings::State,
+    /// Setting up the gamepad's buttons (Gamepad page).
+    pad_setup: Option<pad_setup::PadSetup>,
     creator: creator::State,
     generator: generator::State,
     feedback: feedback::State,
@@ -144,6 +147,7 @@ impl App {
             toys: toys::State::default(),
             overlay: overlay::State::default(),
             settings: settings::State::default(),
+            pad_setup: None,
             creator: creator::State::default(),
             generator: generator::State::default(),
             feedback: feedback::State::default(),

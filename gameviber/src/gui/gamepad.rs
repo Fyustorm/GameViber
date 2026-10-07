@@ -1,6 +1,7 @@
 //! Gamepad page: the gamepad and rumble capture status, the inputs received
-//! right now, the capture method in plain words, and help when the rumble is
-//! not detected.
+//! right now, its buttons (set up step by step when its driver does not give
+//! the Xbox layout), the capture method in plain words, and help when the
+//! rumble is not detected.
 
 use eframe::egui::{self, Margin, RichText};
 
@@ -8,6 +9,9 @@ use super::theme::*;
 use super::{capture_status, gamepad_inputs, gamepad_status, App, RECENT_RUMBLE_SECS};
 use crate::config::SourceChoice;
 use crate::engine::{Command, Shared, SourceHealth};
+use super::pad_setup::{Labels, PadSetup};
+use crate::gamepad::mapping::Origin;
+use crate::source::{PadInfo, PadLayout};
 
 impl App {
     pub(super) fn gamepad_ui(&mut self, ui: &mut egui::Ui, s: &Shared) {
@@ -46,6 +50,21 @@ impl App {
                     ui.horizontal_wrapped(|ui| gamepad_inputs(ui, s));
                     rumble_check(ui, s);
                 });
+                if let Some(hint) = &s.source_hint {
+                    card(PANEL).stroke(egui::Stroke::new(1.0, WARN)).show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.label(RichText::new(hint).color(WARN));
+                    });
+                }
+                if let Some(pad) = &s.pad {
+                    card(PANEL).inner_margin(Margin::symmetric(16, 12)).show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        self.buttons_card(ui, pad);
+                    });
+                    self.pad_setup_ui(ui.ctx(), pad);
+                } else {
+                    self.pad_setup = None;
+                }
                 if let SourceHealth::Failed(e) = &s.source_health {
                     card(PANEL).stroke(egui::Stroke::new(1.0, DANGER)).show(ui, |ui| {
                         ui.set_width(ui.available_width());
@@ -82,6 +101,58 @@ impl App {
                     ui.label(RichText::new(&s.source).monospace().size(12.0));
                 });
             });
+        });
+    }
+}
+
+impl App {
+    /// The gamepad's layout, and its setup when one runs.
+    fn buttons_card(&mut self, ui: &mut egui::Ui, pad: &PadInfo) {
+        if self.pad_setup.as_ref().is_some_and(|setup| setup.guid != pad.guid) {
+            self.pad_setup = None;
+        }
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("🕹 Buttons").strong());
+            let (text, color) = match pad.layout {
+                PadLayout::Driver => ("Standard layout", OK),
+                PadLayout::Mapped(Origin::User) => ("Set up by you", OK),
+                PadLayout::Mapped(Origin::Community) => ("Known gamepad", OK),
+                PadLayout::Missing => ("To set up", WARN),
+            };
+            pill(ui, text, color, RAISED);
+        });
+        ui.label(match pad.layout {
+            PadLayout::Driver => format!("{}: its driver tells which button is which; games get a copy of it.", pad.name),
+            PadLayout::Mapped(Origin::User) => {
+                format!("{}: games get it as an Xbox 360 controller, with the buttons you set up.", pad.name)
+            }
+            PadLayout::Mapped(Origin::Community) => format!(
+                "{}: its buttons come from SDL's community database; games get it as an Xbox 360 controller.",
+                pad.name
+            ),
+            PadLayout::Missing => format!(
+                "{} does not tell which button is which (a DInput mode, for instance). Show GameViber once, \
+                 a button at a time: games then get it as an Xbox 360 controller.",
+                pad.name
+            ),
+        });
+        if !pad.rumble {
+            ui.label(muted("It cannot vibrate itself: the game's rumble only goes to your toys."));
+        }
+        ui.horizontal(|ui| {
+            let start = match pad.layout {
+                PadLayout::Missing => ui.add(primary("Set up its buttons")).clicked(),
+                PadLayout::Driver => ui.button("Buttons wrong in games? Set them up").clicked(),
+                PadLayout::Mapped(_) => ui.button("Set up again").clicked(),
+            };
+            if start {
+                self.pad_setup = Some(PadSetup::new(pad, Labels::default()));
+            }
+            if pad.layout == PadLayout::Mapped(Origin::User)
+                && ui.button("Forget my setup").on_hover_text("Back to the gamepad's own layout").clicked()
+            {
+                self.send(Command::ForgetMapping(pad.guid.clone()));
+            }
         });
     }
 }

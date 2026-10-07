@@ -6,6 +6,7 @@ use std::path::PathBuf;
 
 use eframe::egui;
 
+use super::pad_setup::{Labels, PadSetup};
 use super::{setup, App, GameView, Page, Route};
 use crate::engine::Shared;
 use crate::mode::prompt::Depth;
@@ -35,9 +36,11 @@ enum Stop {
     CommunityNothing,
     /// The first-launch question about sharing stats.
     StatsConsent,
+    /// Setting up the gamepad's buttons, half done (when the proxy reads one).
+    PadSetup(Labels),
 }
 
-const STOPS: [(&str, Stop); 24] = [
+const STOPS: [(&str, Stop); 26] = [
     ("games", Stop::Games(|_| Some(Route::Library))),
     ("add-game", Stop::AddGame),
     ("builtin-modes", Stop::Games(|_| Some(Route::BuiltIn))),
@@ -56,6 +59,8 @@ const STOPS: [(&str, Stop); 24] = [
     ("live", Stop::Page(Page::Live)),
     ("toys", Stop::Page(Page::Toys)),
     ("setup-gamepad", Stop::Setup(setup::Tab::Gamepad)),
+    ("pad-setup", Stop::PadSetup(Labels::Xbox)),
+    ("pad-setup-playstation", Stop::PadSetup(Labels::PlayStation)),
     ("setup-combos", Stop::Setup(setup::Tab::Combos)),
     ("setup-overlay", Stop::Setup(setup::Tab::Overlay)),
     ("setup-sound", Stop::Setup(setup::Tab::Sound)),
@@ -104,6 +109,7 @@ impl App {
             tour.requested = false;
             self.generator.open = false;
             self.games.close_dialog();
+            self.pad_setup = None;
             return;
         }
         tour.frames += 1;
@@ -141,6 +147,13 @@ impl App {
                 }
             }
             Stop::StatsConsent => {}
+            Stop::PadSetup(labels) => {
+                self.page = Page::Setup;
+                self.setup_tab = setup::Tab::Gamepad;
+                if let Some(pad) = s.pad.as_ref().filter(|_| self.pad_setup.is_none()) {
+                    self.pad_setup = Some(PadSetup::preview(pad, labels));
+                }
+            }
             Stop::CommunityNothing => {
                 self.page = Page::Community;
                 super::community::tour_search(self, "Hollow Knight: Silksong");

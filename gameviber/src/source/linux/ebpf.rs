@@ -17,11 +17,11 @@ use anyhow::Context;
 use aya::maps::{MapData, RingBuf};
 use aya::programs::TracePoint;
 use aya::{include_bytes_aligned, Ebpf};
-use evdev::Device;
+use evdev::{Device, EventType};
 use tokio::io::unix::AsyncFd;
 use tokio::sync::mpsc;
 
-use super::{axis_ranges, list_ff_devices, translate_input};
+use super::{axis_ranges, is_gamepad, translate_input};
 use crate::platform::linux::helper::client::{Helper, Phase};
 use crate::platform::linux::helper::{read_record, Request, WireProbe};
 use crate::platform::linux::is_root;
@@ -57,6 +57,8 @@ pub struct EbpfSource {
     stop: Arc<AtomicBool>,
     /// Watched device path -> gamepad name.
     watched: Arc<Mutex<HashMap<String, String>>>,
+    /// Gamepads without force feedback: games send them no rumble.
+    still: Arc<Mutex<Vec<String>>>,
 }
 
 impl EbpfSource {
@@ -75,8 +77,9 @@ impl EbpfSource {
         };
         let stop = Arc::new(AtomicBool::new(false));
         let watched = Arc::new(Mutex::new(HashMap::new()));
-        spawn_device_watcher(tx, watched.clone(), stop.clone());
-        Ok(Self { probe, stop, watched })
+        let still = Arc::new(Mutex::new(Vec::new()));
+        spawn_device_watcher(tx, watched.clone(), still.clone(), stop.clone());
+        Ok(Self { probe, stop, watched, still })
     }
 }
 
@@ -109,6 +112,17 @@ impl ActiveSource for EbpfSource {
         let mut names: Vec<_> = self.watched.lock().unwrap().values().cloned().collect();
         names.sort();
         names
+    }
+
+    fn hint(&self) -> Option<String> {
+        let still = self.still.lock().unwrap();
+        (!still.is_empty()).then(|| {
+            format!(
+                "{} cannot vibrate on Linux (in DInput mode, for instance): games send it no rumble to listen to. \
+                 The Standard method shows games a gamepad that can.",
+                still.join(", ")
+            )
+        })
     }
 
     fn health(&self) -> SourceHealth {
@@ -180,12 +194,26 @@ fn resolve_fd(tgid: u32, fd: i32) -> Option<String> {
 }
 
 /// Opens a passive reader on every FF device, including those plugged after
-/// startup (gamepads, Steam Input's virtual gamepad...).
-fn spawn_device_watcher(tx: EventSender, watched: Arc<Mutex<HashMap<String, String>>>, stop: Arc<AtomicBool>) {
+/// startup (gamepads, Steam Input's virtual gamepad...); notes the gamepads
+/// without FF in `still`.
+fn spawn_device_watcher(
+    tx: EventSender,
+    watched: Arc<Mutex<HashMap<String, String>>>,
+    still: Arc<Mutex<Vec<String>>>,
+    stop: Arc<AtomicBool>,
+) {
     let _ = std::thread::Builder::new().name("ff-watcher".into()).spawn(move || {
         while !stop.load(Ordering::Relaxed) {
-            for (path, dev) in list_ff_devices() {
+            let mut without_ff = Vec::new();
+            for (path, dev) in evdev::enumerate() {
+                let path = path.to_string_lossy().into_owned();
                 let name = dev.name().unwrap_or("?").to_owned();
+                if !dev.supported_events().contains(EventType::FORCEFEEDBACK) {
+                    if is_gamepad(&dev) {
+                        without_ff.push(name);
+                    }
+                    continue;
+                }
                 if watched.lock().unwrap().insert(path.clone(), name.clone()).is_some() {
                     continue;
                 }
@@ -198,6 +226,8 @@ fn spawn_device_watcher(tx: EventSender, watched: Arc<Mutex<HashMap<String, Stri
                     let _ = tx.send(SourceEvent { device: path, kind: SourceKind::Removed });
                 });
             }
+            without_ff.sort();
+            *still.lock().unwrap() = without_ff;
             std::thread::sleep(RESCAN_INTERVAL);
         }
     });

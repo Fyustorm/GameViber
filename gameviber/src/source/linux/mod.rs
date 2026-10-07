@@ -10,11 +10,11 @@ pub use ebpf::load_probe;
 use std::path::Path;
 use std::sync::Arc;
 
-use evdev::{Device, EventSummary, EventType, FFEffectCode};
+use evdev::{Device, EventSummary, FFEffectCode};
 
 use super::{ActiveSource, EventSender, SourceKind, SourceOptions};
 use crate::config::SourceChoice;
-use crate::gamepad::AxisRanges;
+use crate::gamepad::{codes, AxisRanges};
 use crate::platform::linux::helper::client::Helper;
 use crate::platform::linux::is_root;
 use crate::rumble::{EffectKind, Envelope, Effect};
@@ -55,29 +55,40 @@ impl Sources {
 
 /// A gamepad: face buttons and rumble force feedback.
 pub fn is_rumble_gamepad(dev: &Device) -> bool {
-    let has_rumble = dev.supported_ff().is_some_and(|ff| ff.contains(FFEffectCode::FF_RUMBLE));
-    let has_pad_buttons = dev.supported_keys().is_some_and(|k| k.contains(evdev::KeyCode::BTN_SOUTH));
-    has_rumble && has_pad_buttons
+    has_rumble(dev) && dev.supported_keys().is_some_and(|k| k.contains(evdev::KeyCode::BTN_SOUTH))
 }
 
-/// Every evdev device with force feedback, sorted by path.
-pub fn list_ff_devices() -> Vec<(String, Device)> {
-    let mut found: Vec<_> = evdev::enumerate()
-        .filter(|(_, dev)| dev.supported_events().contains(EventType::FORCEFEEDBACK))
-        .map(|(path, dev)| (path.to_string_lossy().into_owned(), dev))
-        .collect();
-    found.sort_by(|a, b| a.0.cmp(&b.0));
-    found
+pub fn has_rumble(dev: &Device) -> bool {
+    dev.supported_ff().is_some_and(|ff| ff.contains(FFEffectCode::FF_RUMBLE))
+}
+
+/// A gamepad, with rumble or not (DInput mode): gamepad buttons, or joystick
+/// buttons and a stick.
+pub fn is_gamepad(dev: &Device) -> bool {
+    let Some(keys) = dev.supported_keys() else { return false };
+    let joystick = keys.iter().any(|k| (codes::BTN_JOYSTICK..codes::BTN_SOUTH).contains(&k.0))
+        && dev.supported_absolute_axes().is_some_and(|a| a.contains(evdev::AbsoluteAxisCode::ABS_X));
+    keys.contains(evdev::KeyCode::BTN_SOUTH) || joystick
 }
 
 pub fn find_gamepad(path: Option<&Path>) -> anyhow::Result<(String, Device)> {
     if let Some(path) = path {
         return Ok((path.to_string_lossy().into_owned(), Device::open(path)?));
     }
-    list_ff_devices()
-        .into_iter()
-        .find(|(_, dev)| is_rumble_gamepad(dev))
-        .ok_or_else(|| anyhow::anyhow!("no gamepad with rumble found"))
+    // Those that vibrate first.
+    let mut pads: Vec<_> = evdev::enumerate()
+        .filter(|(_, dev)| is_gamepad(dev))
+        .map(|(path, dev)| (path.to_string_lossy().into_owned(), dev))
+        .collect();
+    pads.sort_by_key(|(path, dev)| (!is_rumble_gamepad(dev), path.clone()));
+    pads.into_iter().next().ok_or_else(|| anyhow::anyhow!("no gamepad found"))
+}
+
+/// The kernel driver of an evdev device (`hid-generic`, `xpad`...).
+pub fn driver(path: &str) -> Option<String> {
+    let path = std::fs::canonicalize(path).ok()?;
+    let link = std::fs::read_link(Path::new("/sys/class/input").join(path.file_name()?).join("device/device/driver")).ok()?;
+    Some(link.file_name()?.to_string_lossy().into_owned())
 }
 
 /// Translates an evdev event read from a gamepad (FF upload/erase excluded).

@@ -44,7 +44,7 @@ accepted; nothing else of them is left.
 | `gameviber/src/audio/` | the game's sound: `capture` (what to listen to; `linux`: PipeWire `pw-record` / `pw-dump`), `features` (levels, hits), `clap` (sound phase model: mel spectrogram, encoder) |
 | `gameviber/src/models.rs` | phase models downloaded on demand (CLAP, CLIP): download, ONNX sessions, text embeddings |
 | `gameviber/src/rumble.rs` | force-feedback semantics (evdev's, ff-memless) → strong/weak levels |
-| `gameviber/src/gamepad.rs` | button/axis normalization (Xbox layout) from `codes` (Linux's numbering, which every source translates to), panic combo |
+| `gameviber/src/gamepad/` | button/axis normalization (Xbox layout) from `codes` (Linux's numbering, which every source translates to), panic combo; `mapping.rs`: the Xbox layout of gamepads whose driver does not give it (DInput mode), in SDL's format: SDL_GameControllerDB's Linux lines (`gameviber/gamepads/`, zlib, refreshed by `tools/update-gamecontrollerdb.sh`), the player's own set up on the Gamepad page (the proxy then shows games an Xbox 360 controller) |
 | `gameviber/src/mode/` | Luau runtime: `library.rs` (script API), `outputs.rs` (channels, pulses, patterns), `rumble_events.rs`, `phases.rs` (phases fused from the sound, the image and the mode's captures; the phases set up for the mode replace its own), `prompt.rs` (AI requests: a per-game mode, a fix for a mode that feels wrong), `report.rs` (a session replayed offline into a mode, for the fix request), `tests.rs` |
 | `gameviber/src/screen/` | the game's image: frames copied by the overlay, measures (brightness, motion, flashes), `clip` (image phase model: PIL-exact preprocessing, encoder thread), `indicators` (indicators read in their zones: visibility and gauges) |
 | `gameviber/src/game.rs` | games (`~/.config/gameviber/games/<id>.json`), identified by name: linked executables (optional), Steam app id (read from the running game's environment, `platform::steam_app_id`), sound source, modes; migration of the older exe-keyed profiles |
@@ -73,7 +73,7 @@ accepted; nothing else of them is left.
 | `.github/workflows/` | `ci.yml`: tests and the Windows check; `packages.yml`: packages built on Ubuntu 24.04 (glibc 2.39, the oldest the prebuilt ONNX Runtime links with), attached to a draft release on a `v*` tag |
 | `server/` | the community server (Java, Quarkus, SQLite; `server/README.md`): games, authors (pseudo and password), modes and their versions published as `.gameviber` files (checked like the app's import, `SharedPackage`), share codes for private modes, downloads, reports, the back-office at `/admin/`; one native binary on a VPS |
 | `prototype/` | original Python prototype (reference only) |
-| `tools/` | test helpers: fake gamepad, SDL rumble game, `check-windows.sh` (Platforms) |
+| `tools/` | test helpers: fake gamepad, SDL rumble game, `check-windows.sh` (Platforms), `update-gamecontrollerdb.sh` |
 
 ## Build and test
 
@@ -121,7 +121,9 @@ Run `cargo test` after any change to the runtime or to a mode.
   `-- SPDX-License-Identifier: MIT` on their first line (they are meant to be
   copied); the eBPF probe declares "Dual MIT/GPL" to the kernel and must not
   use code under any other license. A new dependency must be GPL-3-compatible
-  and its license listed in `packaging/third-party/about.toml`. The Settings
+  and its license listed in `packaging/third-party/about.toml`; other code or
+  data embedded (Luau, ONNX Runtime, SDL_GameControllerDB) goes in
+  `packaging/third-party/licenses.sh`. The Settings
   page shows the GPL notice (`gui/settings.rs`, `about`).
 - **Releases**: the version is in `gameviber/Cargo.toml` (and
   `gameviber-overlay/Cargo.toml`), semver with a prerelease while in alpha

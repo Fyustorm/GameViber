@@ -170,6 +170,16 @@ game.
 - **Kernel probe**: games see your real gamepad, nothing changes for them;
   GameViber watches the rumble from the kernel (asks for your password).
 
+A gamepad that cannot vibrate on Linux (many in their DInput mode) gets no
+rumble from games: use the Standard method, which shows games one that can.
+When such a gamepad does not tell which button is which, the Gamepad page asks
+you to **set up its buttons** once, one press at a time: a drawn gamepad shows
+the button to press (Xbox or PlayStation names), lights up what you press,
+and sets again any button you click on it. Games then get it as an Xbox 360
+controller (gamepads SDL's community database knows need nothing).
+Your setups are in `~/.config/gameviber/gamecontrollerdb.txt`, in SDL's format:
+a line for your gamepad from SDL_GameControllerDB works too.
+
 ## Built-in modes
 
 Fallbacks per game genre, for when you have no mode made for your game:

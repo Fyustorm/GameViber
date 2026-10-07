@@ -1,6 +1,10 @@
 //! Gamepad normalization: key/axis codes (Linux's numbering, see `codes`) to the Xbox-layout names
 //! exposed to modes (A, B, LB, DPAD_UP, LX, LT...), plus idle tracking and
 //! detection of the panic, "mark this moment" and "capture the screen" combos.
+//! The gamepads whose driver does not give the Xbox layout get it from a
+//! mapping (`mapping`).
+
+pub mod mapping;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -9,6 +13,8 @@ use std::sync::atomic::{AtomicU8, Ordering};
 /// which every source translates its gamepad's events to.
 pub mod codes {
     pub const KEY_RECORD: u16 = 167;
+    /// The first joystick button: SDL numbers buttons from it (`mapping::Layout`).
+    pub const BTN_JOYSTICK: u16 = 0x120;
     pub const BTN_SOUTH: u16 = 0x130;
     pub const BTN_EAST: u16 = 0x131;
     pub const BTN_NORTH: u16 = 0x133;
@@ -48,6 +54,8 @@ pub mod codes {
     pub const ABS_BRAKE: u16 = 0x0a;
     pub const ABS_HAT0X: u16 = 0x10;
     pub const ABS_HAT0Y: u16 = 0x11;
+    pub const ABS_HAT3Y: u16 = 0x17;
+    pub const ABS_MAX: u16 = 0x3f;
 }
 
 use codes as c;
@@ -147,6 +155,34 @@ fn button_name(code: u16) -> Option<&'static str> {
     })
 }
 
+/// The key code a source reports `name` with (the first of `button_name`'s);
+/// None for the triggers, which are axes.
+pub fn button_code(name: &str) -> Option<u16> {
+    Some(match name {
+        "A" => c::BTN_SOUTH,
+        "B" => c::BTN_EAST,
+        "X" => c::BTN_NORTH,
+        "Y" => c::BTN_WEST,
+        "LB" => c::BTN_TL,
+        "RB" => c::BTN_TR,
+        "BACK" => c::BTN_SELECT,
+        "START" => c::BTN_START,
+        "GUIDE" => c::BTN_MODE,
+        "LS" => c::BTN_THUMBL,
+        "RS" => c::BTN_THUMBR,
+        "DPAD_UP" => c::BTN_DPAD_UP,
+        "DPAD_DOWN" => c::BTN_DPAD_DOWN,
+        "DPAD_LEFT" => c::BTN_DPAD_LEFT,
+        "DPAD_RIGHT" => c::BTN_DPAD_RIGHT,
+        "P1" => c::BTN_TRIGGER_HAPPY5,
+        "P2" => c::BTN_TRIGGER_HAPPY6,
+        "P3" => c::BTN_TRIGGER_HAPPY7,
+        "P4" => c::BTN_TRIGGER_HAPPY8,
+        "SHARE" => c::KEY_RECORD,
+        _ => return None,
+    })
+}
+
 /// Axis value range of one device, as its driver reports it.
 #[derive(Debug, Clone, Default)]
 pub struct AxisRanges(HashMap<u16, (i32, i32)>);
@@ -159,15 +195,23 @@ impl AxisRanges {
 
     /// Sticks and hats to -1..1, triggers to 0..1.
     pub fn normalize(&self, code: u16, value: i32) -> f64 {
-        let (min, max) = self.0.get(&code).copied().unwrap_or((-32768, 32767));
-        if max <= min {
-            return 0.0;
-        }
-        let unit = (value - min) as f64 / (max - min) as f64;
+        let Some(unit) = self.unit(code, value) else { return 0.0 };
         match code {
             c::ABS_Z | c::ABS_RZ | c::ABS_GAS | c::ABS_BRAKE => unit.clamp(0.0, 1.0),
             _ => (unit * 2.0 - 1.0).clamp(-1.0, 1.0),
         }
+    }
+
+    /// Any axis to -1..1 from one end to the other, whatever it is (a gamepad
+    /// still to be mapped).
+    pub fn full(&self, code: u16, value: i32) -> f64 {
+        self.unit(code, value).map_or(0.0, |unit| (unit * 2.0 - 1.0).clamp(-1.0, 1.0))
+    }
+
+    /// 0..1 across the range; None for an empty range.
+    fn unit(&self, code: u16, value: i32) -> Option<f64> {
+        let (min, max) = self.0.get(&code).copied().unwrap_or((-32768, 32767));
+        (max > min).then(|| (value - min) as f64 / (max - min) as f64)
     }
 }
 
