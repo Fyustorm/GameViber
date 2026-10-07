@@ -130,6 +130,9 @@ imports: when the `.gameviber` format changes (`sharing.rs`), change
 `SharedPackage` too.
 
 ```sh
+The app talks to the server set at build time by `GAMEVIBER_COMMUNITY_URL`
+(`community::URL`; `http://localhost:8080` without it).
+
 cd server
 ./mvnw test          # the API, against a database of its own
 ./mvnw quarkus:dev   # http://localhost:8080, back-office token "dev"

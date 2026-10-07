@@ -147,7 +147,7 @@ impl App {
             }
             Stop::CommunityGame => {
                 self.page = Page::Community;
-                super::community::tour_first_game(self, ctx, s);
+                super::community::tour_first_game(self, ctx);
             }
             Stop::Generator => {
                 if !self.generator.open {

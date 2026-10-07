@@ -76,8 +76,6 @@ pub enum Command {
     RefreshModes,
     /// Language of the requests to AI assistants.
     SetLanguage(String),
-    /// The community server's address.
-    SetCommunityUrl(String),
     /// Play time with the modes installed from the community and votes are sent to it.
     SetShareStats(bool),
     /// Deletes a user mode; the default mode takes over if it was active.
@@ -695,11 +693,6 @@ impl Engine {
                 self.settings.share_stats = Some(on);
                 self.settings.save();
             }
-            Command::SetCommunityUrl(url) => {
-                let url = url.trim().trim_end_matches('/');
-                self.settings.community_url = if url.is_empty() { crate::community::DEFAULT_URL.into() } else { url.into() };
-                self.settings.save();
-            }
             Command::DeleteMode(id) => {
                 if self.mode.as_ref().is_some_and(|m| m.entry.id == id) {
                     // A variant gives way to its mode.
@@ -1229,7 +1222,7 @@ impl Engine {
                 crate::community::record_play(&active, self.played);
                 if self.settings.share_stats == Some(true) {
                     self.plays.add(&active, self.played, session);
-                    let _ = self.plays.send(&self.settings.community_url, &self.settings.installation_id, false);
+                    let _ = self.plays.send(crate::community::URL, &self.settings.installation_id, false);
                 }
                 self.played = 0.0;
             }
@@ -1865,7 +1858,7 @@ impl Engine {
             if let Some(active) = self.mode.as_ref().map(|m| m.entry.id.clone()) {
                 self.plays.add(&active, self.played, false);
             }
-            if let Some(sending) = self.plays.send(&self.settings.community_url, &self.settings.installation_id, true) {
+            if let Some(sending) = self.plays.send(crate::community::URL, &self.settings.installation_id, true) {
                 let _ = tokio::task::spawn_blocking(move || sending.join()).await;
             }
         }

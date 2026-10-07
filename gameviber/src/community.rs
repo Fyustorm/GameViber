@@ -19,10 +19,14 @@ use sha2::{Digest, Sha256};
 use crate::config::{self, ModeEntry};
 use crate::sharing;
 
-/// The server until one is set in Settings.
-pub const DEFAULT_URL: &str = "http://localhost:8080";
+/// The community server, chosen at build time (`GAMEVIBER_COMMUNITY_URL`).
+pub const URL: &str = match option_env!("GAMEVIBER_COMMUNITY_URL") {
+    Some(url) => url,
+    None => "http://localhost:8080",
+};
 const ORIGIN_FILE: &str = "community.json";
 const ACCOUNT_FILE: &str = "community.toml";
+const LINKS_FILE: &str = "community-links.json";
 /// The mode API versions this GameViber runs (`mode::API_VERSION`).
 pub const APIS: [u32; 1] = [crate::mode::API_VERSION];
 
@@ -546,8 +550,12 @@ pub fn install(client: &Client, source: &Source, detail: &ModeDetail) -> anyhow:
     let _ = fs::remove_file(&file);
     let imported = imported?;
     let entry = ModeEntry::from_id(&imported.mode);
-    // The very same script is a mode of the player's already: it stays theirs.
+    // The very same script is a mode of the player's already: it stays theirs,
+    // only linked to the community's, which then opens it.
     if imported.mode_existed && Origin::of(&entry).is_none() {
+        let mut links = links();
+        links.insert(detail.id.clone(), imported.mode.clone());
+        config::write_file(&config::config_dir().join(LINKS_FILE), &serde_json::to_string(&links)?)?;
         return Ok(imported);
     }
     let code = match source {
@@ -557,6 +565,12 @@ pub fn install(client: &Client, source: &Source, detail: &ModeDetail) -> anyhow:
     let script = entry.source()?;
     Origin { id: detail.id.clone(), code, version: version.number, own: false, script_sha256: script_sha256(&script), pinned: false, vote: 0 }.save(&entry)?;
     Ok(imported)
+}
+
+/// Modes of the community the player has as modes of their own (the very
+/// same script): their id on the server, and the player's mode.
+pub fn links() -> std::collections::HashMap<String, String> {
+    fs::read_to_string(config::config_dir().join(LINKS_FILE)).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
 }
 
 /// Brings a mode installed from the community to the latest version. One the

@@ -104,8 +104,6 @@ pub struct Settings {
     /// Language AI assistants answer in, and write the texts players see in a mode
     /// (the GUI itself is in English for now).
     pub language: String,
-    /// The community server modes are shared on (`community.rs`).
-    pub community_url: String,
     /// Play time with the modes installed from the community and votes are
     /// sent to it (None: not asked yet, the first-launch window asks).
     pub share_stats: Option<bool>,
@@ -208,7 +206,6 @@ impl Default for Settings {
             check_updates: true,
             active_game: None,
             language: DEFAULT_LANGUAGE.into(),
-            community_url: crate::community::DEFAULT_URL.into(),
             share_stats: None,
             installation_id: String::new(),
         }

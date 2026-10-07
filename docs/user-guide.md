@@ -86,7 +86,6 @@ and its Sharing tab), unless you keep its version. If you changed it, the
 update installs beside your version, which stays as it is. After a few hours
 of play with a mode of your own that you did not change, GameViber suggests
 publishing it (never while you play; **Later**, or **Don't ask for this mode**).
-The server is set in **Settings › Community server**.
 
 ### Stats and votes
 
@@ -97,7 +96,7 @@ this installation. Never your name, your games' image or sound, your toys or
 how they ran, and nothing linked to your author account. A game's modes
 come the best rated first (a few votes counting little, then the most played),
 each with its share of likes, its players and its median play time. Once you played a mode you installed, say whether you liked it on its
-page or in its Sharing tab. Change your mind in **Settings › Community server**.
+page or in its Sharing tab. Change your mind in **Settings › Community**.
 
 ## A mode's inputs
 

@@ -89,8 +89,6 @@ struct PublishForm {
 
 #[derive(Default)]
 pub struct State {
-    /// The server the caches below come from: they start over when it changes.
-    url: String,
     search: String,
     /// What the games shown were searched with.
     searched: String,
@@ -112,6 +110,8 @@ pub struct State {
     /// the server, their local id and origin; and the user modes looked at.
     installed: HashMap<String, (String, Origin)>,
     installed_for: Vec<String>,
+    /// The community's modes the player has as their own (the same script): id on the server, local id.
+    linked: HashMap<String, String>,
     /// What the server has for the games of the library (by local id)...
     matches: HashMap<String, Remote<Option<(GameView, Vec<ModeSummary>)>>>,
     /// ...and of the modes installed from it (by id on the server), to offer updates.
@@ -150,23 +150,18 @@ impl State {
 
 impl App {
     /// The author account signed in on the server, read from disk once.
-    fn account(&mut self, s: &Shared) -> Option<Account> {
-        let url = &s.settings.community_url;
-        self.community.account.get_or_insert_with(|| Account::load(url)).clone()
+    fn account(&mut self) -> Option<Account> {
+        self.community.account.get_or_insert_with(|| Account::load(community::URL)).clone()
     }
 
-    fn client(&mut self, s: &Shared) -> Client {
-        let account = self.account(s);
-        Client::new(&s.settings.community_url, account.as_ref())
+    fn client(&mut self) -> Client {
+        let account = self.account();
+        Client::new(community::URL, account.as_ref())
     }
 
-    /// Starts the caches over when the server changed; takes the answers that came.
+    /// Takes the answers that came.
     fn community_poll(&mut self, s: &Shared) {
         let c = &mut self.community;
-        if c.url != s.settings.community_url {
-            let search = std::mem::take(&mut c.search);
-            *c = super::community::State { url: s.settings.community_url.clone(), search, ..Default::default() };
-        }
         c.games.poll();
         c.modes.poll();
         c.detail.poll();
@@ -220,6 +215,7 @@ impl App {
             .iter()
             .filter_map(|id| Origin::of(&ModeEntry::from_id(id)).map(|o| (o.id.clone(), (id.clone(), o))))
             .collect();
+        self.community.linked = community::links().into_iter().filter(|(_, local)| modes.contains(local)).collect();
         self.community.installed_for = modes;
     }
 
@@ -266,7 +262,7 @@ impl App {
                         let field = ui.add(egui::TextEdit::singleline(&mut self.community.code).hint_text("GV-XXXX-XXXX").desired_width(130.0));
                         if open.clicked() || (field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
                             let code = self.community.code.trim().to_owned();
-                            self.select_mode_page(ui.ctx(), s, Source::Code(code));
+                            self.select_mode_page(ui.ctx(), Source::Code(code));
                         }
                         ui.label(muted("A mode shared with you:"));
                     });
@@ -320,7 +316,7 @@ impl App {
             }
         }
         if search || matches!(self.community.games, Remote::Idle) {
-            let (client, text) = (self.client(s), self.community.search.trim().to_owned());
+            let (client, text) = (self.client(), self.community.search.trim().to_owned());
             self.community.searched = text.clone();
             self.community.games.start(ui.ctx(), move || client.games(&text));
         }
@@ -338,7 +334,7 @@ impl App {
             }
             Remote::Failed(e) => {
                 let e = e.clone();
-                self.unreachable(ui, s, &e);
+                self.unreachable(ui, &e);
             }
             Remote::Ready(games) if games.is_empty() => {
                 let searched = self.community.searched.clone();
@@ -414,11 +410,11 @@ impl App {
         }
     }
 
-    fn unreachable(&mut self, ui: &mut egui::Ui, s: &Shared, error: &str) {
+    fn unreachable(&mut self, ui: &mut egui::Ui, error: &str) {
         card(PANEL).inner_margin(Margin::same(16)).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.label(RichText::new("The community is out of reach").strong());
-            ui.label(muted(format!("{error} ({}, set in Settings).", s.settings.community_url)));
+            ui.label(muted(format!("{error} ({}).", community::URL)));
             if ui.button("Try again").clicked() {
                 self.community.games = Remote::Idle;
             }
@@ -435,14 +431,14 @@ impl App {
         });
         ui.add_space(8.0);
         if matches!(self.community.modes, Remote::Idle) {
-            let (client, id) = (self.client(s), game.id);
+            let (client, id) = (self.client(), game.id);
             self.community.modes.start(ui.ctx(), move || client.modes(id, SORT));
         }
         let list = |app: &mut Self, ui: &mut egui::Ui| match &app.community.modes {
             Remote::Ready(modes) => {
                 let modes = modes.clone();
                 for mode in &modes {
-                    app.mode_row(ui, s, mode);
+                    app.mode_row(ui, mode);
                     ui.add_space(6.0);
                 }
                 if modes.is_empty() {
@@ -451,7 +447,7 @@ impl App {
             }
             Remote::Failed(e) => {
                 let e = e.clone();
-                app.unreachable(ui, s, &e);
+                app.unreachable(ui, &e);
             }
             _ => {
                 ui.spinner();
@@ -488,7 +484,7 @@ impl App {
         }
     }
 
-    fn mode_row(&mut self, ui: &mut egui::Ui, s: &Shared, mode: &ModeSummary) {
+    fn mode_row(&mut self, ui: &mut egui::Ui, mode: &ModeSummary) {
         let selected = self.community.selected.as_ref() == Some(&Source::Id(mode.id.clone()));
         let response = card(if selected { SELECTED_BG } else { PANEL }).inner_margin(Margin::symmetric(14, 10)).show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -504,6 +500,7 @@ impl App {
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     match self.community.installed.get(&mode.id) {
+                        None if self.community.linked.contains_key(&mode.id) => pill(ui, "Installed", ON_ACCENT, OK),
                         Some((_, origin)) if origin.own => pill(ui, "Yours", ON_ACCENT, OK),
                         Some((_, origin)) if origin.version < mode.version => pill(ui, &format!("Update to v{}", mode.version), ON_ACCENT, WARN),
                         Some(_) => pill(ui, "Installed", ON_ACCENT, OK),
@@ -514,12 +511,12 @@ impl App {
             });
         });
         if response.response.interact(egui::Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-            self.select_mode_page(ui.ctx(), s, Source::Id(mode.id.clone()));
+            self.select_mode_page(ui.ctx(), Source::Id(mode.id.clone()));
         }
     }
 
-    fn select_mode_page(&mut self, ctx: &egui::Context, s: &Shared, source: Source) {
-        let client = self.client(s);
+    fn select_mode_page(&mut self, ctx: &egui::Context, source: Source) {
+        let client = self.client();
         let job = source.clone();
         self.community.detail.start(ctx, move || client.mode(&job));
         self.community.selected = Some(source);
@@ -530,7 +527,7 @@ impl App {
     fn community_mode(&mut self, ui: &mut egui::Ui, s: &Shared) {
         // Read again after an action (an install, a vote...).
         if let (Remote::Idle, Some(source)) = (&self.community.detail, self.community.selected.clone()) {
-            let client = self.client(s);
+            let client = self.client();
             self.community.detail.start(ui.ctx(), move || client.mode(&source));
         }
         let detail = match &self.community.detail {
@@ -581,21 +578,35 @@ impl App {
                     ui.label(muted(format!("Needs a newer GameViber (mode API {}).", v.api)));
                 }
                 (Some((local, origin)), Some(v)) => {
-                    if !origin.own && origin.version < v.number && ui.add_enabled(!busy, primary(&format!("Update to v{}", v.number))).clicked() {
+                    let update = !origin.own && origin.version < v.number;
+                    if update && ui.add_enabled(!busy, primary(&format!("Update to v{}", v.number))).clicked() {
                         self.update_mode(ui.ctx(), s, local.clone());
                     }
-                    if ui.button("Open").clicked() {
+                    let open = if update { egui::Button::new("Open") } else { primary("Open") };
+                    if ui.add(open).on_hover_text("Its page, in Games").clicked() {
                         self.open_installed(s, local);
                     }
                     let what = if origin.own { "Yours".to_owned() } else { format!("Installed · v{}", origin.version) };
                     pill(ui, &what, ON_ACCENT, OK);
                 }
+                (None, Some(_)) if self.community.linked.contains_key(&detail.id) => {
+                    let local = self.community.linked[&detail.id].clone();
+                    if ui.add(primary("Open")).on_hover_text("Its page, in Games").clicked() {
+                        self.open_installed(s, &local);
+                    }
+                    pill(ui, "You have it already", ON_ACCENT, OK);
+                }
                 (None, Some(_)) => {
                     if ui.add_enabled(!busy, primary("Install")).clicked() {
-                        let (client, detail) = (self.client(s), detail.clone());
+                        let (client, detail) = (self.client(), detail.clone());
                         self.community.action.start(ui.ctx(), move || {
                             let imported = community::install(&client, &source, &detail)?;
-                            Ok(Done { message: format!("{} installed for {}.", detail.name, imported.name), game: Some(imported.game), select: None })
+                            let message = if imported.mode_existed {
+                                format!("You have {} already, as a mode of yours: Open leads to it.", detail.name)
+                            } else {
+                                format!("{} installed for {}.", detail.name, imported.name)
+                            };
+                            Ok(Done { message, game: Some(imported.game), select: None })
                         });
                     }
                 }
@@ -616,7 +627,7 @@ impl App {
             ui.label(RichText::new(format!("v{} · {date}{notes}", version.number)).size(12.5));
         }
         ui.add_space(8.0);
-        self.report_ui(ui, s, &detail.id);
+        self.report_ui(ui, &detail.id);
     }
 
     /// Liked or not, for a mode installed from the community and played.
@@ -637,7 +648,7 @@ impl App {
                     // Clicked again: taken back.
                     let value = if chosen { 0 } else { value };
                     let (client, installation, id, local, origin) =
-                        (self.client(s), s.settings.installation_id.clone(), origin.id.clone(), local.to_owned(), origin.clone());
+                        (self.client(), s.settings.installation_id.clone(), origin.id.clone(), local.to_owned(), origin.clone());
                     self.community.action.start(ui.ctx(), move || {
                         client.vote(&installation, &id, value)?;
                         Origin { vote: value, ..origin }.save(&ModeEntry::from_id(&local))?;
@@ -649,7 +660,7 @@ impl App {
         });
     }
 
-    fn report_ui(&mut self, ui: &mut egui::Ui, s: &Shared, id: &str) {
+    fn report_ui(&mut self, ui: &mut egui::Ui, id: &str) {
         match &mut self.community.report {
             Some((mode, reason, details)) if mode == id => {
                 let mut send = false;
@@ -669,7 +680,7 @@ impl App {
                     self.community.report = None;
                 }
                 if let Some((reason, details)) = report {
-                    let (client, id) = (self.client(s), id.to_owned());
+                    let (client, id) = (self.client(), id.to_owned());
                     self.community.action.start(ui.ctx(), move || {
                         client.report(&id, reason, &details)?;
                         Ok(Done { message: "Thanks: the report was sent.".into(), game: None, select: None })
@@ -698,7 +709,7 @@ impl App {
     }
 
     fn update_mode(&mut self, ctx: &egui::Context, s: &Shared, local: String) {
-        let client = self.client(s);
+        let client = self.client();
         let active = super::main_of(&s.mode.id) == local;
         self.community.action.start(ctx, move || {
             let message = match community::update(&client, &local)? {
@@ -713,9 +724,9 @@ impl App {
     // --- a game's page and the library
 
     /// What the server has for `game`: started once per game.
-    fn community_match(&mut self, ctx: &egui::Context, s: &Shared, game: &Game) -> Option<&Remote<Option<(GameView, Vec<ModeSummary>)>>> {
+    fn community_match(&mut self, ctx: &egui::Context, game: &Game) -> Option<&Remote<Option<(GameView, Vec<ModeSummary>)>>> {
         if !self.community.matches.contains_key(&game.id) {
-            let (client, name, app) = (self.client(s), game.name.clone(), game.steam_app_id);
+            let (client, name, app) = (self.client(), game.name.clone(), game.steam_app_id);
             let mut remote = Remote::Idle;
             remote.start(ctx, move || {
                 let Some(found) = client.game_match(&name, app)? else { return Ok(None) };
@@ -730,7 +741,7 @@ impl App {
     /// The card on a game's page: the community's modes for it.
     pub(super) fn community_card(&mut self, ui: &mut egui::Ui, s: &Shared, game: &Game) {
         self.community_poll(s);
-        let found = match self.community_match(ui.ctx(), s, game) {
+        let found = match self.community_match(ui.ctx(), game) {
             Some(Remote::Ready(found)) => found.clone(),
             Some(Remote::Failed(_)) => {
                 ui.label(muted("The community is out of reach (Settings › Community server)."));
@@ -765,7 +776,7 @@ impl App {
                                 open = Some((remote.clone(), Some(mode.id.clone())));
                             }
                             ui.label(muted(format!("by {} · {}", mode.author, downloads(mode.downloads))).size(12.0));
-                            if self.community.installed.contains_key(&mode.id) {
+                            if self.community.installed.contains_key(&mode.id) || self.community.linked.contains_key(&mode.id) {
                                 pill(ui, "Installed", ON_ACCENT, OK);
                             }
                         });
@@ -776,7 +787,7 @@ impl App {
         if let Some((remote, mode)) = open {
             self.community.open_game(remote);
             if let Some(mode) = mode {
-                self.select_mode_page(ui.ctx(), s, Source::Id(mode));
+                self.select_mode_page(ui.ctx(), Source::Id(mode));
             }
             self.page = Page::Community;
         }
@@ -790,7 +801,7 @@ impl App {
         if own {
             return;
         }
-        let Some(Remote::Ready(Some((remote, _)))) = self.community_match(ui.ctx(), s, game) else { return };
+        let Some(Remote::Ready(Some((remote, _)))) = self.community_match(ui.ctx(), game) else { return };
         let remote = remote.clone();
         let mut open = false;
         card(SELECTED_BG).stroke(egui::Stroke::new(1.0, ACCENT)).inner_margin(Margin::symmetric(16, 12)).show(ui, |ui| {
@@ -817,7 +828,7 @@ impl App {
             return;
         }
         if !self.community.latest.contains_key(&origin.id) {
-            let (client, source) = (self.client(s), origin.source());
+            let (client, source) = (self.client(), origin.source());
             let mut remote = Remote::Idle;
             remote.start(ui.ctx(), move || client.mode(&source));
             self.community.latest.insert(origin.id.clone(), remote);
@@ -877,8 +888,8 @@ impl App {
 
     // --- the Sharing tab: publishing
 
-    fn account_ui(&mut self, ui: &mut egui::Ui, s: &Shared) -> Option<Account> {
-        if let Some(account) = self.account(s) {
+    fn account_ui(&mut self, ui: &mut egui::Ui) -> Option<Account> {
+        if let Some(account) = self.account() {
             ui.horizontal(|ui| {
                 ui.label(muted(format!("Publishing as {}", account.pseudo)));
                 if ui.small_button("Sign out").clicked() {
@@ -896,7 +907,7 @@ impl App {
             let ready = !self.community.pseudo.trim().is_empty() && !self.community.password.is_empty() && !self.community.signing_in.loading();
             for (new, label) in [(true, "Create the account"), (false, "Sign in")] {
                 if ui.add_enabled(ready, egui::Button::new(label)).clicked() {
-                    let (client, pseudo, password) = (self.client(s), self.community.pseudo.trim().to_owned(), self.community.password.clone());
+                    let (client, pseudo, password) = (self.client(), self.community.pseudo.trim().to_owned(), self.community.password.clone());
                     self.community.signing_in.start(ui.ctx(), move || client.sign_in(&pseudo, &password, new));
                 }
             }
@@ -920,10 +931,10 @@ impl App {
             match &origin {
                 Some(origin) if !origin.own => self.installed_panel(ui, s, &local, origin),
                 _ => {
-                    let Some(account) = self.account_ui(ui, s) else { return };
+                    let Some(account) = self.account_ui(ui) else { return };
                     ui.add_space(8.0);
                     match &origin {
-                        Some(origin) => self.published_panel(ui, s, game, &local, origin, &account),
+                        Some(origin) => self.published_panel(ui, game, &local, origin, &account),
                         None => self.publish_form(ui, s, game, &local),
                     }
                 }
@@ -951,13 +962,13 @@ impl App {
         });
         ui.add_space(6.0);
         self.vote_ui(ui, s, local, origin);
-        self.report_ui(ui, s, &origin.id);
+        self.report_ui(ui, &origin.id);
     }
 
     /// The player's published mode: who gets it, its code, its next version, withdrawing it.
-    fn published_panel(&mut self, ui: &mut egui::Ui, s: &Shared, game: &Game, local: &str, origin: &Origin, _account: &Account) {
+    fn published_panel(&mut self, ui: &mut egui::Ui, game: &Game, local: &str, origin: &Origin, _account: &Account) {
         if matches!(self.community.mine, Remote::Idle) {
-            let client = self.client(s);
+            let client = self.client();
             self.community.mine.start(ui.ctx(), move || client.my_modes());
         }
         let detail = match &self.community.mine {
@@ -986,7 +997,7 @@ impl App {
             ui.label(format!("Published · v{} · {} · {who}", origin.version, downloads(detail.downloads)));
             let (label, public) = if detail.is_public() { ("Make it private", false) } else { ("Publish for everyone", true) };
             if ui.add_enabled(!busy, egui::Button::new(label)).clicked() {
-                let (client, id) = (self.client(s), id.clone());
+                let (client, id) = (self.client(), id.clone());
                 self.community.action.start(ui.ctx(), move || {
                     client.change(&id, None, None, Some(public))?;
                     Ok(Done { message: if public { "Listed for everyone.".into() } else { "Only people with the code get it now.".into() }, game: None, select: None })
@@ -1001,7 +1012,7 @@ impl App {
                     ui.ctx().copy_text(code.clone());
                 }
                 if ui.add_enabled(!busy, egui::Button::new("New code").small()).on_hover_text("The current one stops working").clicked() {
-                    let (client, id) = (self.client(s), id.clone());
+                    let (client, id) = (self.client(), id.clone());
                     self.community.action.start(ui.ctx(), move || {
                         client.new_share_code(&id)?;
                         Ok(Done { message: "A new code: the old one no longer works.".into(), game: None, select: None })
@@ -1018,7 +1029,7 @@ impl App {
             ui.add(egui::TextEdit::singleline(&mut self.community.publish.changelog).hint_text("What changed").desired_width(240.0));
             let next = format!("Publish v{}", origin.version + 1);
             if ui.add_enabled(!busy && !self.community.publish.changelog.trim().is_empty(), primary(&next)).clicked() {
-                let (client, game, mode, changelog) = (self.client(s), game.id.clone(), local.to_owned(), self.community.publish.changelog.clone());
+                let (client, game, mode, changelog) = (self.client(), game.id.clone(), local.to_owned(), self.community.publish.changelog.clone());
                 let left_out: Vec<String> = self.community.publish.left_out.iter().cloned().collect();
                 self.community.action.start(ui.ctx(), move || {
                     let detail = community::publish(&client, &game, &mode, "", "", false, &changelog, &left_out)?;
@@ -1029,7 +1040,7 @@ impl App {
         });
         ui.add_space(6.0);
         if ui.add_enabled(!busy, egui::Button::new(RichText::new("Withdraw from the community").color(DANGER_TEXT))).clicked() {
-            let client = self.client(s);
+            let client = self.client();
             self.community.action.start(ui.ctx(), move || {
                 client.withdraw(&id)?;
                 Ok(Done { message: "Withdrawn: nobody can get it anymore.".into(), game: None, select: None })
@@ -1072,7 +1083,7 @@ impl App {
         ui.checkbox(&mut form.accepted, "Shared under the MIT license: anyone can copy and change it, keeping your name.");
         let ready = form.accepted && !form.name.trim().is_empty() && !self.community.action.loading();
         if ui.add_enabled(ready, primary("Publish")).clicked() {
-            let client = self.client(s);
+            let client = self.client();
             let (game, mode) = (game.id.clone(), local.to_owned());
             let form = &self.community.publish;
             let (name, description, public, changelog) = (form.name.trim().to_owned(), form.description.trim().to_owned(), form.public, form.changelog.clone());
@@ -1140,7 +1151,7 @@ fn downloads(n: u64) -> String {
 }
 
 /// For the screenshot tour: the first game with modes, and its first mode's page.
-pub(super) fn tour_first_game(app: &mut App, ctx: &egui::Context, s: &Shared) {
+pub(super) fn tour_first_game(app: &mut App, ctx: &egui::Context) {
     if let Remote::Ready(games) = &app.community.games {
         if let Some(game) = games.first().cloned().filter(|_| app.community.game.is_none()) {
             app.community.open_game(game);
@@ -1148,7 +1159,7 @@ pub(super) fn tour_first_game(app: &mut App, ctx: &egui::Context, s: &Shared) {
     }
     if let Remote::Ready(modes) = &app.community.modes {
         if let Some(mode) = modes.first().map(|m| m.id.clone()).filter(|_| app.community.selected.is_none()) {
-            app.select_mode_page(ctx, s, Source::Id(mode));
+            app.select_mode_page(ctx, Source::Id(mode));
         }
     }
 }
