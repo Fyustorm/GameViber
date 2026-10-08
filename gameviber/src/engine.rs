@@ -30,7 +30,7 @@ use crate::screen::indicators::IndicatorReader;
 use crate::shortcuts::{Action, Shortcuts};
 use crate::screen::{self, Frame, ImagePhases, ScreenLevels, ScreenView};
 use crate::rumble::RumbleState;
-use crate::session::{self, Recorder, RecordingInfo, Senses};
+use crate::session::{self, Change, Recorder, RecordingInfo, Senses};
 pub use crate::source::SourceHealth;
 use crate::source::{ActiveSource, EventSender, PadInfo, SourceEvent, SourceKind, SourceOptions, Sources};
 /// Play with a mode in one go that counts as a session of it (community stats).
@@ -1021,7 +1021,11 @@ impl Engine {
         }
         log::info!("recording started");
         let images = self.settings.recording_images;
-        self.recorder = Some(Recorder::new(self.time(), self.mode_name(), self.game()).images(images).spooled());
+        // Indicators and values that do not change during the recording are in it all the same.
+        let state = (self.indicators.values().iter().map(|(name, value)| Change::Indicator { name: name.clone(), value: *value }))
+            .chain(self.external.values().iter().map(|(name, value)| Change::ExternalValue { name: name.clone(), value: value.clone() }))
+            .chain(self.pad.held().iter().map(|name| Change::Button { name: (*name).to_owned(), pressed: true }));
+        self.recorder = Some(Recorder::new(self.time(), self.mode_name(), self.game()).starting_from(state).images(images).spooled());
     }
 
     fn mode_name(&self) -> String {

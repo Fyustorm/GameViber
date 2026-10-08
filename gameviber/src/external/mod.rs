@@ -152,6 +152,11 @@ impl ExternalInputs {
         out
     }
 
+    /// The values other programs set, as they are now.
+    pub fn values(&self) -> &BTreeMap<String, Value> {
+        &self.values
+    }
+
     pub fn view(&self) -> ExternalView {
         let status = self.status.lock().unwrap();
         ExternalView {

@@ -354,6 +354,13 @@ impl Recorder {
         self
     }
 
+    /// What is already true when the recording starts (indicators, values from
+    /// other programs, buttons held), else missing until it changes.
+    pub fn starting_from(mut self, state: impl IntoIterator<Item = Change>) -> Self {
+        self.changes.extend(state.into_iter().map(|c| (0.0, c)));
+        self
+    }
+
     /// Keeps `per_second` images of the game a second (at most what the overlay copies).
     pub fn images(mut self, per_second: f64) -> Self {
         self.frame_step = 1.0 / per_second.clamp(0.1, 30.0);
@@ -804,5 +811,14 @@ mod tests {
             ]
         );
         assert_eq!(session.header.marks, 1, "the mark before the window is dropped");
+    }
+
+    /// An indicator unknown from before the recording, never changing, is in it.
+    #[test]
+    fn a_recording_starts_from_what_is_already_true() {
+        let menu = Change::Indicator { name: "menu".into(), value: IndicatorValue::Unknown };
+        let mut rec = Recorder::new(10.0, "Surge".into(), None).starting_from([menu.clone()]);
+        rec.tick(10.5, RumbleLevels::default(), &[], &PadState::default(), Senses::default(), &[]);
+        assert_eq!(rec.session(11.0, None, None).changes, vec![(0.0, menu)]);
     }
 }
