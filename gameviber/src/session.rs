@@ -15,6 +15,7 @@ use std::fmt;
 use std::fs;
 use std::io::{self, BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -24,6 +25,7 @@ use crate::config;
 use crate::gamepad::{ButtonEvent, PadState, AXES, BUTTONS};
 use crate::mode::rumble_events::RumbleLevels;
 use crate::mode::{ModeEvent, IndicatorValue};
+use crate::package::Zone;
 use crate::platform::local_time;
 use crate::screen::{Frame, ScreenLevels};
 
@@ -61,6 +63,11 @@ pub struct Header {
     /// Images of the game recorded.
     #[serde(default)]
     pub frames: u32,
+    /// The zones its indicators were read in, when they were read in the same
+    /// ones throughout; else (older recordings too) they are read again from
+    /// its images when it is replayed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zones: Option<Vec<Zone>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -237,6 +244,34 @@ fn list_in(dir: &Path) -> Vec<RecordingInfo> {
     found
 }
 
+/// Work on a session under way (a replay, its images embedded): how far it
+/// got, and whether to give up.
+#[derive(Debug, Default)]
+pub struct Progress {
+    stopped: AtomicBool,
+    /// Thousandths done.
+    done: AtomicU32,
+}
+
+impl Progress {
+    pub fn stop(&self) {
+        self.stopped.store(true, Ordering::Relaxed);
+    }
+
+    pub fn stopped(&self) -> bool {
+        self.stopped.load(Ordering::Relaxed)
+    }
+
+    /// Share done, 0 to 1.
+    pub fn done(&self) -> f32 {
+        self.done.load(Ordering::Relaxed) as f32 / 1000.0
+    }
+
+    pub fn set(&self, share: f64) {
+        self.done.store((share.clamp(0.0, 1.0) * 1000.0) as u32, Ordering::Relaxed);
+    }
+}
+
 /// A session in memory: its header, its changes and its images, in seconds from its start.
 #[derive(Debug, Clone)]
 pub struct Session {
@@ -253,6 +288,39 @@ impl Session {
         anyhow::ensure!(header.version <= FORMAT_VERSION, "recording made by a newer GameViber");
         let changes = lines.filter(|l| !l.trim().is_empty()).map(serde_json::from_str).collect::<Result<_, _>>()?;
         Ok(Self { header, changes, frames: read_frames(&frames_dir(path)) })
+    }
+
+    /// It has images of the game but no embeddings of them for the phases (its
+    /// mode had no phases to compare them with when it was recorded).
+    pub fn lacks_image_embeddings(&self) -> bool {
+        !self.frames.is_empty() && !self.changes.iter().any(|(_, c)| matches!(c, Change::ScreenClip { .. }))
+    }
+
+    /// Embeddings of its images for the phases, one a second as the engine
+    /// makes them (`IMAGE_PHASE_STEP`); gives up once stopped.
+    pub fn embed_images(&self, progress: &Progress) -> anyhow::Result<Vec<(f64, Change)>> {
+        let mut encoder = crate::screen::clip::ImageEncoder::load()?;
+        let mut last = f64::NEG_INFINITY;
+        let mut embeddings = Vec::new();
+        for (i, frame) in self.frames.iter().enumerate() {
+            if frame.t - last < crate::engine::IMAGE_PHASE_STEP * 0.9 {
+                continue;
+            }
+            anyhow::ensure!(!progress.stopped(), "stopped");
+            progress.set(i as f64 / self.frames.len() as f64);
+            last = frame.t;
+            match frame.data.load() {
+                Ok(image) => embeddings.push((frame.t, Change::ScreenClip { embedding: encoder.embed(&image)?.to_vec() })),
+                Err(e) => log::warn!("cannot read an image of the session: {e:#}"),
+            }
+        }
+        Ok(embeddings)
+    }
+
+    /// Adds `changes` among its own, in time order.
+    pub fn insert(&mut self, changes: Vec<(f64, Change)>) {
+        self.changes.extend(changes);
+        self.changes.sort_by(|a, b| a.0.total_cmp(&b.0));
     }
 
     /// Writes the session to the recordings directory; returns its path.
@@ -320,6 +388,8 @@ pub struct Recorder {
     frame_step: f64,
     /// Where images are written as they come (long recordings); None: kept in memory.
     spool: Option<PathBuf>,
+    /// The zones indicators are read in (None: not read), and since when (seconds in).
+    zones: (Option<Vec<Zone>>, f64),
 }
 
 impl Recorder {
@@ -340,6 +410,14 @@ impl Recorder {
             last_frame: f64::NEG_INFINITY,
             frame_step: 1.0 / FRAME_RATE,
             spool: None,
+            zones: (None, 0.0),
+        }
+    }
+
+    /// The indicators are now read in `zones` (None: they are not read).
+    pub fn reading(&mut self, time: f64, zones: Option<&[Zone]>) {
+        if self.zones.0.as_deref() != zones {
+            self.zones = (zones.map(<[Zone]>::to_vec), self.elapsed(time).max(0.0));
         }
     }
 
@@ -553,6 +631,7 @@ impl Recorder {
                 duration: round(elapsed - from, 1000.0),
                 marks,
                 frames: frames.len() as u32,
+                zones: self.zones.0.clone().filter(|_| self.zones.1 <= from),
             },
             changes,
             frames,
@@ -645,6 +724,26 @@ fn round(x: f64, scale: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A recording keeps the zones its indicators were read in only when they did not change during it.
+    #[test]
+    fn recordings_know_the_zones_indicators_were_read_in() {
+        let zones = vec![Zone { indicator: "hp".into(), ..Zone::default() }];
+        let moved = vec![Zone { indicator: "hp".into(), rect: [0.5, 0.5, 0.1, 0.1], ..Zone::default() }];
+        let mut rec = Recorder::new(10.0, "T".into(), None);
+        rec.reading(10.0, Some(&zones));
+        assert_eq!(rec.session(11.0, None, None).header.zones, Some(zones.clone()));
+        rec.reading(10.5, Some(&moved));
+        assert_eq!(rec.session(11.0, None, None).header.zones, None, "changed during the recording");
+
+        let mut recent = Recorder::rolling(0.0, 1.0);
+        recent.reading(0.5, Some(&zones));
+        recent.reading(0.5, None);
+        assert_eq!(recent.session(1.0, Some("T"), None).header.zones, None, "not read");
+        recent.reading(1.0, Some(&moved));
+        assert_eq!(recent.session(1.5, Some("T"), None).header.zones, None, "changed within the last second");
+        assert_eq!(recent.session(2.5, Some("T"), None).header.zones, Some(moved), "changed before it");
+    }
 
     #[test]
     fn recording_plays_back_what_was_recorded() {

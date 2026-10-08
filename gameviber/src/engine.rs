@@ -51,7 +51,7 @@ pub const RECENT_SECS: f64 = 120.0;
 /// A marked moment is saved this long after the (last) mark, to include what followed.
 pub const MARK_SAVE_DELAY: f64 = 15.0;
 /// The game's image is compared with the phases this often.
-const IMAGE_PHASE_STEP: f64 = 1.0;
+pub const IMAGE_PHASE_STEP: f64 = 1.0;
 
 #[derive(Debug, Clone)]
 pub struct EngineOptions {
@@ -901,6 +901,7 @@ impl Engine {
                 log::info!("modes see the game's image: {on}");
                 self.settings.screen = on;
                 self.settings.save();
+                self.note_reading();
             }
             Command::CreateGame { name, executable } => {
                 let mut game = Game::new(&name);
@@ -1033,6 +1034,17 @@ impl Engine {
             .chain(self.external.values().iter().map(|(name, value)| Change::ExternalValue { name: name.clone(), value: value.clone() }))
             .chain(self.pad.held().iter().map(|name| Change::Button { name: (*name).to_owned(), pressed: true }));
         self.recorder = Some(Recorder::new(self.time(), self.mode_name(), self.game()).starting_from(state).images(images).spooled());
+        self.note_reading();
+    }
+
+    /// Tells the recordings which zones the indicators are read in (modes see them only with the image).
+    fn note_reading(&mut self) {
+        let time = self.time();
+        let zones = self.settings.screen.then_some(self.mode_inputs.zones.as_slice());
+        self.recent.reading(time, zones);
+        if let Some(recorder) = self.recorder.as_mut() {
+            recorder.reading(time, zones);
+        }
     }
 
     fn mode_name(&self) -> String {
@@ -1701,6 +1713,7 @@ impl Engine {
         }
         self.example_centroids = inputs.example_centroids();
         self.mode_inputs = inputs;
+        self.note_reading();
         // The active mode compares with the new examples.
         if let Some(rt) = self.mode.as_mut().and_then(|m| m.runtime.as_mut()) {
             rt.set_phase_references(Sense::Examples, self.example_centroids.clone());

@@ -389,7 +389,7 @@ impl App {
         let session = match &f.session {
             Some(path) => {
                 let session = Session::open(path).map_err(|e| format!("cannot read the session: {e:#}"))?;
-                let sim = report::simulate(&entry.chunk_name(), &source, &s.mode.values, &crate::package::Inputs::of(&entry), session)?;
+                let sim = report::simulate(&entry.chunk_name(), &source, &s.mode.values, &crate::package::Inputs::of(&entry), session, &Default::default())?;
                 Some(sim.report())
             }
             None => None,

@@ -276,6 +276,7 @@ impl eframe::App for App {
         if self.tour.is_none() || self.community.consent_preview {
             self.stats_consent(ui.ctx(), &s);
         }
+        self.run_player(ui.ctx(), &s);
         self.update_simulated_rumble();
         // The overlay copies the game's image while it is looked at, even when modes do not see it.
         let watching = self.page == Page::Creator && self.creator.watches_screen();
@@ -318,6 +319,7 @@ impl App {
                 }
                 let session = match (s.recording, &s.replay) {
                     (Some(secs), _) => Some((DANGER_TEXT, "⏺", format!("Recording {:.0} s", secs))),
+                    (None, Some(_)) if self.player_outdated() => Some((WARN, "▶", "Replaying a session · changes to apply".to_owned())),
                     (None, Some(_)) => Some((WARN, "▶", "Replaying a session".to_owned())),
                     (None, None) => None,
                 };

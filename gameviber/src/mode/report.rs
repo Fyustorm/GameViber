@@ -13,7 +13,8 @@ use super::{ModeEvent, ModeRuntime, ParamValue, IndicatorValue};
 use crate::models::{self, Model};
 use crate::package::Inputs;
 use crate::gamepad::PadState;
-use crate::session::{Change, Player, Session};
+use crate::screen::indicators::IndicatorReader;
+use crate::session::{Change, Player, Progress, Session};
 
 const DT: f64 = 0.02;
 /// The timeline has at most this many rows (before identical rows are dropped).
@@ -58,6 +59,8 @@ pub struct Simulation {
     flashes: usize,
     /// When an indicator changed, and to what.
     indicator_changes: Vec<(f64, String, IndicatorValue)>,
+    /// The indicators were read again from the session's images (their zones changed since).
+    indicators_reread: bool,
     /// Events other programs sent, and how many values they set.
     external: Vec<(f64, String)>,
     external_values: usize,
@@ -70,19 +73,26 @@ pub struct Simulation {
 }
 
 /// Replays `session` into a freshly loaded mode with `params` and the inputs
-/// the player set up for it (`inputs`: its phases and captures, as they are now).
+/// the player set up for it (`inputs`: its phases, captures and indicators, as
+/// they are now: indicators whose zones changed since the recording are read
+/// again from its images). Tells how far it got in `progress`, and gives up once it is stopped.
 pub fn simulate(
     chunk_name: &str,
     source: &str,
     params: &BTreeMap<String, ParamValue>,
     inputs: &Inputs,
     session: Session,
+    progress: &Progress,
 ) -> Result<Simulation, String> {
     let mut rt = ModeRuntime::load(chunk_name, source, params, None)?;
     rt.start()?;
     let info = rt.info().clone();
     let duration = session.header.duration;
     let marks = session.changes.iter().filter(|(_, c)| *c == Change::Mark).map(|(t, _)| *t).collect();
+    let reread = !session.frames.is_empty() && session.header.zones.as_ref() != Some(&inputs.zones);
+    let frames = if reread { session.frames.clone() } else { Vec::new() };
+    let mut reader = IndicatorReader::default();
+    let mut next_frame = 0;
     let mut player = Player::new(session, 0.0);
     let mut pad = PadState::default();
     let mut tracker = RumbleTracker::new(info.rumble_threshold, info.rumble_release, 0.0);
@@ -97,6 +107,7 @@ pub fn simulate(
         audio_hits: 0,
         flashes: 0,
         indicator_changes: Vec::new(),
+        indicators_reread: reread,
         external: Vec::new(),
         external_values: 0,
         has_phases: !info.phases.is_empty(),
@@ -130,6 +141,12 @@ pub fn simulate(
         if t > duration {
             break;
         }
+        if progress.stopped() {
+            return Err("stopped".into());
+        }
+        if step % 50 == 0 {
+            progress.set(t / duration);
+        }
         step += 1;
         let buttons = player.advance(t, &mut pad);
         for b in &buttons {
@@ -146,7 +163,23 @@ pub fn simulate(
                 RumbleEvent::Changed(_) => {}
             }
         }
-        let replayed = player.take_events();
+        let mut replayed = player.take_events();
+        if reread {
+            replayed.retain(|e| !matches!(e, ModeEvent::Indicator { .. }));
+            while let Some(frame) = frames.get(next_frame).filter(|f| f.t <= t) {
+                next_frame += 1;
+                if inputs.zones.is_empty() {
+                    continue;
+                }
+                match frame.data.load() {
+                    Ok(image) => {
+                        let read = reader.update(&inputs.zones, &image);
+                        replayed.extend(read.into_iter().map(|(name, value)| ModeEvent::Indicator { name, value }));
+                    }
+                    Err(e) => log::warn!("cannot read an image of the session: {e:#}"),
+                }
+            }
+        }
         for event in &replayed {
             match event {
                 ModeEvent::AudioHit(_) => sim.audio_hits += 1,
@@ -196,6 +229,22 @@ impl Simulation {
     /// What the mode did, step by step (every 20 ms).
     pub fn ticks(&self) -> &[Tick] {
         &self.ticks
+    }
+
+    /// The indicators the mode was given at `t` seconds.
+    pub fn indicators_at(&self, t: f64) -> BTreeMap<String, IndicatorValue> {
+        let to = self.indicator_changes.partition_point(|(at, _, _)| *at <= t);
+        self.indicator_changes[..to].iter().map(|(_, name, value)| (name.clone(), *value)).collect()
+    }
+
+    /// The mode declares phases, or was given some.
+    pub fn has_phases(&self) -> bool {
+        self.has_phases
+    }
+
+    /// The indicators were read again from the session's images.
+    pub fn indicators_reread(&self) -> bool {
+        self.indicators_reread
     }
 
     /// Messages the mode showed with `hud_event`.
@@ -427,7 +476,7 @@ function tick(dt, input)
 end
 "#;
         let session = Session {
-            header: Header { version: 1, started: "now".into(), game: None, mode: "T".into(), duration: 2.0, marks: 1, frames: 0 },
+            header: Header { version: 1, started: "now".into(), game: None, mode: "T".into(), duration: 2.0, marks: 1, frames: 0, zones: None },
             changes: vec![
                 (0.5, Change::Button { name: "LT".into(), pressed: true }),
                 (0.6, Change::Rumble { strong: 0.8, weak: 0.0 }),
@@ -438,7 +487,7 @@ end
             frames: Vec::new(),
         };
         let params = [("gain".to_owned(), ParamValue::Number(0.5))].into_iter().collect();
-        let sim = simulate("t.luau", source, &params, &Inputs::default(), session).unwrap();
+        let sim = simulate("t.luau", source, &params, &Inputs::default(), session, &Progress::default()).unwrap();
         let report = sim.report();
         assert!(report.contains("### Vibrations sent by the game (1)"), "{report}");
         assert!(report.contains("- 0.60 s: 0.30 s long, peak 0.80"), "{report}");
@@ -460,7 +509,7 @@ function on_audio_hit(ev) pulse(ev.strength, 0.1) end
 function tick(dt, input) end
 "#;
         let session = Session {
-            header: Header { version: 2, started: "now".into(), game: None, mode: "T".into(), duration: 1.0, marks: 0, frames: 0 },
+            header: Header { version: 2, started: "now".into(), game: None, mode: "T".into(), duration: 1.0, marks: 0, frames: 0, zones: None },
             changes: vec![
                 (0.1, Change::Audio { level: 0.6, low: 0.5, mid: 0.2, high: 0.1, intensity: 0.3 }),
                 (0.3, Change::AudioHit { strength: 0.9, band: crate::audio::Band::Low }),
@@ -468,7 +517,7 @@ function tick(dt, input) end
             ],
             frames: Vec::new(),
         };
-        let report = simulate("t.luau", source, &BTreeMap::new(), &Inputs::default(), session).unwrap().report();
+        let report = simulate("t.luau", source, &BTreeMap::new(), &Inputs::default(), session, &Progress::default()).unwrap().report();
         assert!(report.contains("### The game's sound\n\n1 hits heard"), "{report}");
         assert!(report.contains("| sound | phase |"), "{report}");
         assert!(report.contains("| 0.25 | 0.00 | - | 0.60 | - | 0.90 |"), "{report}");
@@ -478,15 +527,76 @@ function tick(dt, input) end
         }
     }
 
+    /// Indicators whose zones changed since the recording are read again from its images.
+    #[test]
+    fn indicators_are_read_again_when_their_zones_changed() {
+        use crate::package::Zone;
+        use crate::screen::{indicators, Frame};
+        use crate::session::{encode_frame, FrameData, SessionFrame};
+        // A ring in the bottom right corner over some scenery.
+        let image = |shown: bool| {
+            let (w, h) = (160, 90);
+            let mut pixels = Vec::new();
+            for y in 0..h {
+                for x in 0..w {
+                    let (dx, dy) = (x as f32 - 140.0, y as f32 - 75.0);
+                    let ring = (dx * dx + dy * dy).sqrt();
+                    let p = if shown && (6.0..10.0).contains(&ring) { [250, 250, 250] } else { [(x * 3 % 200) as u8, 90, ((y * 5) % 160) as u8] };
+                    pixels.extend([p[0], p[1], p[2], 255]);
+                }
+            }
+            Frame { width: w, height: h, source_width: w, source_height: h, count: 1, pixels }
+        };
+        let rect = [120.0 / 160.0, 60.0 / 90.0, 40.0 / 160.0, 30.0 / 90.0];
+        let zone = Zone { indicator: "battle_hud".into(), rect, reference: indicators::reference(&image(true), rect), ..Zone::default() };
+        let inputs = Inputs { zones: vec![zone], ..Inputs::default() };
+        let session = |zones: Option<Vec<Zone>>| Session {
+            header: Header { version: 4, started: "now".into(), game: None, mode: "T".into(), duration: 2.0, marks: 0, frames: 2, zones },
+            // Shown all along, as read in the zones of the recording.
+            changes: vec![(0.0, Change::Indicator { name: "battle_hud".into(), value: IndicatorValue::Visibility(true) })],
+            frames: [(0.0, true), (1.0, false)]
+                .into_iter()
+                .map(|(t, shown)| SessionFrame { t, data: FrameData::Jpeg(encode_frame(&image(shown)).unwrap()) })
+                .collect(),
+        };
+        let source = "mode { api = 1, name = 'T' } function tick(dt, input) set(input.indicators.battle_hud and 1 or 0) end";
+        let replay = |zones| simulate("t.luau", source, &BTreeMap::new(), &inputs, session(zones), &Progress::default()).unwrap();
+        let shown = |sim: &Simulation, t: f64| sim.indicators_at(t).get("battle_hud").copied();
+
+        let same = replay(Some(inputs.zones.clone()));
+        assert!(!same.indicators_reread());
+        assert_eq!(shown(&same, 1.5), Some(IndicatorValue::Visibility(true)), "as recorded");
+
+        let changed = replay(None);
+        assert!(changed.indicators_reread());
+        assert_eq!(shown(&changed, 0.5), Some(IndicatorValue::Visibility(true)));
+        assert_eq!(shown(&changed, 1.5), Some(IndicatorValue::Visibility(false)), "read from the image");
+        let out = |t: f64| changed.ticks().iter().find(|k| k.t >= t).unwrap().channels.values().copied().fold(0.0, f64::max);
+        assert_eq!((out(0.5), out(1.5)), (1.0, 0.0), "the mode is given them");
+    }
+
+    #[test]
+    fn a_replay_stops_when_asked() {
+        let source = "mode { api = 1, name = 'T' } function tick(dt, input) end";
+        let session = Session {
+            header: Header { version: 1, started: "now".into(), game: None, mode: "T".into(), duration: 1.0, marks: 0, frames: 0, zones: None },
+            changes: Vec::new(),
+            frames: Vec::new(),
+        };
+        let stopped = Progress::default();
+        stopped.stop();
+        assert!(simulate("t.luau", source, &BTreeMap::new(), &Inputs::default(), session, &stopped).is_err());
+    }
+
     #[test]
     fn runtime_errors_are_reported() {
         let source = "mode { api = 1, name = 'T' } function tick(dt, input) if input.time > 0.1 then error('boom') end end";
         let session = Session {
-            header: Header { version: 1, started: "now".into(), game: None, mode: "T".into(), duration: 1.0, marks: 0, frames: 0 },
+            header: Header { version: 1, started: "now".into(), game: None, mode: "T".into(), duration: 1.0, marks: 0, frames: 0, zones: None },
             changes: Vec::new(),
             frames: Vec::new(),
         };
-        let report = simulate("t.luau", source, &BTreeMap::new(), &Inputs::default(), session).unwrap().report();
+        let report = simulate("t.luau", source, &BTreeMap::new(), &Inputs::default(), session, &Progress::default()).unwrap().report();
         assert!(report.contains("stopped on an error"), "{report}");
         assert!(report.contains("boom"), "{report}");
     }

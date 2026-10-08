@@ -21,9 +21,10 @@ use crate::config::ModeEntry;
 use crate::engine::{Command, SessionOutputs, Shared, HISTORY_SECS, RECENT_SECS};
 use crate::mode::report::{self, Simulation, Tick};
 use crate::mode::{IndicatorValue, ParamValue};
+use crate::models::Model;
 use crate::package::Inputs;
 use crate::screen::ScreenLevels;
-use crate::session::{Change, RecordingInfo, Session, FRAME_RATE, FRAME_RATES};
+use crate::session::{Change, Progress, RecordingInfo, Session, FRAME_RATE, FRAME_RATES};
 
 /// From this width the player shows the inputs beside the image.
 const WIDE_PLAYER: f32 = 980.0;
@@ -70,13 +71,18 @@ impl State {
     }
 }
 
-/// What a session is replayed into: the mode, its script and its settings.
+/// What a session is replayed into: the mode, its script, its settings and
+/// the inputs set up for it (phases, captures, indicators).
 #[derive(Clone, PartialEq)]
 struct ModeKey {
     id: String,
     source: String,
     values: BTreeMap<String, ParamValue>,
+    inputs: Option<Inputs>,
 }
+
+/// What a thread of the player sends back once done.
+type Pending<T> = mpsc::Receiver<Result<T, String>>;
 
 /// A recording open in the player.
 struct Player {
@@ -86,10 +92,21 @@ struct Player {
     reading: Option<mpsc::Receiver<Result<Session, String>>>,
     error: Option<String>,
     /// The session replayed into the mode, the mode it was replayed into, and
-    /// the replay under way (in a thread).
+    /// the replay under way (in a thread, stopped once outdated).
     simulation: Option<Result<Simulation, String>>,
     simulated: Option<ModeKey>,
-    simulating: Option<(ModeKey, mpsc::Receiver<Result<Simulation, String>>)>,
+    simulating: Option<(ModeKey, Pending<Simulation>, Arc<Progress>)>,
+    /// The mode as it is now, when it changed since the replay: replayed again
+    /// once the player applies it (`apply`), the player paused meanwhile and
+    /// playing again after (`resume`).
+    changed: Option<ModeKey>,
+    resume: bool,
+    /// Its images embedded for the phases, when it was recorded without (in a
+    /// thread), and whether that was done or tried.
+    embedding: Option<Pending<Vec<(f64, Change)>>>,
+    embedded: bool,
+    /// How far the embedding got; stopped when the player closes.
+    embedding_progress: Arc<Progress>,
     /// The channels of the replay, for the toys.
     outputs: Option<SessionOutputs>,
     /// Seconds into the session.
@@ -127,6 +144,11 @@ impl Player {
             simulation: None,
             simulated: None,
             simulating: None,
+            changed: None,
+            resume: false,
+            embedding: None,
+            embedded: false,
+            embedding_progress: Arc::default(),
             outputs: None,
             position: 0.0,
             playing: false,
@@ -147,7 +169,9 @@ impl Player {
         self.info.header.duration
     }
 
-    /// Reads what the threads finished, and replays the session again when the mode changed.
+    /// Reads what the threads finished; replays the session into the mode the
+    /// first time, and notes when the mode changed since (its script, settings
+    /// or inputs), to replay it again once the player applies the changes.
     fn poll(&mut self, key: Option<ModeKey>) {
         if let Some(rx) = &self.reading {
             if let Ok(read) = rx.try_recv() {
@@ -158,25 +182,90 @@ impl Player {
                 }
             }
         }
-        if let Some((key, rx)) = &self.simulating {
+        if let Some(rx) = &self.embedding {
+            if let Ok(embedded) = rx.try_recv() {
+                self.embedding = None;
+                match (embedded, &self.session) {
+                    (Ok(embeddings), Some(session)) => {
+                        log::info!("{} images of the session embedded for the phases", embeddings.len());
+                        let mut session = Session::clone(session);
+                        session.insert(embeddings);
+                        self.session = Some(Arc::new(session));
+                        // Replayed again with them.
+                        self.simulated = None;
+                        if let Some((_, _, progress)) = self.simulating.take() {
+                            progress.stop();
+                        }
+                    }
+                    (Err(e), _) => log::warn!("cannot embed the images of the session for the phases: {e}"),
+                    _ => {}
+                }
+            }
+        }
+        if let Some((key, rx, _)) = &self.simulating {
             if let Ok(simulation) = rx.try_recv() {
                 self.simulated = Some(key.clone());
                 self.outputs = simulation.as_ref().ok().map(|sim| Arc::new(sim.ticks().iter().map(|k| (k.t, k.channels.clone())).collect()));
                 self.simulation = Some(simulation);
                 self.simulating = None;
+                if std::mem::take(&mut self.resume) {
+                    self.playing = true;
+                    self.jumped = true;
+                }
             }
         }
-        let (Some(session), Some(key)) = (&self.session, key) else { return };
-        let wanted = Some(&key) != self.simulated.as_ref() && self.simulating.as_ref().is_none_or(|(k, _)| *k != key);
-        if wanted {
+        let Some(session) = &self.session else { return };
+        // Phases need the images embedded: a session recorded before the mode had any has none.
+        let phases = self.simulation.as_ref().is_some_and(|s| s.as_ref().is_ok_and(Simulation::has_phases));
+        if phases && !self.embedded && Model::Image.ready() && session.lacks_image_embeddings() {
+            self.embedded = true;
+            let (tx, rx) = mpsc::channel();
+            let (session, progress) = (session.clone(), self.embedding_progress.clone());
+            std::thread::spawn(move || {
+                let _ = tx.send(session.embed_images(&progress).map_err(|e| format!("{e:#}")));
+            });
+            self.embedding = Some(rx);
+        }
+        let Some(key) = key else { return };
+        let replayed = self.simulating.as_ref().map(|(k, _, _)| k).or(self.simulated.as_ref());
+        if replayed == Some(&key) {
+            self.changed = None;
+        } else if self.simulated.is_none() && self.simulating.is_none() {
+            // The first replay, or again with its images embedded.
+            self.replay_into(key);
+        } else {
+            self.changed = Some(key);
+        }
+    }
+
+    /// Replays the session into the mode as it is now, if it changed.
+    fn apply(&mut self) {
+        if let Some(key) = self.changed.take() {
+            self.replay_into(key);
+        }
+    }
+
+    /// Replays the session into `key` (in a thread), stopping a replay under
+    /// way; the player pauses meanwhile and plays again after.
+    fn replay_into(&mut self, key: ModeKey) {
+        let Some(session) = &self.session else { return };
+        if let Some((_, _, progress)) = self.simulating.take() {
+            progress.stop();
+        }
+        self.resume |= std::mem::take(&mut self.playing);
+        self.changed = None;
+        {
             let (tx, rx) = mpsc::channel();
             let session = Session::clone(session);
             let run = key.clone();
+            let progress = Arc::new(Progress::default());
+            let progressing = progress.clone();
             std::thread::spawn(move || {
                 let entry = ModeEntry::from_id(&run.id);
-                let _ = tx.send(report::simulate(&entry.chunk_name(), &run.source, &run.values, &Inputs::of(&entry), session));
+                let simulation = report::simulate(&entry.chunk_name(), &run.source, &run.values, &Inputs::of(&entry), session, &progressing);
+                let _ = tx.send(simulation);
             });
-            self.simulating = Some((key, rx));
+            self.simulating = Some((key, rx, progress));
         }
     }
 
@@ -276,6 +365,15 @@ impl Player {
         };
         if let Some(t) = target {
             self.seek(t - 0.5);
+        }
+    }
+}
+
+impl Drop for Player {
+    fn drop(&mut self) {
+        self.embedding_progress.stop();
+        if let Some((_, _, progress)) = &self.simulating {
+            progress.stop();
         }
     }
 }
@@ -464,11 +562,12 @@ impl App {
         }
     }
 
-    /// The recording open, replayed into the active mode; the toys play it while it plays.
-    fn player_ui(&mut self, ui: &mut egui::Ui, s: &Shared) {
+    /// Every frame, whatever the page shown: replays the recording open into
+    /// the active mode again when it changes (its script, settings, phases,
+    /// captures or indicators edited elsewhere), moves it on while it plays,
+    /// and has the toys play it.
+    pub(super) fn run_player(&mut self, ctx: &egui::Context, s: &Shared) {
         let key = self.replayed_mode(s);
-        let ctx = ui.ctx().clone();
-        let cap = s.settings.global_cap;
         let commands = self.commands.clone();
         let Some(p) = self.creator.sessions.player.as_mut() else { return };
         p.poll(key);
@@ -481,7 +580,7 @@ impl App {
                 }
                 None if p.seen => p.playing = false,
                 _ => {
-                    let dt = ui.input(|i| i.stable_dt).min(0.1) as f64;
+                    let dt = ctx.input(|i| i.stable_dt).min(0.1) as f64;
                     p.position = (p.position + dt * p.speed).min(p.duration());
                 }
             }
@@ -489,10 +588,22 @@ impl App {
                 p.playing = false;
             }
         }
-        if p.playing || p.reading.is_some() || p.simulating.is_some() {
+        if p.playing || p.reading.is_some() || p.simulating.is_some() || p.embedding.is_some() {
             ctx.request_repaint();
         }
-        if ctx.memory(|m| m.focused().is_none()) {
+        let info = p.info.clone();
+        p.sync(&commands, &info, s.recording.is_some());
+    }
+
+    /// The recording open, replayed into the active mode; the toys play it while it plays.
+    fn player_ui(&mut self, ui: &mut egui::Ui, s: &Shared) {
+        let ctx = ui.ctx().clone();
+        let cap = s.settings.global_cap;
+        let commands = self.commands.clone();
+        let Some(p) = self.creator.sessions.player.as_mut() else { return };
+        // Replayed again with the changes: the player waits.
+        let busy = p.simulating.is_some() && p.simulation.is_some();
+        if !busy && ctx.memory(|m| m.focused().is_none()) {
             shortcuts(ui, p);
         }
 
@@ -504,16 +615,61 @@ impl App {
             ui.label(muted(format!("{} · recorded with {}", info.header.started, info.header.mode)));
         });
         let replayed = match (&p.simulating, &p.simulation, &s.mode.info) {
-            (Some(_), _, _) => muted("Replaying it into the mode...").color(WARN),
+            (Some(_), _, _) => muted(""),
             (None, Some(Err(e)), _) => RichText::new(format!("The mode cannot be replayed: {e}")).color(DANGER_TEXT),
             (None, Some(Ok(sim)), Some(mode)) => match sim.error() {
                 Some((t, e)) => RichText::new(format!("{} stopped on an error at {}: {e}", mode.name, clock(*t))).color(DANGER_TEXT),
                 None if s.recording.is_some() => muted(format!("What {} does with it; the toys play it once the recording stops.", mode.name)),
-                None => muted(format!("What {} does with it, as it is now (its script and settings): the toys play it while it plays.", mode.name)),
+                None => muted(format!(
+                    "What {} does with it, as it is now (its script, settings, phases and indicators): the toys play it while it plays.",
+                    mode.name
+                )),
             },
             _ => muted(""),
         };
-        ui.label(replayed.size(12.5));
+        let mode = s.mode.info.as_ref().map_or_else(|| "the mode".to_owned(), |m| m.name.clone());
+        match (&p.simulating, &p.embedding) {
+            (Some((_, _, progress)), _) if busy => working(
+                ui,
+                "Applying your changes",
+                &format!("The recording is run again through {mode} with your changes, to show and play what the toys get now. The player waits until it is done."),
+                Some(progress.done()),
+            ),
+            (Some((_, _, progress)), _) => working(
+                ui,
+                "Preparing the replay",
+                &format!("The recording is run through {mode} as it is now, to show and play what the toys would get."),
+                Some(progress.done()),
+            ),
+            (None, Some(_)) => working(
+                ui,
+                "Reading its images for the phases",
+                "This recording was made before the mode had phases to recognize: its images are looked at once, then it is replayed with them.",
+                Some(p.embedding_progress.done()),
+            ),
+            _ => {
+                ui.label(replayed.size(12.5));
+            }
+        }
+        if let Some(changed) = &p.changed {
+            let replayed = p.simulating.as_ref().map(|(k, _, _)| k).or(p.simulated.as_ref());
+            let what = replayed.map(|r| changes(r, changed)).unwrap_or_default();
+            let mut apply = false;
+            card(PANEL).stroke(Stroke::new(1.0, WARN)).inner_margin(Margin::symmetric(12, 8)).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new("⟳").size(16.0).color(WARN));
+                    ui.label(RichText::new(format!("Changed since this replay: {}.", what.join(", "))).size(13.0));
+                    apply = ui
+                        .button(RichText::new("Apply the changes").strong())
+                        .on_hover_text("Replays the session into the mode as it is now; the player pauses meanwhile")
+                        .clicked();
+                });
+            });
+            if apply {
+                p.apply();
+            }
+        }
         if let Some(e) = &p.error {
             ui.label(RichText::new(format!("Cannot read the recording: {e}")).color(DANGER_TEXT));
         }
@@ -525,17 +681,18 @@ impl App {
             return;
         }
         let Some(session) = p.session.clone() else {
-            ui.add_space(20.0);
-            ui.horizontal(|ui| {
-                ui.spinner();
-                ui.label(muted("Reading the recording..."));
-            });
+            if p.error.is_none() {
+                working(ui, "Opening the recording", "Its images and what happened during it are read from the disk.", None);
+            }
             return;
         };
         ui.add_space(6.0);
 
         let moment = p.cursor.seek(&session.changes, p.position).clone();
         let mut add = None;
+        if busy {
+            ui.disable();
+        }
         // The gamepad, the images and the player keep their size, on the left;
         // the inputs grow with what the mode reads, on the right.
         if ui.available_width() >= WIDE_PLAYER {
@@ -562,7 +719,6 @@ impl App {
             });
         }
         p.adding = false;
-        p.sync(&commands, &info, s.recording.is_some());
         if let Some((dir, phase, frames)) = add {
             let count = frames.len();
             let _ = commands.send(Command::AddCaptures { dir, phase: phase.clone(), frames });
@@ -572,23 +728,80 @@ impl App {
         }
     }
 
+    /// The recording open in the player was replayed into the mode as it was before a change.
+    pub(super) fn player_outdated(&self) -> bool {
+        self.creator.sessions.player.as_ref().is_some_and(|p| p.changed.is_some())
+    }
+
     /// The active mode as it would be replayed; None while its script has unsaved changes elsewhere.
     fn replayed_mode(&self, s: &Shared) -> Option<ModeKey> {
         if s.mode.id.is_empty() {
             return None;
         }
         let editor = &self.creator.editor;
+        // What the mode reads: the requests' instructions and the indicators to draw do not change it.
+        let inputs = s.mode_inputs.clone().map(|i| Inputs { instructions: String::new(), planned: Vec::new(), ..i });
         // The script as saved: the editor holds it when it is this mode's.
         let source = if editor.id == s.mode.id && !editor.text.is_empty() {
             if editor.dirty {
-                return self.creator.sessions.player.as_ref().and_then(|p| p.simulated.clone());
+                let simulated = self.creator.sessions.player.as_ref().and_then(|p| p.simulated.clone());
+                return simulated.map(|k| ModeKey { inputs, ..k });
             }
             editor.text.clone()
         } else {
             ModeEntry::from_id(&s.mode.id).source().ok()?
         };
-        Some(ModeKey { id: s.mode.id.clone(), source, values: s.mode.values.clone() })
+        Some(ModeKey { id: s.mode.id.clone(), source, values: s.mode.values.clone(), inputs })
     }
+}
+
+/// Work the player waits for: what it is, what it does, and how far it got.
+fn working(ui: &mut egui::Ui, title: &str, what: &str, done: Option<f32>) {
+    ui.add_space(4.0);
+    card(PANEL).stroke(Stroke::new(1.5, ACCENT)).inner_margin(Margin::symmetric(16, 12)).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal(|ui| {
+            ui.add(egui::Spinner::new().size(28.0).color(ACCENT));
+            ui.add_space(8.0);
+            ui.vertical(|ui| {
+                ui.label(RichText::new(title).size(16.0).strong());
+                ui.label(muted(what).size(12.5));
+                if let Some(done) = done {
+                    ui.add_space(4.0);
+                    ui.add(egui::ProgressBar::new(done).desired_width(ui.available_width().min(420.0)).desired_height(8.0).fill(ACCENT));
+                }
+            });
+        });
+    });
+    ui.add_space(4.0);
+}
+
+/// What differs between two modes a session is replayed into, for the player.
+fn changes(from: &ModeKey, to: &ModeKey) -> Vec<&'static str> {
+    if from.id != to.id {
+        return vec!["another mode is active"];
+    }
+    let (a, b) = (from.inputs.as_ref(), to.inputs.as_ref());
+    let mut what = Vec::new();
+    if from.source != to.source {
+        what.push("the script");
+    }
+    if from.values != to.values {
+        what.push("its settings");
+    }
+    if a.map(|i| &i.phases) != b.map(|i| &i.phases) {
+        what.push("the phases");
+    }
+    if a.map(|i| &i.captures) != b.map(|i| &i.captures) {
+        what.push("the captures");
+    }
+    if a.map(|i| &i.zones) != b.map(|i| &i.zones) {
+        what.push("the indicators");
+    }
+    if what.is_empty() {
+        what.push("its inputs");
+    }
+    what
 }
 
 /// The player's keyboard shortcuts, listed by `SHORTCUTS`.
@@ -890,10 +1103,15 @@ fn inputs_card(ui: &mut egui::Ui, p: &Player, moment: &Moment, session: &Session
                 ui.label(RichText::new(format!("{:.0}%", likelihood * 100.0)).size(12.0));
             });
         }
-        if !moment.indicators.is_empty() {
+        // As the mode was given them: read again from the images when their zones changed since.
+        let indicators = sim.map_or_else(|| moment.indicators.clone(), |sim| sim.indicators_at(p.position));
+        if !indicators.is_empty() {
             ui.add_space(6.0);
             eyebrow(ui, "Indicators");
-            for (name, value) in &moment.indicators {
+            if sim.is_some_and(Simulation::indicators_reread) {
+                ui.label(muted("Read from its images, as their zones are drawn now.").size(12.0));
+            }
+            for (name, value) in &indicators {
                 row(ui, name, |ui| match value {
                     IndicatorValue::Gauge(x) => {
                         meter(ui, (ui.available_width() - 44.0).max(40.0), *x, OK);
