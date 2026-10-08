@@ -1,20 +1,26 @@
 //! Requests for an AI assistant (ChatGPT, Claude...) to write a mode for one
-//! game or to fix a mode that does not feel right, and extraction of the
-//! script from its answer. The request templates ship with GameViber; players
-//! can override them with files in `~/.config/gameviber/prompts/`.
+//! game — at once, after questions to the player, or after an analysis of the
+//! game proposing its phases and indicators — or to fix a mode that does not
+//! feel right, and extraction of the script (or of the proposed setup) from its
+//! answer. The request templates ship with GameViber; players can override them
+//! with files in `~/.config/gameviber/prompts/`.
 
 use std::collections::BTreeMap;
 use std::io;
 use std::path::PathBuf;
 
+use serde::Deserialize;
+
 use super::{ParamDef, ParamValue};
 use crate::config;
+use crate::package::IndicatorKind;
 
 const SPEC: &str = include_str!("../../../docs/spec-modes.md");
-/// Lines between these markers are left out of a short fix request, sent in the
-/// conversation that already has them.
-const FULL_START: &str = "<!-- full -->";
-const FULL_END: &str = "<!-- /full -->";
+/// Blocks of the templates, between `<!-- name -->` and `<!-- /name -->`, kept
+/// only in some requests: `full` (the context, rules and API) is left out of a
+/// request sent in the conversation that already has them; the others hold the
+/// steps of one style of request.
+const BLOCKS: [&str; 4] = ["full", "direct", "conversation", "after-analysis"];
 /// Spec sections left out of the requests: they are about GameViber itself
 /// (architecture, presets, reloading, safety, plans, built-in modes), not about
 /// writing a mode.
@@ -77,16 +83,19 @@ pub enum Template {
     NewMode,
     /// A fix for a mode that does not feel right.
     FixFeel,
-    /// What makes a mode feel good and the script rules, shared by both.
+    /// An analysis of a game proposing its phases and indicators, before its mode.
+    Analysis,
+    /// What makes a mode feel good and the script rules, shared by all.
     Rules,
 }
 
 impl Template {
-    pub const ALL: [Template; 3] = [Template::NewMode, Template::FixFeel, Template::Rules];
+    pub const ALL: [Template; 4] = [Template::NewMode, Template::Analysis, Template::FixFeel, Template::Rules];
 
     pub fn title(self) -> &'static str {
         match self {
             Template::NewMode => "A mode for a game",
+            Template::Analysis => "Analyse a game",
             Template::FixFeel => "Fix a mode",
             Template::Rules => "Shared rules",
         }
@@ -95,6 +104,7 @@ impl Template {
     fn file_name(self) -> &'static str {
         match self {
             Template::NewMode => "new-mode.md",
+            Template::Analysis => "analyse-game.md",
             Template::FixFeel => "fix-feel.md",
             Template::Rules => "rules.md",
         }
@@ -103,6 +113,7 @@ impl Template {
     pub fn builtin(self) -> &'static str {
         match self {
             Template::NewMode => include_str!("../../prompts/new-mode.md"),
+            Template::Analysis => include_str!("../../prompts/analyse-game.md"),
             Template::FixFeel => include_str!("../../prompts/fix-feel.md"),
             Template::Rules => include_str!("../../prompts/rules.md"),
         }
@@ -111,7 +122,7 @@ impl Template {
     /// Placeholders the template should keep, so the request holds what it needs.
     pub fn placeholders(self) -> &'static [&'static str] {
         match self {
-            Template::NewMode => &["{{GAME}}", "{{LANGUAGE}}", "{{INPUTS}}", "{{RULES}}", "{{SPEC}}"],
+            Template::NewMode | Template::Analysis => &["{{GAME}}", "{{LANGUAGE}}", "{{INPUTS}}", "{{RULES}}", "{{SPEC}}"],
             Template::FixFeel => &[
                 "{{GAME}}", "{{LANGUAGE}}", "{{PROBLEMS}}", "{{HISTORY}}", "{{NAME}}", "{{PARAMS}}",
                 "{{SOURCE}}", "{{SESSION}}", "{{INPUTS}}", "{{RULES}}", "{{SPEC}}",
@@ -154,6 +165,7 @@ impl Template {
 /// The templates a request is built from.
 pub struct Templates {
     pub new_mode: String,
+    pub analysis: String,
     pub fix_feel: String,
     pub rules: String,
 }
@@ -161,40 +173,95 @@ pub struct Templates {
 impl Templates {
     /// The player's templates (the shipped ones where they changed nothing).
     pub fn load() -> Self {
-        Self { new_mode: Template::NewMode.text(), fix_feel: Template::FixFeel.text(), rules: Template::Rules.text() }
+        Self {
+            new_mode: Template::NewMode.text(),
+            analysis: Template::Analysis.text(),
+            fix_feel: Template::FixFeel.text(),
+            rules: Template::Rules.text(),
+        }
     }
 
     #[cfg(test)]
     pub fn builtin() -> Self {
         Self {
             new_mode: Template::NewMode.builtin().to_owned(),
+            analysis: Template::Analysis.builtin().to_owned(),
             fix_feel: Template::FixFeel.builtin().to_owned(),
             rules: Template::Rules.builtin().to_owned(),
         }
     }
 }
 
-/// The request to paste into an AI assistant to get a mode made for `game`,
-/// answered in `language`; `described` describes the inputs set up for the mode (advanced requests).
-pub fn new_mode_prompt(t: &Templates, game: &str, language: &str, depth: Depth, described: Option<&str>, phases: &[String]) -> String {
-    sections(&t.new_mode, true)
-        .replace("{{RULES}}", t.rules.trim_end())
-        .replace("{{INPUTS}}", &inputs_text(depth, described, phases))
-        .replace("{{SPEC}}", &spec(depth))
-        .replace("{{LANGUAGE}}", language)
-        .replace("{{GAME}}", game.trim())
+/// How the assistant gets to a mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Style {
+    /// The mode in one answer.
+    #[default]
+    Direct,
+    /// Questions to the player and designs to choose from, then the mode.
+    Conversation,
+    /// The game's phases and indicators proposed, to set up in GameViber (`Setup`)...
+    Analysis,
+    /// ...then the mode, asked in the same conversation.
+    AfterAnalysis,
 }
 
-/// `text` with the `FULL_START`..`FULL_END` blocks kept (without their markers)
-/// or left out.
-fn sections(text: &str, full: bool) -> String {
+/// A request for a mode made for one game.
+pub struct NewMode<'a> {
+    pub game: &'a str,
+    /// The language the assistant answers in.
+    pub language: &'a str,
+    pub style: Style,
+    pub depth: Depth,
+    /// The inputs set up for the mode, described (advanced requests).
+    pub described: Option<&'a str>,
+    pub phases: &'a [String],
+    /// The player's own instructions, written last.
+    pub instructions: &'a str,
+}
+
+/// The request to paste into an AI assistant to get a mode made for a game (or its analysis).
+pub fn new_mode_prompt(t: &Templates, r: &NewMode) -> String {
+    let (template, block) = match r.style {
+        Style::Direct => (&t.new_mode, "direct"),
+        Style::Conversation => (&t.new_mode, "conversation"),
+        Style::AfterAnalysis => (&t.new_mode, "after-analysis"),
+        Style::Analysis => (&t.analysis, "full"),
+    };
+    // The conversation of an analysis already has the context, rules and API.
+    let keep: &[&str] = if r.style == Style::AfterAnalysis { &[block] } else { &["full", block] };
+    // An analysis proposes indicators: it gets their API.
+    let depth = if r.style == Style::Analysis { Depth::Advanced } else { r.depth };
+    let text = sections(template, keep)
+        .replace("{{RULES}}", t.rules.trim_end())
+        .replace("{{INPUTS}}", &inputs_text(depth, r.described, r.phases))
+        .replace("{{SPEC}}", &spec(depth))
+        .replace("{{LANGUAGE}}", r.language)
+        .replace("{{GAME}}", r.game.trim());
+    format!("{}\n\n{}", text.trim_end(), instructions_text(r.instructions))
+}
+
+/// The end of a request: the player's own instructions, and room for more.
+fn instructions_text(instructions: &str) -> String {
+    let heading = "# The player's own instructions\n\n\
+                   Where they differ from the rest of this message, follow them.";
+    match instructions.trim() {
+        "" => format!("{heading} The player may write some below.\n"),
+        text => format!("{heading}\n\n{text}\n"),
+    }
+}
+
+/// `text` with the blocks named in `keep` kept (without their markers) and the
+/// other blocks of `BLOCKS` left out.
+fn sections(text: &str, keep: &[&str]) -> String {
     let mut out = String::new();
-    let mut in_full = false;
+    let mut skipping = false;
     for line in text.lines() {
-        match line.trim() {
-            FULL_START => in_full = true,
-            FULL_END => in_full = false,
-            _ if full || !in_full => {
+        let marker = line.trim().strip_prefix("<!-- ").and_then(|m| m.strip_suffix(" -->"));
+        match marker {
+            Some(name) if BLOCKS.contains(&name) => skipping = !keep.contains(&name),
+            Some(end) if end.strip_prefix('/').is_some_and(|name| BLOCKS.contains(&name)) => skipping = false,
+            _ if !skipping => {
                 out.push_str(line);
                 out.push('\n');
             }
@@ -318,7 +385,7 @@ pub fn feel_prompt(t: &Templates, r: &FeelReport) -> String {
         Depth::Advanced => inputs_text(depth, r.inputs, &[]),
         Depth::Quick => "None set up for this game.".to_owned(),
     };
-    sections(&t.fix_feel, r.full)
+    sections(&t.fix_feel, if r.full { &["full"] } else { &[] })
         .replace("{{RULES}}", t.rules.trim_end())
         .replace("{{INPUTS}}", &described)
         .replace("{{SPEC}}", &spec(depth))
@@ -381,6 +448,52 @@ pub fn extract_script(answer: &str) -> String {
         None => blocks.into_iter().max_by_key(String::len).unwrap_or_else(|| answer.to_owned()),
     };
     format!("{}\n", script.trim())
+}
+
+/// The setup an analysis proposes (`Style::Analysis`), from the `json` block of its answer.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct Setup {
+    pub phases: Vec<SetupPhase>,
+    pub indicators: Vec<SetupIndicator>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct SetupPhase {
+    pub name: String,
+    pub sound: Option<String>,
+    pub indicators: Vec<String>,
+    pub otherwise: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct SetupIndicator {
+    pub name: String,
+    pub kind: IndicatorKind,
+    /// Where it is on the screen, and when to capture it.
+    #[serde(rename = "where")]
+    pub place: String,
+}
+
+/// The setup an analysis ends with, if the answer holds one.
+pub fn extract_setup(answer: &str) -> Option<Setup> {
+    let mut blocks = Vec::new();
+    let mut current: Option<Vec<&str>> = None;
+    for line in answer.lines() {
+        if line.trim_start().starts_with("```") {
+            match current.take() {
+                Some(block) => blocks.push(block.join("\n")),
+                None => current = Some(Vec::new()),
+            }
+        } else if let Some(block) = &mut current {
+            block.push(line);
+        }
+    }
+    // Pasted without its code fence.
+    blocks.push(answer.to_owned());
+    blocks.iter().rev().filter_map(|b| serde_json::from_str::<Setup>(b.trim()).ok()).find(|s| !s.phases.is_empty())
 }
 
 /// A file name stem for a mode made for `game`: "Prince of Persia: The Lost Crown"

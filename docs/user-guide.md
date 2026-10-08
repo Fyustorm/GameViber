@@ -34,10 +34,22 @@ The best experience is a mode written for the game you play. In the
    mode works: what it reads, the phases, the script, your toys.
 2. **Open the Creator**. Name the game's phases first if you like (**Phases**):
    the request then gives each its own feel.
-3. In **Script**, **Ask an AI assistant**: copy the request GameViber builds
-   and paste it into a new conversation. An assistant with web search can
-   check the game's default controls. Indicators or values from other
-   programs make it an advanced request, which uses them.
+3. In **Script**, **Ask an AI assistant**, in one of three ways:
+   - **Direct**: the script in one answer;
+   - **Analysis first**: the assistant proposes the game's phases and the
+     indicators to draw. Pasting its answer sets the phases up (with their
+     sure signs) and lists the indicators under **To draw** in **Captures &
+     indicators**, with where to find them. Once they are drawn, send the
+     short script request in the same conversation;
+   - **Conversation**: the assistant first asks what you want, with choices,
+     and proposes 2 or 3 designs, then writes the script.
+
+   Copy the request GameViber builds and paste it into a new conversation. An
+   assistant with web search can check the game's default controls.
+   Indicators or values from other programs make it an advanced request,
+   which uses them. **Your instructions** are written at the end of every
+   request for the mode and kept with it; you can also write more at the end
+   of the request once pasted.
 4. Paste the answer back (or just its code, or drop the `.luau` file on the
    window) and **Use this script**. GameViber checks that it loads first; if it
    does not, copy the fix request and send it back to the assistant.

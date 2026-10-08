@@ -1,17 +1,22 @@
 //! The Creator's Script tab: the active mode's script, asked of an AI
-//! assistant (a request built from the game's name and what the mode reads,
-//! the answer pasted back or a .luau file dropped, checked before it replaces
-//! the script), started from a built-in mode, or written by hand.
+//! assistant (a request built from the game's name, what the mode reads and
+//! the player's own instructions, in one of three styles: the script at once,
+//! after questions to the player, or after an analysis of the game whose
+//! proposed phases and indicators are set up from its answer; the answer pasted
+//! back or a .luau file dropped, checked before it replaces the script),
+//! started from a built-in mode, or written by hand.
 
 use eframe::egui::{self, Margin, RichText};
 
-use super::creator::{is_draft, with_name, Way};
+use super::creator::{is_draft, with_name, Tab, Way};
 use super::theme::*;
 use super::{App, Page, Route};
 use crate::config::{self, ModeEntry};
 use crate::engine::{Command, Shared};
 use crate::game::Game;
-use crate::mode::{prompt, ModeRuntime};
+use crate::mode::prompt::{self, Style};
+use crate::mode::ModeRuntime;
+use crate::package::Inputs;
 
 const ASSISTANTS: [(&str, &str); 4] = [
     ("ChatGPT", "https://chatgpt.com"),
@@ -20,10 +25,30 @@ const ASSISTANTS: [(&str, &str); 4] = [
     ("Le Chat", "https://chat.mistral.ai"),
 ];
 
+/// The styles of request offered, with their label and what they do.
+const STYLES: [(Style, &str, &str); 3] = [
+    (Style::Direct, "Direct", "The script in one answer. Quick, for a first try or a simple game."),
+    (
+        Style::Analysis,
+        "Analysis first",
+        "The assistant proposes the game's phases and the indicators to draw; pasting its answer sets the phases up. \
+         Then a short request, in the same conversation, asks for the script with what you set up.",
+    ),
+    (
+        Style::Conversation,
+        "Conversation",
+        "The assistant first asks what you want (questions with choices) and proposes 2 or 3 designs to pick from, \
+         then writes the script.",
+    ),
+];
+
 #[derive(Default)]
 pub struct State {
-    /// The mode the request was copied for.
-    copied: Option<String>,
+    style: Style,
+    /// The mode and the style the request was copied for.
+    copied: Option<(String, Style)>,
+    /// The player's instructions being typed, for the mode (by id).
+    instructions: Option<(String, String)>,
     answer: String,
     error: Option<String>,
     fix_copied: bool,
@@ -69,31 +94,97 @@ impl App {
             ui.label(muted("The request names the mode's game: give it one on its page first."));
             return;
         };
-        let inputs = s.mode_inputs.as_ref();
+        let inputs = s.mode_inputs.clone().unwrap_or_default();
+        self.request_card(ui, s, game, &inputs);
+        ui.add_space(10.0);
+        self.answer_card(ui, s, &inputs, draft);
+        if self.generator.style == Style::Analysis {
+            ui.add_space(10.0);
+            self.script_request_card(ui, s, game, &inputs);
+        }
+        if !draft {
+            ui.add_space(6.0);
+            if ui.link("The mode works but does not feel right? Ask for a fix instead ›").clicked() {
+                self.page = Page::Library;
+                self.route = Route::Mode;
+                self.open_feedback(s);
+            }
+        }
+    }
+
+    /// The request for `style`, with what the mode reads and the player's instructions.
+    fn request(&self, s: &Shared, game: &Game, inputs: &Inputs, style: Style) -> String {
         // Indicators and values from other programs make an advanced request.
-        let depth = if inputs.is_some_and(|i| !i.zones.is_empty() || !i.external.is_empty()) { prompt::Depth::Advanced } else { prompt::Depth::Quick };
-        let phases: Vec<String> = inputs.iter().flat_map(|i| i.phases.iter().map(|p| p.name.clone())).collect();
-        let g = &mut self.generator;
+        let depth = if !inputs.zones.is_empty() || !inputs.external.is_empty() { prompt::Depth::Advanced } else { prompt::Depth::Quick };
+        let phases: Vec<String> = inputs.phases.iter().map(|p| p.name.clone()).collect();
+        let described = Some(inputs.describe()).filter(|d| !d.is_empty());
+        let instructions = self.instructions(s, inputs);
+        prompt::new_mode_prompt(
+            &prompt::Templates::load(),
+            &prompt::NewMode {
+                game: &game.name,
+                language: &s.settings.language,
+                style,
+                depth,
+                described: described.as_deref(),
+                phases: &phases,
+                instructions: &instructions,
+            },
+        )
+    }
+
+    /// The player's instructions for the mode, as typed.
+    fn instructions(&self, s: &Shared, inputs: &Inputs) -> String {
+        match &self.generator.instructions {
+            Some((mode, text)) if *mode == s.mode.id => text.clone(),
+            _ => inputs.instructions.clone(),
+        }
+    }
+
+    /// Copies the request for `style` when clicked.
+    fn copy_button(&mut self, ui: &mut egui::Ui, s: &Shared, game: &Game, inputs: &Inputs, label: &str, style: Style) {
+        ui.horizontal(|ui| {
+            if ui.add(primary(label)).clicked() {
+                ui.ctx().copy_text(self.request(s, game, inputs, style));
+                self.generator.copied = Some((s.mode.id.clone(), style));
+            }
+            if self.generator.copied.as_ref().is_some_and(|(mode, copied)| *mode == s.mode.id && *copied == style) {
+                ui.label(RichText::new("✔ Copied").color(OK));
+            }
+        });
+    }
+
+    fn request_card(&mut self, ui: &mut egui::Ui, s: &Shared, game: &Game, inputs: &Inputs) {
+        let phases: Vec<&str> = inputs.phases.iter().map(|p| p.name.as_str()).collect();
+        let advanced = !inputs.zones.is_empty() || !inputs.external.is_empty();
         card(PANEL).inner_margin(Margin::symmetric(18, 14)).show(ui, |ui| {
             ui.set_width(ui.available_width());
-            step(ui, 1, "Send the request to an AI assistant");
-            let what = match (phases.is_empty(), depth) {
-                (_, prompt::Depth::Advanced) => format!("For {}, with what the mode reads: its phases, indicators and values from other programs.", game.name),
-                (true, _) => format!("For {}. Name its phases first (Phases tab): the assistant then gives each its own feel.", game.name),
-                (false, _) => format!("For {}, with its phases {}.", game.name, phases.join(", ")),
-            };
-            ui.label(muted(what));
+            let style = self.generator.style;
+            step(ui, 1, if style == Style::Analysis { "Send the analysis request to an AI assistant" } else { "Send the request to an AI assistant" });
             ui.horizontal(|ui| {
-                if ui.add(primary("📋 Copy the request")).clicked() {
-                    let described = inputs.map(|i| i.describe()).filter(|d| !d.is_empty());
-                    let request = prompt::new_mode_prompt(&prompt::Templates::load(), &game.name, &s.settings.language, depth, described.as_deref(), &phases);
-                    ui.ctx().copy_text(request);
-                    g.copied = Some(s.mode.id.clone());
-                }
-                if g.copied.as_deref() == Some(s.mode.id.as_str()) {
-                    ui.label(RichText::new("✔ Copied").color(OK));
+                ui.label(muted("How"));
+                for (option, label, help) in STYLES {
+                    if ui.selectable_label(style == option, label).on_hover_text(help).clicked() {
+                        self.generator.style = option;
+                    }
                 }
             });
+            let help = STYLES.iter().find(|(option, _, _)| *option == style).map_or("", |(_, _, help)| help);
+            ui.label(muted(help).size(12.5));
+            ui.add_space(4.0);
+            let what = match (style, phases.is_empty(), advanced) {
+                (Style::Analysis, true, _) => format!("For {}.", game.name),
+                (Style::Analysis, false, _) => format!("For {}, keeping its phases {}.", game.name, phases.join(", ")),
+                (_, _, true) => format!("For {}, with what the mode reads: its phases, indicators and values from other programs.", game.name),
+                (_, true, _) => format!("For {}. Name its phases first (Phases tab), or ask for an analysis: the assistant then gives each its own feel.", game.name),
+                (_, false, _) => format!("For {}, with its phases {}.", game.name, phases.join(", ")),
+            };
+            ui.label(muted(what));
+            ui.add_space(4.0);
+            self.instructions_field(ui, s, inputs);
+            ui.add_space(4.0);
+            let label = if style == Style::Analysis { "📋 Copy the analysis request" } else { "📋 Copy the request" };
+            self.copy_button(ui, s, game, inputs, label, style);
             ui.horizontal(|ui| {
                 ui.label(muted("Paste it in a new conversation:"));
                 for (name, url) in ASSISTANTS {
@@ -102,12 +193,47 @@ impl App {
             });
             ui.label(muted("Tip: turn web search on if the assistant has it, so it checks the game's controls.").size(12.0));
         });
-        ui.add_space(10.0);
+    }
+
+    /// The player's own instructions, written at the end of every request for the
+    /// mode's script, saved with the mode once typed.
+    fn instructions_field(&mut self, ui: &mut egui::Ui, s: &Shared, inputs: &Inputs) {
+        ui.label(RichText::new("Your instructions").strong()).on_hover_text("Written at the end of the request, and kept with the mode for its next requests");
+        let mut text = self.instructions(s, inputs);
+        let edit = ui.add(
+            egui::TextEdit::multiline(&mut text)
+                .hint_text("e.g. stronger on critical hits, nothing in menus, a slow wave while exploring")
+                .desired_width(f32::INFINITY)
+                .desired_rows(2),
+        );
+        if edit.changed() {
+            self.generator.instructions = Some((s.mode.id.clone(), text.clone()));
+        }
+        if edit.lost_focus() && text.trim() != inputs.instructions && inputs.has_package() {
+            self.send(Command::SaveInputs(Inputs { instructions: text.trim().to_owned(), ..inputs.clone() }));
+        }
+        ui.label(
+            muted("They come last, and the assistant follows them first. You can also write more at the end of the request \
+                   once pasted, or answer the assistant afterwards.")
+            .size(12.0),
+        );
+    }
+
+    /// The answer pasted back: a script, or the setup an analysis proposes.
+    fn answer_card(&mut self, ui: &mut egui::Ui, s: &Shared, inputs: &Inputs, draft: bool) {
+        let analysis = self.generator.style == Style::Analysis;
         let mut apply = false;
+        let mut set_up = None;
+        let g = &mut self.generator;
         card(PANEL).inner_margin(Margin::symmetric(18, 14)).show(ui, |ui| {
             ui.set_width(ui.available_width());
-            step(ui, 2, "Paste the answer");
-            ui.label(muted("The whole answer or just the code (Ctrl+V), or drop a .luau file on this window. It is checked before it is used."));
+            step(ui, 2, if analysis { "Paste the answers" } else { "Paste the answer" });
+            ui.label(muted(if analysis {
+                "First the analysis's: GameViber sets up the phases it proposes and lists the indicators to draw. Then, \
+                 after step 3, the script's (or drop a .luau file on this window)."
+            } else {
+                "The whole answer or just the code (Ctrl+V), or drop a .luau file on this window. It is checked before it is used."
+            }));
             egui::ScrollArea::vertical().id_salt("answer").max_height(220.0).show(ui, |ui| {
                 let edit = egui::TextEdit::multiline(&mut g.answer).code_editor().hint_text("mode { api = 1, ... }").desired_width(f32::INFINITY).desired_rows(8);
                 if ui.add(edit).changed() {
@@ -127,20 +253,33 @@ impl App {
                 });
             }
             ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                apply = ui.add_enabled(!g.answer.trim().is_empty(), primary("Use this script")).clicked();
-                if !draft {
-                    ui.label(muted("It replaces the current script, kept as a .bak copy.").size(12.0));
+            // An analysis's answer holds a setup and no script.
+            let setup = (!g.answer.trim().is_empty() && !prompt::has_script(&g.answer)).then(|| prompt::extract_setup(&g.answer)).flatten();
+            ui.horizontal(|ui| match setup {
+                Some(setup) => {
+                    let what = format!("{} phase(s), {} indicator(s) to draw", setup.phases.len(), setup.indicators.len());
+                    if ui.add_enabled(inputs.has_package(), primary("Set up what it proposes")).on_hover_text(what).clicked() {
+                        set_up = Some(setup);
+                    }
+                    ui.label(muted("Phases already set up keep what you chose; they only get what they lack.").size(12.0));
+                }
+                None => {
+                    apply = ui.add_enabled(!g.answer.trim().is_empty(), primary("Use this script")).clicked();
+                    if !draft {
+                        ui.label(muted("It replaces the current script, kept as a .bak copy.").size(12.0));
+                    }
                 }
             });
         });
-        if !draft {
-            ui.add_space(6.0);
-            if ui.link("The mode works but does not feel right? Ask for a fix instead ›").clicked() {
-                self.page = Page::Library;
-                self.route = Route::Mode;
-                self.open_feedback(s);
-            }
+        if let Some(setup) = set_up {
+            let mut g = inputs.clone();
+            let applied = g.apply_setup(&setup);
+            self.send(Command::SaveInputs(g));
+            self.generator.answer.clear();
+            self.generator.note = Some(format!(
+                "✔ Set up: {} phase(s) added, {} completed, {} indicator(s) to draw. Check them, then ask for the script (step 3).",
+                applied.phases_added, applied.phases_completed, applied.indicators_to_draw
+            ));
         }
         if apply {
             let script = prompt::extract_script(&self.generator.answer);
@@ -157,6 +296,37 @@ impl App {
                 }
             }
         }
+    }
+
+    /// After an analysis: what is left to set up, and the request for the script.
+    fn script_request_card(&mut self, ui: &mut egui::Ui, s: &Shared, game: &Game, inputs: &Inputs) {
+        card(PANEL).inner_margin(Margin::symmetric(18, 14)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            step(ui, 3, "Set up the rest, then ask for the script");
+            let to_draw: Vec<_> = inputs.to_draw().collect();
+            if !to_draw.is_empty() {
+                ui.label(RichText::new("Indicators to draw").strong());
+                for planned in &to_draw {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(RichText::new(&planned.name).monospace());
+                        ui.label(muted(planned.kind.label()).size(12.0));
+                        ui.label(muted(&planned.place).size(12.5));
+                    });
+                }
+            }
+            ui.horizontal(|ui| {
+                if ui.link("Captures & indicators ›").on_hover_text("Take a few captures of each phase, and draw the indicators on them").clicked() {
+                    self.creator.tab = Tab::Screen;
+                }
+                if ui.link("Phases ›").clicked() {
+                    self.creator.tab = Tab::Phases;
+                }
+            });
+            ui.add_space(4.0);
+            ui.label(muted("Send it in the same conversation as the analysis: it lists what you set up, and is short since the \
+                            assistant already has the rest."));
+            self.copy_button(ui, s, game, inputs, "📋 Copy the script request", Style::AfterAnalysis);
+        });
     }
 
     /// The built-in modes, to start from one.

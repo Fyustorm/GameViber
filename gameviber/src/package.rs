@@ -255,6 +255,30 @@ pub struct Inputs {
     /// for the requests to AI assistants; `inputs` before the terms changed.
     #[serde(alias = "inputs")]
     pub external: Vec<ExternalInput>,
+    /// Indicators an assistant's analysis proposed, to draw (those drawn are left out).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub planned: Vec<PlannedIndicator>,
+    /// The player's own instructions, written at the end of the requests for the mode's script.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub instructions: String,
+}
+
+/// An indicator an assistant proposed: what it reads and where to draw it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PlannedIndicator {
+    pub name: String,
+    pub kind: IndicatorKind,
+    /// Where it is on the screen, and when to capture it.
+    pub place: String,
+}
+
+/// What an analysis's setup changed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SetupApplied {
+    pub phases_added: usize,
+    pub phases_completed: usize,
+    pub indicators_to_draw: usize,
 }
 
 /// Where a capture of the package in `dir` is (its PNG file).
@@ -374,6 +398,55 @@ impl Inputs {
             copied.is_ok()
         });
         copy
+    }
+
+    /// Indicators proposed and not drawn yet.
+    pub fn to_draw(&self) -> impl Iterator<Item = &PlannedIndicator> {
+        self.planned.iter().filter(|p| !self.zones.iter().any(|z| z.indicator == p.name))
+    }
+
+    /// Takes in what an assistant's analysis proposes: its phases are added (up
+    /// to `MAX_PHASES`), those already set up only get what they lack (a sound,
+    /// a sure sign), and its indicators not drawn yet are listed to draw.
+    pub fn apply_setup(&mut self, setup: &crate::mode::prompt::Setup) -> SetupApplied {
+        let mut applied = SetupApplied::default();
+        let mut otherwise = self.phases.iter().any(|p| p.otherwise);
+        for proposed in setup.phases.iter().filter(|p| valid_name(&p.name)) {
+            let sound = proposed.sound.clone().filter(|s| !s.trim().is_empty());
+            let sign: Vec<String> = proposed.indicators.iter().filter(|z| valid_name(z)).cloned().collect();
+            let wants_otherwise = proposed.otherwise && sign.is_empty() && !otherwise;
+            let (phase, added) = match self.phases.iter().position(|p| p.name == proposed.name) {
+                Some(i) => (&mut self.phases[i], false),
+                None if self.phases.len() < MAX_PHASES => {
+                    self.phases.push(PhaseDef { name: proposed.name.clone(), ..PhaseDef::default() });
+                    (self.phases.last_mut().unwrap(), true)
+                }
+                None => continue,
+            };
+            let before = phase.clone();
+            if phase.sound.is_none() {
+                phase.sound = sound;
+            }
+            if phase.indicators.is_empty() && !phase.otherwise {
+                phase.indicators = sign;
+                phase.otherwise = wants_otherwise;
+                otherwise |= wants_otherwise;
+            }
+            if added {
+                applied.phases_added += 1;
+            } else if *phase != before {
+                applied.phases_completed += 1;
+            }
+        }
+        for proposed in setup.indicators.iter().filter(|z| valid_name(&z.name)) {
+            let planned = PlannedIndicator { name: proposed.name.clone(), kind: proposed.kind, place: proposed.place.trim().to_owned() };
+            match self.planned.iter_mut().find(|p| p.name == planned.name) {
+                Some(p) => *p = planned,
+                None => self.planned.push(planned),
+            }
+        }
+        applied.indicators_to_draw = self.to_draw().count();
+        applied
     }
 
     /// The phases as modes see them.

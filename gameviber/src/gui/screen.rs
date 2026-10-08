@@ -96,6 +96,8 @@ impl Default for State {
 /// Where the editor goes.
 enum Target {
     NewIndicator,
+    /// A new indicator an assistant proposed: its name and what it reads.
+    Planned(String, IndicatorKind),
     /// An indicator, none of its zones (one is then picked, or a new one drawn).
     Indicator(String),
     /// A zone, by index; true: shown on its capture.
@@ -122,6 +124,7 @@ impl State {
         self.confirm_delete = false;
         match to {
             Target::NewIndicator => self.draft = Draft { zoom: self.draft.zoom, ..Draft::default() },
+            Target::Planned(name, kind) => self.draft = Draft { zoom: self.draft.zoom, name, kind, kind_chosen: true, ..Draft::default() },
             Target::Indicator(name) => self.select_indicator(&name, g),
             Target::Zone(i, on_capture) => self.open_zone(i, g, on_capture),
         }
@@ -1031,6 +1034,27 @@ impl App {
                 target = Some(Target::NewIndicator);
             }
         });
+        // Those an assistant's analysis proposed, to draw.
+        let to_draw: Vec<_> = inputs.to_draw().collect();
+        if !to_draw.is_empty() {
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
+                ui.label(muted("To draw"));
+                for planned in &to_draw {
+                    let on = indicator_name.is_none() && draft.name == planned.name;
+                    let hover = format!("{}\n{}\n\nProposed by the assistant: click, then draw it.", planned.kind.label(), planned.place);
+                    if ui.selectable_label(on, format!("✨ {}", planned.name)).on_hover_text(hover).clicked() && !on {
+                        target = Some(Target::Planned(planned.name.clone(), planned.kind));
+                    }
+                }
+                if ui.small_button("✕").on_hover_text("Forget the indicators proposed").clicked() {
+                    linked = Some(Inputs { planned: Vec::new(), ..inputs.clone() });
+                }
+            });
+            if let Some(planned) = to_draw.iter().find(|p| indicator_name.is_none() && draft.name == p.name) {
+                ui.label(RichText::new(format!("Where: {}", planned.place)).color(ACCENT_TEXT).size(12.5));
+            }
+        }
         // Its zones, or what a new indicator reads.
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);

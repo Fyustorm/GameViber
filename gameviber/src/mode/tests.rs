@@ -3,6 +3,7 @@ use crate::audio::AudioHit;
 use crate::mode::phases::{Ignored, PhaseDecl, Sense};
 use crate::mode::IndicatorValue;
 use crate::screen::ScreenLevels;
+use crate::package::{IndicatorKind, Inputs, PhaseDef, Zone};
 
 const SIMPLE: &str = include_str!("../../modes/simple.luau");
 const ACCUMULATION: &str = include_str!("../../modes/accumulation.luau");
@@ -524,9 +525,14 @@ fn surge_fills_with_parries_and_spends_on_a_surge() {
     assert!(plot_value(&out, "gauge") < 0.14);
 }
 
+/// A request for a mode made for `game`.
+fn new_mode<'a>(game: &'a str, language: &'a str, depth: prompt::Depth, described: Option<&'a str>, phases: &'a [String]) -> prompt::NewMode<'a> {
+    prompt::NewMode { game, language, style: prompt::Style::Direct, depth, described, phases, instructions: "" }
+}
+
 #[test]
 fn ai_prompt_names_the_game_and_embeds_the_api() {
-    let text = prompt::new_mode_prompt(&prompt::Templates::builtin(), "  Hades II ", "Français", prompt::Depth::Quick, None, &[]);
+    let text = prompt::new_mode_prompt(&prompt::Templates::builtin(), &new_mode("  Hades II ", "Français", prompt::Depth::Quick, None, &[]));
     assert!(text.contains("**Hades II**"));
     assert!(text.contains("category = \"Hades II\""));
     assert!(text.contains("answer in Français"), "language");
@@ -546,13 +552,67 @@ fn ai_prompt_names_the_game_and_embeds_the_api() {
 
     // An advanced request: the raw inputs and the inputs set up for the mode.
     let profile = "Indicators of the screen (`input.indicators`, `on_indicator`):\n- `battle_hud`: true while shown, false otherwise\n";
-    let advanced = prompt::new_mode_prompt(&prompt::Templates::builtin(), "Hades II", "English", prompt::Depth::Advanced, Some(profile), &[]);
+    let advanced = prompt::new_mode_prompt(&prompt::Templates::builtin(), &new_mode("Hades II", "English", prompt::Depth::Advanced, Some(profile), &[]));
     assert!(advanced.contains("### 6.4 ") && advanced.contains("### 6.5 ") && advanced.contains("### 7.1 "));
     assert!(advanced.contains("- `battle_hud`: true while shown"), "the profile");
-    let blank = prompt::new_mode_prompt(&prompt::Templates::builtin(), "Hades II", "English", prompt::Depth::Advanced, None, &[]);
-    let quick_phases = prompt::new_mode_prompt(&prompt::Templates::builtin(), "Hades II", "English", prompt::Depth::Quick, None, &["battle".to_owned(), "hub".to_owned()]);
+    let blank = prompt::new_mode_prompt(&prompt::Templates::builtin(), &new_mode("Hades II", "English", prompt::Depth::Advanced, None, &[]));
+    let phases = ["battle".to_owned(), "hub".to_owned()];
+    let quick_phases = prompt::new_mode_prompt(&prompt::Templates::builtin(), &new_mode("Hades II", "English", prompt::Depth::Quick, None, &phases));
     assert!(quick_phases.contains("already recognizes this game's phases: `battle`, `hub`"), "a quick request names the game's phases");
     assert!(blank.contains("tell the player which indicators to draw"), "no profile yet");
+    assert!(text.trim_end().ends_with("The player may write some below."), "room for the player's own instructions");
+}
+
+#[test]
+fn request_styles_ask_for_questions_an_analysis_or_the_script() {
+    let templates = prompt::Templates::builtin();
+    let phases = ["battle".to_owned(), "story".to_owned()];
+    let request = |style, instructions| {
+        let r = prompt::NewMode { style, instructions, ..new_mode("Hades II", "English", prompt::Depth::Quick, None, &phases) };
+        prompt::new_mode_prompt(&templates, &r)
+    };
+    let direct = request(prompt::Style::Direct, "");
+    let chat = request(prompt::Style::Conversation, "  No vibration in menus.  ");
+    let analysis = request(prompt::Style::Analysis, "");
+    let after = request(prompt::Style::AfterAnalysis, "");
+    for text in [&direct, &chat, &analysis, &after] {
+        assert!(!text.contains("{{") && !text.contains("<!--"), "every placeholder and marker replaced");
+        assert!(text.contains("# The player's own instructions"));
+    }
+    assert!(direct.contains("Design the mode") && !direct.contains("Ask the player"));
+    assert!(chat.contains("Ask the player before writing anything") && chat.contains("contrasted designs"));
+    assert!(chat.trim_end().ends_with("follow them.\n\nNo vibration in menus."), "{chat}");
+    // The analysis proposes the setup, with the indicators' API; no script yet.
+    assert!(analysis.contains("Do not write the mode yet") && analysis.contains("\"otherwise\": true"));
+    assert!(analysis.contains("### 6.5 ") && analysis.contains("Continuous beats intermittent"));
+    // The script after it, in the same conversation: short.
+    assert!(after.contains("The player set up in GameViber what you proposed") && after.contains("`battle`, `story`"));
+    assert!(!after.contains("## 3. Mode file") && !after.contains("Continuous beats intermittent") && !after.contains("turns what a game does"));
+    assert!(after.contains("category = \"Hades II\""));
+    assert!(after.len() * 5 < direct.len());
+}
+
+#[test]
+fn an_analysis_setup_is_read_and_set_up() {
+    let answer = "Here is the plan.\n\n```json\n{\n  \"phases\": [\n    { \"name\": \"battle\", \"sound\": \"drums\", \"indicators\": [\"hp\", \"battle_menu\"] },\n    \
+                  { \"name\": \"exploration\", \"indicators\": [\"hp\"] },\n    { \"name\": \"story\", \"otherwise\": true },\n    { \"name\": \"bad name\" }\n  ],\n  \
+                  \"indicators\": [\n    { \"name\": \"hp\", \"kind\": \"gauge\", \"where\": \"top left\" },\n    \
+                  { \"name\": \"battle_menu\", \"kind\": \"visibility\", \"where\": \"bottom right\" }\n  ]\n}\n```\n\nCapture each phase.";
+    let setup = prompt::extract_setup(answer).unwrap();
+    assert_eq!((setup.phases.len(), setup.indicators[0].kind, setup.indicators[1].place.as_str()), (4, IndicatorKind::Gauge, "bottom right"));
+    assert!(prompt::extract_setup("```lua\nmode { api = 1 }\n```").is_none());
+
+    // A phase already set up keeps what the player chose.
+    let mut inputs = Inputs::default();
+    inputs.phases.push(PhaseDef { name: "battle".into(), indicators: vec!["menu".into()], ..PhaseDef::default() });
+    inputs.zones.push(Zone { indicator: "hp".into(), kind: IndicatorKind::Gauge, ..Zone::default() });
+    let applied = inputs.apply_setup(&setup);
+    assert_eq!((applied.phases_added, applied.phases_completed, applied.indicators_to_draw), (2, 1, 1));
+    let names: Vec<&str> = inputs.phases.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names, ["battle", "exploration", "story"], "the invalid name left out");
+    assert_eq!((inputs.phases[0].sound.as_deref(), &inputs.phases[0].indicators[..]), (Some("drums"), &["menu".to_owned()][..]));
+    assert!(inputs.phases[2].otherwise && inputs.phases[1].indicators == ["hp"]);
+    assert_eq!(inputs.to_draw().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["battle_menu"], "hp is drawn already");
 }
 
 #[test]

@@ -126,12 +126,23 @@ impl App {
                 }
             }
         });
-        if st.template == Template::FixFeel {
-            ui.label(
-                muted("Lines between <!-- full --> and <!-- /full --> are left out of a short request, sent in the \
-                       conversation that wrote the mode.")
-                .size(12.0),
-            );
+        match st.template {
+            Template::FixFeel => {
+                ui.label(
+                    muted("Lines between <!-- full --> and <!-- /full --> are left out of a short request, sent in the \
+                           conversation that wrote the mode.")
+                    .size(12.0),
+                );
+            }
+            Template::NewMode => {
+                ui.label(
+                    muted("Lines between <!-- direct -->, <!-- conversation --> or <!-- after-analysis --> and their \
+                           closing markers are kept only in that style of request; <!-- full --> blocks are left out of \
+                           the script request sent after an analysis, in the conversation that has them.")
+                    .size(12.0),
+                );
+            }
+            Template::Analysis | Template::Rules => {}
         }
         let template = st.template;
         let text = st.text.get_or_insert_with(|| template.text());
