@@ -225,11 +225,12 @@ public class CatalogTest {
         as(admin).post("/api/admin/modes/" + id + "/restore").then().statusCode(200);
         given().get("/api/modes/" + id).then().statusCode(200);
 
-        // Two names of one game.
-        String other = publish(token, gameviber(game + " Remastered", 777L), "public").statusCode(200).extract().path("id");
+        // Two names of one game; a Steam app id of this run's own, the test database outlives runs.
+        int steamAppId = 1_000_000 + Math.floorMod(UUID.randomUUID().hashCode(), 1_000_000_000);
+        String other = publish(token, gameviber(game + " Remastered", (long) steamAppId), "public").statusCode(200).extract().path("id");
         int from = given().get("/api/modes/" + other).then().extract().path("game.id");
         int into = given().get("/api/modes/" + id).then().extract().path("game.id");
-        as(admin).post("/api/admin/games/" + from + "/merge?into=" + into).then().statusCode(200).body("modes", equalTo(2)).body("steamAppId", equalTo(777));
+        as(admin).post("/api/admin/games/" + from + "/merge?into=" + into).then().statusCode(200).body("modes", equalTo(2)).body("steamAppId", equalTo(steamAppId));
         given().get("/api/modes/" + other).then().body("game.id", equalTo(into));
 
         // Blocked: no more signing in nor publishing.

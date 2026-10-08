@@ -131,7 +131,8 @@ imports: when the `.gameviber` format changes (`sharing.rs`), change
 `SharedPackage` too.
 
 The app talks to the server set at build time by `GAMEVIBER_COMMUNITY_URL`
-(`community::URL`; `http://localhost:8080` without it).
+(`community::URL`; `http://localhost:8080` without it, `https://api.gameviber.fyustorm.ovh`
+for the released packages).
 
 ```sh
 cd server

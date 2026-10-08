@@ -63,8 +63,30 @@ image (PNG metadata is dropped).
 
 ```bash
 ./mvnw package -Dnative     # target/gameviber-server-0.1.0-SNAPSHOT-runner
-./deploy.sh                 # SSH_HOST=<server> ./deploy.sh --build
+./deploy.sh --build         # builds, uploads, swaps; --rollback puts the previous one back
 ```
+
+A Debian or Ubuntu VPS is prepared once, as root, by `deploy/setup.sh`: the
+`gameviber` user running the service (`gameviber-server`, systemd), the data
+in `/var/lib/gameviber`, the secrets generated in `/etc/gameviber/`
+(`gameviber.env`, `jwt.jwk`), and a `deploy` user whose only right is to run `/opt/gameviber/deploy.sh`:
+it swaps the uploaded binary in (`releases/`, the last 5 kept), and puts the
+previous one back if the new one is not ready within 30 s.
+
+```bash
+cp deploy.env.example deploy.env   # the server, the key, DEPLOY_DIR, SERVER_PORT, SERVER_ADDRESS, PROXY_ADDRESS
+./deploy.sh --setup                # runs deploy/setup.sh on the server, as SETUP_USER
+```
+
+The deploy directory (`/opt/gameviber`) and the port the server listens on
+(`8080`) are `DEPLOY_DIR` and `SERVER_PORT`; after changing them, run
+`--setup` again. It listens on `SERVER_ADDRESS`: by default the Docker
+bridge's (`172.17.0.1`) when Docker runs, for a reverse proxy in a container
+(Nginx Proxy Manager), else `127.0.0.1`; for a proxy on another machine,
+the server's address on their network, with the proxy's in `PROXY_ADDRESS`
+(`quarkus.http.proxy.trusted-proxies`: the forwarded client address of
+anyone else is ignored); never a public address. Production: `https://api.gameviber.fyustorm.ovh`,
+the URL the released app is built with (`packages.yml`).
 
 | Variable | Required | Role |
 |---|---|---|
@@ -74,5 +96,7 @@ image (PNG metadata is dropped).
 | `STATS_SALT` | yes | installation ids are stored hashed with it: set one, keep it (changing it makes every player look new) |
 | `LIMIT_SIGN_IN_PER_HOUR`, `LIMIT_PUBLISH_PER_HOUR`, `LIMIT_REPORT_PER_HOUR`, `LIMIT_STATS_PER_HOUR` | — | per client address: 20, 20, 10, 120 |
 
-It sits behind a reverse proxy (HTTPS, HTTP/2, gzip): the client address the
-limits count is the one the proxy forwards.
+It sits behind a reverse proxy (HTTPS, HTTP/2, gzip, uploads of 70 MB): the
+client address the limits count is the one the proxy forwards, so the proxy
+must set `X-Forwarded-For` to the client's address rather than add to the
+one a client sends (nginx: `proxy_set_header X-Forwarded-For $remote_addr;`).
