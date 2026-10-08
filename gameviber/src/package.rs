@@ -162,6 +162,17 @@ pub struct Zone {
     /// ...and of its empty part.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub more_empty: Vec<[u8; 3]>,
+    /// Gauge: the colors (shades) of its next tiers, for a bar filled again
+    /// over itself in another color once full (Prince of Persia's Athra: green
+    /// up to half, then yellow over the green). Each tier is an equal share of
+    /// the value: with one more, the first color reads 0..0.5, the second 0.5..1.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tiers: Vec<Vec<[u8; 3]>>,
+    /// Gauge: read only while these visibility indicators are shown (the frame
+    /// around the bar) or hidden (a menu over it), unknown otherwise: a bar
+    /// whose empty color is also the menus' background reads empty there.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub read_when: Vec<Condition>,
     /// Gauge: share of the zone's length it covered when drawn. Much less of its
     /// colors found means it is not on screen (menus): its value is unknown.
     pub length: f32,
@@ -197,6 +208,8 @@ impl Default for Zone {
             empty_color: None,
             more_colors: Vec::new(),
             more_empty: Vec::new(),
+            tiers: Vec::new(),
+            read_when: Vec::new(),
             length: 0.0,
             full_look: Vec::new(),
             empty_look: Vec::new(),
@@ -206,6 +219,14 @@ impl Default for Zone {
             tolerance: 60.0,
         }
     }
+}
+
+/// A condition a gauge is read under (`Zone::read_when`): a visibility
+/// indicator shown, or hidden.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Condition {
+    pub indicator: String,
+    pub shown: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]

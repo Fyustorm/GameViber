@@ -419,8 +419,10 @@ them; an indicator shown in several places has a zone for each).
   the screen there looks like when it was drawn, `false` otherwise.
 - A **gauge** (health, stamina) reads how full its bar is, 0..1, measured with the colors of
   its full and empty parts (or with how it looks full and empty along its length:
-  gradients, segments, hearts), or **nil while it is not on screen** (a menu, a cutscene):
-  not knowing is not 0 health. Keep the last known value when the mode needs one. A bar that moves (Metaphor shifts a character's health bar
+  gradients, segments, hearts), each color an equal share for a bar filled again over itself
+  in another color once full (green up to 0.5, then yellow over it up to 1), or **nil
+  while it is not on screen** (a menu, a cutscene; or while a visibility indicator the player
+  set it to be read under is not as required: a menu's button shown): not knowing is not 0 health. Keep the last known value when the mode needs one. A bar that moves (Metaphor shifts a character's health bar
   with its stance) is found in a wider zone as the longest run of its two colors.
 - `input.indicators.<name>` holds the value; `on_indicator(ev)` is called when it
   changes, with `ev.indicator`, `ev.value` (nil for a gauge gone from the screen) and

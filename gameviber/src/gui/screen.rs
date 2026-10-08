@@ -18,7 +18,7 @@ use super::theme::*;
 use super::App;
 use crate::engine::{Command, Shared};
 use crate::game::Game;
-use crate::package::{self, valid_name, Direction, IndicatorKind, Inputs, PhaseDef, Zone};
+use crate::package::{self, valid_name, Condition, Direction, IndicatorKind, Inputs, PhaseDef, Zone};
 use crate::models::Model;
 use crate::screen::{indicators, Frame};
 
@@ -66,6 +66,65 @@ pub struct State {
     /// and what the last import did (true: it went well); None: cancelled.
     import: Option<mpsc::Receiver<Option<(bool, String)>>>,
     import_message: Option<(bool, String)>,
+    readings: Readings,
+}
+
+/// What the indicator selected reads on each capture, by capture file.
+type ReadingMap = HashMap<String, (String, Color32)>;
+
+/// What the indicator selected reads on each capture, worked out on another
+/// thread when its zones or the captures change: reading a gauge on dozens
+/// of captures takes too long to be done on every frame.
+#[derive(Default)]
+struct Readings {
+    /// The zones, the mode's zones (for a gauge's conditions) and the
+    /// captures `values` was read with...
+    zones: Vec<Zone>,
+    all: Vec<Zone>,
+    files: Vec<String>,
+    values: ReadingMap,
+    /// ...and the reading under way, with its own.
+    job: Option<(Vec<Zone>, Vec<Zone>, Vec<String>, mpsc::Receiver<ReadingMap>)>,
+}
+
+impl Readings {
+    /// The readings of `zones` on `captures`, as last read: those read for
+    /// zones or captures since changed stay until they are read again.
+    fn get(&mut self, ctx: &egui::Context, zones: &[&Zone], all: &[Zone], captures: &HashMap<String, (Arc<Frame>, egui::TextureHandle)>) -> &ReadingMap {
+        if let Some((_, _, _, rx)) = &self.job {
+            match rx.try_recv() {
+                Ok(values) => {
+                    let (zones, all, files, _) = self.job.take().expect("a job");
+                    (self.zones, self.all, self.files, self.values) = (zones, all, files, values);
+                }
+                Err(mpsc::TryRecvError::Disconnected) => self.job = None,
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        if zones.is_empty() {
+            *self = Self::default();
+            return &self.values;
+        }
+        let mut files: Vec<String> = captures.keys().cloned().collect();
+        files.sort();
+        let read = |z: &[Zone], f: &[String]| z.len() == zones.len() && z.iter().zip(zones).all(|(a, b)| a == *b) && f == files.as_slice();
+        // One reading at a time: a change made while one is under way is read once it ends.
+        if (read(&self.zones, &self.files) && self.all == all) || self.job.is_some() {
+            return &self.values;
+        }
+        let owned: Vec<Zone> = zones.iter().map(|z| (*z).clone()).collect();
+        let frames: Vec<(String, Arc<Frame>)> = captures.iter().map(|(file, (frame, _))| (file.clone(), frame.clone())).collect();
+        let (tx, rx) = mpsc::channel();
+        let (job_zones, job_all, ctx) = (owned.clone(), all.to_vec(), ctx.clone());
+        std::thread::spawn(move || {
+            let zones: Vec<&Zone> = job_zones.iter().collect();
+            let values = frames.iter().map(|(file, frame)| (file.clone(), reading_zones(&zones, &job_all, frame))).collect();
+            let _ = tx.send(values);
+            ctx.request_repaint();
+        });
+        self.job = Some((owned, all.to_vec(), files, rx));
+        &self.values
+    }
 }
 
 impl Default for State {
@@ -89,6 +148,7 @@ impl Default for State {
             port: None,
             import: None,
             import_message: None,
+            readings: Readings::default(),
         }
     }
 }
@@ -233,6 +293,8 @@ impl State {
             zone.more_colors = d.full.iter().skip(1).copied().collect();
             zone.empty_color = d.empty.first().copied();
             zone.more_empty = d.empty.iter().skip(1).copied().collect();
+            zone.tiers = d.tiers.iter().filter(|t| !t.is_empty()).cloned().collect();
+            zone.read_when = d.read_when.clone();
         }
     }
 
@@ -271,6 +333,7 @@ impl State {
                 self.shared(zone);
             }
             if *old != d.name {
+                g.zones.iter_mut().flat_map(|z| z.read_when.iter_mut()).filter(|c| c.indicator == *old).for_each(|c| c.indicator = d.name.clone());
                 g.phases.iter_mut().flat_map(|sc| sc.indicators.iter_mut()).filter(|z| *z == old).for_each(|z| *z = d.name.clone());
             }
         }
@@ -305,6 +368,8 @@ enum Show {
 enum Pick {
     Full,
     Empty,
+    /// A color of the bar's tier after the first (`Draft::tiers` index).
+    Tier(usize),
 }
 
 /// What dragging on the image does.
@@ -391,6 +456,10 @@ struct Draft {
     /// full color: taken from the capture.
     full: Vec<[u8; 3]>,
     empty: Vec<[u8; 3]>,
+    /// The colors of its next tiers (`Zone::tiers`; one being picked may have none yet).
+    tiers: Vec<Vec<[u8; 3]>>,
+    /// The visibility indicators it is read under (`Zone::read_when`).
+    read_when: Vec<Condition>,
     /// The bar read by its look rather than its colors...
     by_look: bool,
     /// ...taken on captures.
@@ -438,6 +507,8 @@ impl Default for Draft {
             picking: None,
             full: Vec::new(),
             empty: Vec::new(),
+            tiers: Vec::new(),
+            read_when: Vec::new(),
             by_look: false,
             look: None,
             opened: None,
@@ -460,6 +531,8 @@ impl Draft {
             || self.tolerance != o.tolerance
             || self.full != o.full
             || self.empty != o.empty
+            || self.tiers != o.tiers
+            || self.read_when != o.read_when
             || self.by_look != o.by_look
             || self.look != o.look
             || self.threshold != o.threshold
@@ -485,6 +558,8 @@ impl Draft {
         self.tolerance = zone.tolerance;
         self.full = if zone.kind == IndicatorKind::Gauge { std::iter::once(zone.color).chain(zone.more_colors.iter().copied()).collect() } else { Vec::new() };
         self.empty = zone.empty_color.into_iter().chain(zone.more_empty.iter().copied()).collect();
+        self.tiers = if zone.kind == IndicatorKind::Gauge { zone.tiers.clone() } else { Vec::new() };
+        self.read_when = if zone.kind == IndicatorKind::Gauge { zone.read_when.clone() } else { Vec::new() };
     }
 
     /// The zone's own settings.
@@ -589,6 +664,58 @@ fn remember_height(ui: &egui::Ui, height: &mut f32, top: f32) {
     }
 }
 
+/// The visibility indicators a gauge is read under: each shown or hidden.
+fn read_when(ui: &mut egui::Ui, draft: &mut Draft, inputs: &Inputs) {
+    let mut visibility: Vec<&str> = Vec::new();
+    for zone in inputs.zones.iter().filter(|z| z.kind == IndicatorKind::Visibility) {
+        if !visibility.contains(&zone.indicator.as_str()) {
+            visibility.push(&zone.indicator);
+        }
+    }
+    let help = "Outside the game's interface (a menu, a map), the screen where the bar is may look like an empty bar \
+                (a dark empty color): read it only while a visibility indicator is shown (the frame or an icon next \
+                to the bar), or hidden (a menu's button). Otherwise it reads unknown (nil), as when the bar is not found.";
+    ui.horizontal_wrapped(|ui| {
+        ui.label("Read only when").on_hover_text(help);
+        if visibility.is_empty() && draft.read_when.is_empty() {
+            ui.label(muted("always (draw a visibility indicator to read it only while it is shown or hidden)").size(12.0));
+            return;
+        }
+        if draft.read_when.is_empty() {
+            ui.label(muted("always").size(12.0));
+        }
+        let mut remove = None;
+        for (k, condition) in draft.read_when.iter_mut().enumerate() {
+            if k > 0 {
+                ui.label("and");
+            }
+            egui::ComboBox::from_id_salt(("read-when", k)).selected_text(condition.indicator.as_str()).show_ui(ui, |ui| {
+                for name in &visibility {
+                    ui.selectable_value(&mut condition.indicator, (*name).to_owned(), *name);
+                }
+            });
+            egui::ComboBox::from_id_salt(("read-when-shown", k)).selected_text(if condition.shown { "is shown" } else { "is hidden" }).show_ui(ui, |ui| {
+                ui.selectable_value(&mut condition.shown, true, "is shown");
+                ui.selectable_value(&mut condition.shown, false, "is hidden");
+            });
+            if !visibility.contains(&condition.indicator.as_str()) {
+                ui.label(RichText::new("no such visibility indicator: left out").color(WARN).size(12.0));
+            }
+            if ui.small_button("✕").on_hover_text("Remove this condition").clicked() {
+                remove = Some(k);
+            }
+        }
+        if let Some(k) = remove {
+            draft.read_when.remove(k);
+        }
+        if let Some(first) = visibility.first() {
+            if ui.small_button("+ Condition").on_hover_text(help).clicked() {
+                draft.read_when.push(Condition { indicator: (*first).to_owned(), shown: true });
+            }
+        }
+    });
+}
+
 /// A step of a guide: its number, or a tick once done.
 fn step(ui: &mut egui::Ui, n: usize, done: bool, contents: impl FnOnce(&mut egui::Ui)) {
     ui.horizontal_wrapped(|ui| {
@@ -618,15 +745,33 @@ fn tag(ui: &egui::Ui, at: Pos2, align: egui::Align2, text: String, color: Color3
     painter.galley(rect.min + Vec2::new(5.0, 2.0), galley, color);
 }
 
-/// What an indicator drawn in `zones` reads on an image, as text and color.
-fn reading_zones(indicator_zones: &[&Zone], frame: &Frame) -> (String, Color32) {
+/// What an indicator drawn in `zones` reads on an image, as text and color;
+/// `all`: the mode's zones, for a gauge's conditions.
+fn reading_zones(indicator_zones: &[&Zone], all: &[Zone], frame: &Frame) -> (String, Color32) {
     let Some(first) = indicator_zones.first() else { return (String::new(), MUTED) };
     match first.kind {
         IndicatorKind::Visibility => {
             let (shown, best) = indicators::shown_anywhere(indicator_zones, frame, false);
             if shown { (format!("shown {best:.2}"), ACCENT_TEXT) } else { (format!("hidden {best:.2}"), MUTED) }
         }
+        IndicatorKind::Gauge if unmet_on(first, all, frame).is_some() => reading(first, None),
         IndicatorKind::Gauge => reading(first, indicators::fill_anywhere(indicator_zones, frame)),
+    }
+}
+
+/// The first of a gauge's conditions that does not hold on an image, as text.
+fn unmet_on(zone: &Zone, all: &[Zone], frame: &Frame) -> Option<String> {
+    let condition = indicators::unmet(zone, |name| indicators::shown_on(name, all, frame))?;
+    Some(format!("{} {}", condition.indicator, if condition.shown { "hidden" } else { "shown" }))
+}
+
+/// What a zone reads on an image as `reading` says, and that it reads unknown
+/// there when one of its gauge's conditions does not hold.
+fn reading_here(zone: &Zone, all: &[Zone], frame: &Frame) -> (String, Color32) {
+    let (text, color) = reading(zone, indicators::measure(zone, frame));
+    match unmet_on(zone, all, frame) {
+        Some(why) => (format!("{text} · unknown here: {why}"), WARN),
+        None => (text, color),
     }
 }
 
@@ -652,17 +797,14 @@ impl App {
         ));
         ui.add_space(4.0);
         // What the indicator selected reads on each capture: its zones, the one edited as drawn now.
-        let st = &self.screen;
-        let d = &st.draft;
+        let st = &mut self.screen;
         let tested = st.draft_zone(inputs);
+        let d = &st.draft;
         let mut indicator_zones: Vec<&Zone> =
             inputs.zones.iter().enumerate().filter(|(i, z)| d.indicator.as_ref() == Some(&z.indicator) && Some(*i) != d.editing).map(|(_, z)| z).collect();
         indicator_zones.extend(tested.as_ref());
-        let readings: HashMap<String, (String, Color32)> = if indicator_zones.is_empty() {
-            HashMap::new()
-        } else {
-            st.captures.iter().map(|(file, (frame, _))| (file.clone(), reading_zones(&indicator_zones, frame))).collect()
-        };
+        let readings = st.readings.get(ui.ctx(), &indicator_zones, &inputs.zones, &st.captures).clone();
+        let d = &st.draft;
         // The captures its zones were drawn on.
         let marked: HashSet<String> = inputs.zones.iter().filter(|z| d.indicator.as_ref() == Some(&z.indicator)).filter_map(|z| z.capture.clone()).collect();
         let mut changed = None;
@@ -719,7 +861,7 @@ impl App {
     }
 
     /// The left column: the captures by phase (scrolling if they must), then how to add some.
-    fn captures_panel(&mut self, ui: &mut egui::Ui, s: &Shared, game: &Game, inputs: &Inputs, readings: &HashMap<String, (String, Color32)>, marked: &HashSet<String>) {
+    fn captures_panel(&mut self, ui: &mut egui::Ui, s: &Shared, game: &Game, inputs: &Inputs, readings: &ReadingMap, marked: &HashSet<String>) {
         let inner = ui.available_size() - Vec2::splat(2.0 * PANEL_MARGIN + 2.0);
         card(PANEL).inner_margin(Margin::same(PANEL_MARGIN as i8)).show(ui, |ui| {
             ui.set_width(inner.x);
@@ -776,7 +918,7 @@ impl App {
     /// The captures shown by the phase filter, three per row, each with what
     /// the indicator selected reads on it (📍: a zone of it was drawn there); a
     /// click opens one in the editor.
-    fn capture_grid(&mut self, ui: &mut egui::Ui, inputs: &Inputs, readings: &HashMap<String, (String, Color32)>, marked: &HashSet<String>) {
+    fn capture_grid(&mut self, ui: &mut egui::Ui, inputs: &Inputs, readings: &ReadingMap, marked: &HashSet<String>) {
         let shown: Vec<&package::Capture> =
             inputs.captures.iter().filter(|c| self.screen.filter.as_ref().is_none_or(|f| c.phase == *f)).collect();
         let targets = inputs.phase_names();
@@ -1161,6 +1303,11 @@ impl App {
                         match pick {
                             Pick::Full if !draft.full.contains(&color) => draft.full.push(color),
                             Pick::Empty if !draft.empty.contains(&color) => draft.empty.push(color),
+                            Pick::Tier(k) => {
+                                if let Some(tier) = draft.tiers.get_mut(k).filter(|t| !t.contains(&color)) {
+                                    tier.push(color);
+                                }
+                            }
                             _ => {}
                         }
                     }
@@ -1250,7 +1397,7 @@ impl App {
                 };
                 ui.painter().rect_stroke(r, 2.0, stroke, StrokeKind::Outside);
                 if hovered {
-                    let (text, color) = reading(zone, indicators::measure(zone, frame));
+                    let (text, color) = reading_here(zone, &inputs.zones, frame);
                     tag(ui, r.left_top() - Vec2::new(0.0, 4.0), egui::Align2::LEFT_BOTTOM, format!("{} · {text} · click to edit", zone.indicator), color);
                 }
             }
@@ -1262,7 +1409,7 @@ impl App {
                     ui.painter().rect_filled(Rect::from_center_size(corner, Vec2::splat(5.0)), 1.0, ACCENT);
                 }
                 if let Some(zone) = &tested {
-                    let (text, color) = reading(zone, indicators::measure(zone, frame));
+                    let (text, color) = reading_here(zone, &inputs.zones, frame);
                     let label = if draft.name.is_empty() { text } else { format!("{} · {text}", draft.name) };
                     tag(ui, r.left_top() - Vec2::new(0.0, 6.0), egui::Align2::LEFT_BOTTOM, label, color);
                     // The bar as found: its full part green, its empty part red, along the indicator.
@@ -1319,6 +1466,7 @@ impl App {
         let hint = match (draft.picking, draft.rect()) {
             (Some(Pick::Full), _) => "Click the bar's full part on the image (Esc: stop).",
             (Some(Pick::Empty), _) => "Click the bar's empty part on the image (Esc: stop).",
+            (Some(Pick::Tier(_)), _) => "Click the bar's part in this tier's color on the image (Esc: stop).",
             (None, None) if !can_draw => "Choose what the new indicator reads, above, then draw it on the image.",
             (None, None) if indicator_name.is_some() => "Pick a zone above, or click or drag it on the image; or draw a new zone.",
             (None, None) if draft.kind == IndicatorKind::Gauge => "Drag a rectangle along the bar, from its empty end to its full end.",
@@ -1393,10 +1541,13 @@ impl App {
                     "Look: for bars a color does not describe — a gradient (red to green), segments, hearts, stripes. \
                      GameViber learns how the bar looks full and empty along its length, from captures; the bar must stay in place."
                 } else {
-                    "Colors: for a bar of one color over an empty part of another. It may move inside the zone. \
-                     For a gradient, segments, hearts or stripes, choose Look."
+                    "Colors: for a bar of one color over an empty part of another (filled again in another color once \
+                     full: add a tier). It may move inside the zone. For a gradient, segments, hearts or stripes, choose Look."
                 };
                 ui.label(muted(why).size(12.0));
+            }
+            if draft.kind == IndicatorKind::Gauge {
+                read_when(ui, draft, inputs);
             }
             if draft.kind == IndicatorKind::Gauge && draft.by_look {
                 let rect = draft.rect();
@@ -1473,7 +1624,8 @@ impl App {
             } else if draft.kind == IndicatorKind::Gauge {
                 ui.horizontal_wrapped(|ui| {
                     let mut remove = None;
-                    for (pick, label) in [(Pick::Full, "Full"), (Pick::Empty, "Empty")] {
+                    let first = if draft.tiers.is_empty() { "Full" } else { "Tier 1" };
+                    for (pick, label) in [(Pick::Full, first), (Pick::Empty, "Empty")] {
                         let colors = if pick == Pick::Full { &draft.full } else { &draft.empty };
                         ui.label(label);
                         if colors.is_empty() {
@@ -1501,9 +1653,53 @@ impl App {
                         Some((Pick::Empty, k)) => {
                             draft.empty.remove(k);
                         }
-                        None => {}
+                        _ => {}
                     }
                     ui.add(egui::Slider::new(&mut draft.tolerance, 10.0..=150.0).text("tolerance")).on_hover_text("How far from the colors a pixel may be");
+                });
+                // Its next tiers: the bar filled again over itself in other colors.
+                let mut remove_tier = None;
+                for k in 0..draft.tiers.len() {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(format!("Tier {}", k + 2));
+                        if draft.tiers[k].is_empty() {
+                            swatch(ui, None);
+                        }
+                        let mut remove = None;
+                        for (c, color) in draft.tiers[k].iter().enumerate() {
+                            if color_button(ui, *color).on_hover_text("Click to remove this color").clicked() {
+                                remove = Some(c);
+                            }
+                        }
+                        if let Some(c) = remove {
+                            draft.tiers[k].remove(c);
+                        }
+                        let picking = draft.picking == Some(Pick::Tier(k));
+                        let text = if draft.tiers[k].is_empty() { "🖊 Pick" } else { "🖊 +" };
+                        if ui.selectable_label(picking, text).on_hover_text("Then click the bar's part in this tier's color on the image").clicked() {
+                            draft.picking = if picking { None } else { Some(Pick::Tier(k)) };
+                        }
+                        if ui.small_button("✕").on_hover_text("Remove this tier").clicked() {
+                            remove_tier = Some(k);
+                        }
+                    });
+                }
+                if let Some(k) = remove_tier {
+                    draft.tiers.remove(k);
+                    draft.picking = None;
+                }
+                ui.horizontal_wrapped(|ui| {
+                    let help = "For a bar filled again over itself in another color once full (green up to half, then yellow over \
+                                the green). Each tier is an equal share of the value: with two, the first color reads 0 to 50%, \
+                                the second 50 to 100%.";
+                    if ui.small_button("+ Tier").on_hover_text(help).clicked() {
+                        draft.tiers.push(Vec::new());
+                        draft.picking = Some(Pick::Tier(draft.tiers.len() - 1));
+                    }
+                    if !draft.tiers.is_empty() {
+                        let share = 100.0 / (draft.tiers.len() + 1) as f32;
+                        ui.label(muted(format!("Each tier is {share:.0}% of the value; under the rectangle, green is the highest tier's part.")).size(12.0));
+                    }
                 });
                 if draft.empty.is_empty() {
                     ui.label(RichText::new("Pick the empty color too: the bar is then found inside the zone, and reads unknown (nil) when not on screen.").color(WARN).size(12.0));
@@ -1629,6 +1825,7 @@ impl App {
             if let Some(name) = &indicator_name {
                 let mut g = inputs.clone();
                 g.zones.retain(|z| z.indicator != *name);
+                g.zones.iter_mut().for_each(|z| z.read_when.retain(|c| c.indicator != *name));
                 g.phases.iter_mut().for_each(|sc| sc.indicators.retain(|z| z != name));
                 st.draft = Draft { zoom: st.draft.zoom, ..Draft::default() };
                 st.confirm_delete = false;

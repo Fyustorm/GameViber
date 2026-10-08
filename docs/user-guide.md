@@ -152,8 +152,14 @@ to set some up.
   a bar (health: a gauge). Modes read whether it is shown, or how full the bar
   is, ten times a second; an indicator shown in several places has a zone for
   each. A bar of one color is
-  read by its colors (pick its full and empty parts); a bar in a gradient, in
-  segments or made of hearts by its look: draw the rectangle exactly on it
+  read by its colors (pick its full and empty parts); a bar filled again over
+  itself in another color once full (green, then yellow over the green) by
+  its colors with a **tier** for each color (**+ Tier**), each an equal share
+  of its value. When a menu over the bar looks like it empty (a dark empty
+  color), set **Read only when** a visibility indicator is shown (an icon next
+  to the bar) or hidden (the menu's button): the gauge is unknown otherwise.
+  A bar in a gradient, in
+  segments or made of hearts is read by its look: draw the rectangle exactly on it
   (not its icon), take its look on a capture where it is full, then add its
   empty look from captures where it is low.
 - **Sound**: which application to listen to (by default, the game showing the

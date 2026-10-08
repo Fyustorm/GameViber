@@ -3,7 +3,8 @@
 //! with a reference taken when the zone was drawn) and how full a gauge's bar
 //! is (the share of it in the bar's full color rather than its empty one;
 //! with both colors known, the bar is the longest run of them in the zone,
-//! wherever it is). A bar whose colors
+//! wherever it is; a bar filled again over itself in other colors reads
+//! each of them as a tier of its value). A bar whose colors
 //! do not tell (gradients, segments, hearts) is read by its look instead: the
 //! bar full, and empty, along its length, taken from captures.
 
@@ -11,7 +12,7 @@ use std::collections::BTreeMap;
 
 use super::Frame;
 use crate::mode::IndicatorValue;
-use crate::package::{Direction, Zone, IndicatorKind};
+use crate::package::{Condition, Direction, Zone, IndicatorKind};
 
 /// References are compared on a grayscale grid of this size.
 pub const REF_WIDTH: usize = 32;
@@ -34,6 +35,9 @@ pub const LOOK_ACROSS: usize = 4;
 const LOOK_FOUND: f32 = 0.5;
 /// Pixels a bar read by its look may have moved, each way.
 const LOOK_SHIFT: i32 = 2;
+/// A bar's higher tier counts once this share of it (or 2 columns) has its
+/// color, so that a few stray columns do not make one.
+const TIER_SHARE: f32 = 0.02;
 
 /// Pixel bounds of a zone in `frame`, at least 2 x 2.
 fn bounds(frame: &Frame, rect: [f32; 4]) -> (usize, usize, usize, usize) {
@@ -186,6 +190,19 @@ pub fn fill_anywhere(zones: &[&Zone], frame: &Frame) -> Option<f32> {
         .map(|(fill, _)| fill)
 }
 
+/// The first of a gauge's conditions (`Zone::read_when`) that does not hold,
+/// given whether each visibility indicator is shown (None: no such
+/// indicator, its condition left out); None when they all hold.
+pub fn unmet(zone: &Zone, shown: impl Fn(&str) -> Option<bool>) -> Option<&Condition> {
+    zone.read_when.iter().find(|c| shown(&c.indicator).is_some_and(|s| s != c.shown))
+}
+
+/// Whether the visibility indicator `name` is shown on `frame` (None: no such indicator in `zones`).
+pub fn shown_on(name: &str, zones: &[Zone], frame: &Frame) -> Option<bool> {
+    let of: Vec<&Zone> = zones.iter().filter(|z| z.indicator == name && z.kind == IndicatorKind::Visibility).collect();
+    (!of.is_empty()).then(|| shown_anywhere(&of, frame, false).0)
+}
+
 /// Share of the zone's length a bar covers on `frame` (to save with a zone being drawn).
 pub fn bar_length(zone: &Zone, frame: &Frame) -> f32 {
     bar(zone, frame).length()
@@ -196,7 +213,7 @@ pub fn bar_length(zone: &Zone, frame: &Frame) -> f32 {
 /// empty part. For the editor.
 pub fn bar_extent(zone: &Zone, frame: &Frame) -> ((f32, f32), (f32, f32)) {
     let bar = bar(zone, frame);
-    let full = (bar.end - bar.start) * bar.fill;
+    let full = (bar.end - bar.start) * bar.shown;
     match zone.direction {
         Direction::Left | Direction::Up => ((bar.end - full, bar.end), (bar.start, bar.end - full)),
         Direction::Right | Direction::Down => ((bar.start, bar.start + full), (bar.start + full, bar.end)),
@@ -205,7 +222,10 @@ pub fn bar_extent(zone: &Zone, frame: &Frame) -> ((f32, f32), (f32, f32)) {
 
 /// A bar found in its zone.
 struct Bar {
+    /// Its value: how full it is, its tiers counted.
     fill: f32,
+    /// The share of it in its highest tier's colors.
+    shown: f32,
     /// Fractions of the zone's length along its axis.
     start: f32,
     end: f32,
@@ -219,7 +239,8 @@ impl Bar {
 
 #[derive(Clone, Copy, PartialEq)]
 enum Part {
-    Full,
+    /// In a full color, of this tier (0 without tiers).
+    Full(usize),
     Empty,
     /// Neither color: outside the bar.
     Other,
@@ -230,7 +251,8 @@ enum Part {
 /// full and empty columns in the zone; with the full color only, the whole zone.
 fn bar(zone: &Zone, frame: &Frame) -> Bar {
     if has_look(zone) {
-        return Bar { fill: look_fill(zone, frame).0, start: 0.0, end: 1.0 };
+        let fill = look_fill(zone, frame).0;
+        return Bar { fill, shown: fill, start: 0.0, end: 1.0 };
     }
     let parts = columns(zone, frame);
     let len = parts.len().max(1) as f32;
@@ -238,7 +260,7 @@ fn bar(zone: &Zone, frame: &Frame) -> Bar {
     let reversed = matches!(zone.direction, Direction::Left | Direction::Up);
     if zone.empty_color.is_some() {
         // The longest run of bar columns, one stray column allowed inside.
-        let (mut best, mut best_full, mut best_start) = (0, 0, 0);
+        let (mut best, mut best_start) = (0, 0);
         let (mut start, mut gap) = (0, 0);
         for i in 0..=parts.len() {
             let inside = parts.get(i).is_some_and(|p| *p != Part::Other);
@@ -251,7 +273,6 @@ fn bar(zone: &Zone, frame: &Frame) -> Bar {
                 let end = i + 1 - gap;
                 if end > start && end - start > best {
                     best = end - start;
-                    best_full = parts[start..end].iter().filter(|p| **p == Part::Full).count();
                     best_start = start;
                 }
                 start = i + 1;
@@ -260,10 +281,23 @@ fn bar(zone: &Zone, frame: &Frame) -> Bar {
         }
         let (start, end) = (best_start as f32 / len, (best_start + best) as f32 / len);
         let (start, end) = if reversed { (1.0 - end, 1.0 - start) } else { (start, end) };
-        return Bar { fill: best_full as f32 / best.max(1) as f32, start, end };
+        let (fill, shown) = tiered_fill(zone, &parts[best_start..best_start + best]);
+        return Bar { fill, shown, start, end };
     }
-    let filled = parts.iter().filter(|p| **p == Part::Full).count();
-    Bar { fill: filled as f32 / len, start: 0.0, end: 1.0 }
+    let (fill, shown) = tiered_fill(zone, &parts);
+    Bar { fill, shown, start: 0.0, end: 1.0 }
+}
+
+/// The value of a bar's columns, and the share of them in its highest tier:
+/// its tiers below are full, that one fills as far as its color goes.
+fn tiered_fill(zone: &Zone, parts: &[Part]) -> (f32, f32) {
+    let len = parts.len().max(1) as f32;
+    let at_least = |tier: usize| parts.iter().filter(|p| matches!(p, Part::Full(t) if *t >= tier)).count();
+    let tiers = zone.tiers.iter().filter(|t| !t.is_empty()).count();
+    let least = (len * TIER_SHARE).max(2.0);
+    let top = (1..=tiers).rev().find(|&t| at_least(t) as f32 >= least).unwrap_or(0);
+    let shown = at_least(top) as f32 / len;
+    ((top as f32 + shown) / (tiers + 1) as f32, shown)
 }
 
 /// Each column along the bar. The bar's lines are found first: those with
@@ -278,18 +312,24 @@ fn columns(zone: &Zone, frame: &Frame) -> Vec<Part> {
     let (length, across) = if horizontal { (x1 - x0, y1 - y0) } else { (y1 - y0, x1 - x0) };
     let at = |i: usize, j: usize| if horizontal { pixel(frame, x0 + i, y0 + j) } else { pixel(frame, x0 + j, y0 + i) };
     let distance = |p: [u8; 3], color: [u8; 3]| (0..3).map(|c| (p[c] as f32 - color[c] as f32).powi(2)).sum::<f32>().sqrt();
-    // Distances of a pixel to the nearest full and empty colors (a bar may have several shades).
+    // Distances of a pixel to the nearest full and empty colors (a bar may
+    // have several shades), and the tier of the full one.
     let nearest = |p: [u8; 3], colors: &mut dyn Iterator<Item = &[u8; 3]>| colors.map(|c| distance(p, *c)).fold(f32::INFINITY, f32::min);
+    let full_colors: Vec<(usize, [u8; 3])> = std::iter::once(&zone.color)
+        .chain(&zone.more_colors)
+        .map(|c| (0, *c))
+        .chain(zone.tiers.iter().filter(|t| !t.is_empty()).enumerate().flat_map(|(k, t)| t.iter().map(move |c| (k + 1, *c))))
+        .collect();
     let distances = |p: [u8; 3]| {
-        let full = nearest(p, &mut std::iter::once(&zone.color).chain(&zone.more_colors));
+        let (tier, full) = full_colors.iter().map(|&(t, c)| (t, distance(p, c))).fold((0, f32::INFINITY), |a, b| if b.1 < a.1 { b } else { a });
         let empty = match &zone.empty_color {
             Some(e) => nearest(p, &mut std::iter::once(e).chain(&zone.more_empty)),
             None => f32::INFINITY,
         };
-        (full, empty)
+        (full, empty, tier)
     };
     let near = |p: [u8; 3]| {
-        let (full, empty) = distances(p);
+        let (full, empty, _) = distances(p);
         full.min(empty) <= zone.tolerance
     };
     let counts: Vec<usize> = (0..across).map(|j| (0..length).filter(|&i| near(at(i, j))).count()).collect();
@@ -297,14 +337,15 @@ fn columns(zone: &Zone, frame: &Frame) -> Vec<Part> {
     let lines: Vec<usize> = (0..across).filter(|&j| most > 0 && counts[j] * 2 >= most).collect();
     let mut parts: Vec<Part> = (0..length)
         .map(|i| {
-            let pixels: Vec<(f32, f32)> = lines.iter().map(|&j| distances(at(i, j))).collect();
-            // Full when one of the bar's lines has the full color (shaded bars)...
-            let full = pixels.iter().any(|&(f, e)| f <= zone.tolerance && f <= e);
+            let pixels: Vec<(f32, f32, usize)> = lines.iter().map(|&j| distances(at(i, j))).collect();
+            // Full when one of the bar's lines has a full color (shaded bars), of
+            // the tier nearest to its color...
+            let full = pixels.iter().filter(|&&(f, e, _)| f <= zone.tolerance && f <= e).min_by(|a, b| a.0.total_cmp(&b.0));
             // ...empty only when most of them have the empty color: a line under
             // the bars in that color (a decoration) does not make one.
-            let empty = pixels.iter().filter(|&&(f, e)| e <= zone.tolerance && e < f).count();
-            if full {
-                Part::Full
+            let empty = pixels.iter().filter(|&&(f, e, _)| e <= zone.tolerance && e < f).count();
+            if let Some(&(_, _, tier)) = full {
+                Part::Full(tier)
             } else if empty > 0 && empty * 2 >= pixels.len() {
                 Part::Empty
             } else {
@@ -460,13 +501,15 @@ impl IndicatorReader {
         let mut changed = Vec::new();
         self.measures.clear();
         self.values.retain(|name, _| zones.iter().any(|z| z.indicator == *name));
-        // Zones naming the same indicator are read together.
+        // Zones naming the same indicator are read together, visibility first:
+        // gauges may be read only while one is shown, or hidden.
         let mut names: Vec<&str> = Vec::new();
         for zone in zones {
             if !names.contains(&zone.indicator.as_str()) {
                 names.push(&zone.indicator);
             }
         }
+        names.sort_by_key(|name| zones.iter().any(|z| z.indicator == *name && z.kind == IndicatorKind::Gauge));
         for name in names {
             let of_indicator: Vec<&Zone> = zones.iter().filter(|z| z.indicator == name).collect();
             let previous = self.values.get(name).copied();
@@ -476,7 +519,11 @@ impl IndicatorReader {
                     (Some(best), IndicatorValue::Visibility(shown))
                 }
                 IndicatorKind::Gauge => {
-                    let measure = fill_anywhere(&of_indicator, frame);
+                    let shown = |n: &str| match self.values.get(n) {
+                        Some(IndicatorValue::Visibility(v)) => Some(*v),
+                        _ => None,
+                    };
+                    let measure = if unmet(of_indicator[0], shown).is_none() { fill_anywhere(&of_indicator, frame) } else { None };
                     let missing = self.missing.entry(name.to_owned()).or_default();
                     *missing = if measure.is_none() { *missing + 1 } else { 0 };
                     let value = match (measure, previous) {
@@ -584,6 +631,85 @@ mod tests {
             let got = measure(&shades, &bar(full)).unwrap();
             assert!((got - 0.25).abs() < 0.04, "{full:?}: {got}");
         }
+    }
+
+    /// Prince of Persia's Athra: green up to half its value, then yellow over
+    /// the green, a lighter "MAX" over its end once full, on a dark track.
+    #[test]
+    fn bars_filled_again_in_another_color_read_as_tiers() {
+        let (green, yellow, track) = ([40, 170, 130], [240, 200, 40], [20, 20, 45]);
+        let bar = |green_to: f32, yellow_to: f32| {
+            frame(move |x, y| match (x, y) {
+                (60..=69, 9..=13) if yellow_to >= 1.0 => [255, 250, 220],
+                (10..=69, 10..=15) => {
+                    let at = (x - 10) as f32 / 60.0;
+                    if at < yellow_to { yellow } else if at < green_to { green } else { track }
+                }
+                _ => [60, 50, 40],
+            })
+        };
+        let rect = [5.0 / 160.0, 9.0 / 90.0, 70.0 / 160.0, 8.0 / 90.0];
+        let zone = Zone {
+            indicator: "athra".into(),
+            kind: IndicatorKind::Gauge,
+            rect,
+            color: green,
+            empty_color: Some(track),
+            tiers: vec![vec![yellow]],
+            tolerance: 40.0,
+            ..Zone::default()
+        };
+        for (green_to, yellow_to, value) in [(0.0, 0.0, 0.0), (0.4, 0.0, 0.2), (1.0, 0.0, 0.5), (1.0, 0.5, 0.75), (1.0, 1.0, 1.0)] {
+            let got = measure(&zone, &bar(green_to, yellow_to)).unwrap();
+            assert!((got - value).abs() < 0.03, "green {green_to}, yellow {yellow_to}: {got}");
+        }
+        // Refilled in yellow over the empty track rather than the green: the same.
+        assert!((measure(&zone, &bar(0.5, 0.5)).unwrap() - 0.75).abs() < 0.03);
+        // The editor shows the highest tier's part as full.
+        let ((start, full_end), _) = bar_extent(&zone, &bar(1.0, 0.5));
+        assert!(((full_end - start) - 30.0 / 70.0).abs() < 0.03, "{start} {full_end}");
+        // Without its tiers, the yellow is not the bar.
+        let one = Zone { tiers: Vec::new(), ..zone };
+        assert!((measure(&one, &bar(1.0, 0.0)).unwrap() - 1.0).abs() < 0.03);
+    }
+
+    /// A bar's empty color is dark, and so is the menu's background over it:
+    /// read only while the menu's button is hidden, it is unknown in menus.
+    #[test]
+    fn gauges_are_read_only_under_their_conditions() {
+        let (green, dark) = ([40, 170, 130], [20, 20, 25]);
+        let game = |level: f32| {
+            frame(move |x, y| match (x, y) {
+                (10..=69, 10..=15) => if ((x - 10) as f32) < level * 60.0 { green } else { dark },
+                _ => [60, 50, 40],
+            })
+        };
+        let menu = frame(|x, y| match (x, y) {
+            (140..=149, 75..=84) if (x + y) % 3 != 0 => [240, 240, 240],
+            _ => dark,
+        });
+        let button = [135.0 / 160.0, 70.0 / 90.0, 20.0 / 160.0, 18.0 / 90.0];
+        let rect = [10.0 / 160.0, 10.0 / 90.0, 60.0 / 160.0, 6.0 / 90.0];
+        let hp = Zone { indicator: "hp".into(), kind: IndicatorKind::Gauge, rect, color: green, empty_color: Some(dark), tolerance: 30.0, ..Zone::default() };
+        let hp = Zone { length: bar_length(&hp, &game(0.5)), ..hp };
+        assert_eq!(measure(&hp, &menu), Some(0.0), "the menu looks like an empty bar");
+        let in_menu = Zone { indicator: "menu".into(), rect: button, reference: reference(&menu, button), ..Zone::default() };
+        let read_when = vec![Condition { indicator: "menu".into(), shown: false }];
+        let zones = [Zone { read_when, ..hp }, in_menu];
+        let mut reader = IndicatorReader::default();
+        let first = reader.update(&zones, &game(0.5));
+        assert!(first.contains(&("menu".to_owned(), IndicatorValue::Visibility(false))), "{first:?}");
+        assert!(first.contains(&("hp".to_owned(), IndicatorValue::Gauge(0.5))), "{first:?}");
+        reader.update(&zones, &menu);
+        reader.update(&zones, &menu);
+        let later = reader.update(&zones, &menu);
+        assert!(later.contains(&("hp".to_owned(), IndicatorValue::Unknown)), "{later:?}");
+        let back = reader.update(&zones, &game(0.25));
+        assert!(back.contains(&("hp".to_owned(), IndicatorValue::Gauge(0.25))), "{back:?}");
+        // A condition on an indicator no longer set up is left out.
+        let alone = [zones[0].clone()];
+        let mut reader = IndicatorReader::default();
+        assert_eq!(reader.update(&alone, &menu), vec![("hp".to_owned(), IndicatorValue::Gauge(0.0))]);
     }
 
     /// Metaphor: a character's stance shifts its health bar sideways, and the
