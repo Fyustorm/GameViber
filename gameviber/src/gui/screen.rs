@@ -18,7 +18,7 @@ use super::theme::*;
 use super::App;
 use crate::engine::{Command, Shared};
 use crate::game::Game;
-use crate::package::{self, valid_name, Direction, Inputs, Zone, IndicatorKind};
+use crate::package::{self, valid_name, Direction, IndicatorKind, Inputs, PhaseDef, Zone};
 use crate::models::Model;
 use crate::screen::{indicators, Frame};
 
@@ -268,7 +268,7 @@ impl State {
                 self.shared(zone);
             }
             if *old != d.name {
-                g.phases.iter_mut().filter(|sc| sc.indicator.as_ref() == Some(old)).for_each(|sc| sc.indicator = Some(d.name.clone()));
+                g.phases.iter_mut().flat_map(|sc| sc.indicators.iter_mut()).filter(|z| *z == old).for_each(|z| *z = d.name.clone());
             }
         }
         let place = match (d.editing, self.draft_zone(inputs)) {
@@ -1320,28 +1320,40 @@ impl App {
                         }
                     });
                 }
-                // The phase this indicator is a sure sign of (saved right away).
+                // The phases this indicator is a sure sign of (saved right away).
                 if let Some(name) = indicator_name.as_ref().filter(|_| !inputs.phases.is_empty()) {
-                    let current = inputs.phases.iter().find(|sc| sc.indicator.as_ref() == Some(name)).map(|sc| sc.name.clone());
-                    let mut chosen = current.clone();
+                    let of: Vec<&PhaseDef> = inputs.phases.iter().filter(|sc| sc.indicators.contains(name)).collect();
+                    let phases: Vec<&str> = of.iter().map(|sc| sc.name.as_str()).collect();
+                    let signs: Vec<String> = of.iter().map(|sc| format!("{}: {}", sc.name, sc.indicators.join(" + "))).collect();
                     ui.label("Sure sign of").on_hover_text(
                         "While this indicator is shown (any of its zones), GameViber is sure of the phase, right away (a \
-                         battle menu: battle). How long the phase is kept once it hides is set with the phase, in the Phases tab.",
+                         battle menu: battle). A phase can need several indicators shown together (in the Phases tab), \
+                         and an indicator can be part of the signs of several phases: the sign of the most indicators \
+                         shown wins. How long the phase is kept once it hides is set with the phase, in the Phases tab.",
                     );
-                    egui::ComboBox::from_id_salt("indicator-phase").selected_text(chosen.clone().unwrap_or_else(|| "no phase".to_owned())).show_ui(ui, |ui| {
-                        ui.selectable_value(&mut chosen, None, "no phase");
-                        for phase in &inputs.phases {
-                            ui.selectable_value(&mut chosen, Some(phase.name.clone()), &phase.name);
-                        }
-                    });
-                    if chosen != current {
-                        let mut g = inputs.clone();
-                        for phase in &mut g.phases {
-                            if Some(&phase.name) == chosen.as_ref() {
-                                phase.indicator = Some(name.clone());
-                            } else if phase.indicator.as_ref() == Some(name) {
-                                phase.indicator = None;
+                    let label = if phases.is_empty() { "no phase".to_owned() } else { phases.join(", ") };
+                    let mut toggled = None;
+                    egui::ComboBox::from_id_salt("indicator-phase")
+                        .selected_text(label)
+                        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                        .show_ui(ui, |ui| {
+                            for (k, phase) in inputs.phases.iter().enumerate() {
+                                let mut on = phase.indicators.contains(name);
+                                if ui.checkbox(&mut on, &phase.name).changed() {
+                                    toggled = Some((k, on));
+                                }
                             }
+                        })
+                        .response
+                        .on_hover_text(signs.join("\n"));
+                    if let Some((k, on)) = toggled {
+                        let mut g = inputs.clone();
+                        let phase = &mut g.phases[k];
+                        if on {
+                            phase.indicators.push(name.clone());
+                            phase.otherwise = false;
+                        } else {
+                            phase.indicators.retain(|z| z != name);
                         }
                         linked = Some(g);
                     }
@@ -1593,7 +1605,7 @@ impl App {
             if let Some(name) = &indicator_name {
                 let mut g = inputs.clone();
                 g.zones.retain(|z| z.indicator != *name);
-                g.phases.iter_mut().filter(|sc| sc.indicator.as_ref() == Some(name)).for_each(|sc| sc.indicator = None);
+                g.phases.iter_mut().for_each(|sc| sc.indicators.retain(|z| z != name));
                 st.draft = Draft { zoom: st.draft.zoom, ..Draft::default() };
                 st.confirm_delete = false;
                 return Some(g);

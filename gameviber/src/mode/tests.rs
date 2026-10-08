@@ -755,7 +755,8 @@ fn a_phase_keeps_the_events_it_ignores_from_the_mode() {
         name: name.into(),
         sound: None,
         screen: None,
-        indicator: indicator.map(Into::into),
+        indicators: indicator.into_iter().map(Into::into).collect(),
+        otherwise: false,
         hold: 0.0,
         ignore,
     };

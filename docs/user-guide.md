@@ -120,7 +120,12 @@ to set some up.
   changes between them. GameViber recognizes them from the sound and from your
   captures, with models (about 350 MB) downloaded the first time a mode needs
   them, running on your computer. Phases come a few seconds late: modes use
-  them for the mood of a phase. A phase can **ignore** the sound's hits or the
+  them for the mood of a phase. A phase can have a **sure sign**: indicators
+  shown only in it (its menu), all shown together, exact at once. An indicator
+  can be in the signs of several phases (battle: the health gauge and the
+  battle menu; exploration: the gauge alone; the sign of the most indicators
+  wins), and one phase can be **none of the others** (story: no menu nor gauge
+  on screen). A phase can **ignore** the sound's hits or the
   image's flashes, for a menu whose clicks and music the mode would take for
   hits: exact when the phase has a sure sign (an indicator), else a few seconds
   late.

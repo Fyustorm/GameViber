@@ -1047,7 +1047,7 @@ fn parse_info(declared: &Table) -> LoadResult<ModeInfo> {
             if sound.is_none() && screen.is_none() {
                 return Err(format!("mode.{phases_key}: phase '{name}' needs a sound or a screen description"));
             }
-            phases.push(PhaseDecl { name, sound, screen, indicator: None, hold: 0.0, ignore: Ignored::default() });
+            phases.push(PhaseDecl { name, sound, screen, indicators: Vec::new(), otherwise: false, hold: 0.0, ignore: Ignored::default() });
         }
         phases.sort_by(|a, b| a.name.cmp(&b.name));
         if !(2..=MAX_PHASES).contains(&phases.len()) {

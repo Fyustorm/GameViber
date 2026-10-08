@@ -16,13 +16,17 @@ use crate::game::Game;
 use crate::package::{valid_name, ExternalInput, ExternalKind, Inputs, PhaseDef, MAX_PHASES};
 use crate::models::Model;
 
-const SURE_SIGN_HELP: &str = "An indicator shown only in this phase (the battle menu, drawn on the captures page): \
-    while it is shown the phase is certain, right away, and the phase is only entered through it.";
+const SURE_SIGN_HELP: &str = "Indicators shown only in this phase (the battle menu, drawn on the captures page): \
+    while they are all shown the phase is certain, right away, and the phase is only entered through them. \
+    Pick several when one is shared by phases: battle shows the health gauge and its menu, exploration the gauge \
+    alone; the sign of the most indicators shown wins.";
+const OTHERWISE_HELP: &str = "The phase while no other phase's sign is shown (story: neither a menu nor a gauge on \
+    screen), unless the sound or the captures clearly say another phase without a sign. One phase per mode.";
 const HOLD_HELP: &str = "How long the phase is kept after its last sign (its indicator gone, or another phase sounding \
     or looking more likely). Longer for signs that come and go, like a battle menu hidden during attacks.";
 const IGNORE_HELP: &str = "Guessed events the mode does not get in this phase: the hits of the sound (on_audio_hit, and \
     on_impact from the sound), loud clicks and music in a menu; the flashes of the image (on_impact from the screen).";
-const IGNORE_SURE: &str = "Right away: the phase comes from its indicator.";
+const IGNORE_SURE: &str = "Right away: the phase comes from its indicators.";
 const IGNORE_LATE: &str = "Without a sure sign, the phase is guessed a few seconds late and can be wrong: a few events \
     still pass when it starts, and some are lost when it is wrongly recognized. Tie it to an indicator to make it exact.";
 
@@ -157,23 +161,52 @@ impl App {
                             g.phases[i].sound = (!typed.is_empty()).then_some(typed);
                             changed = Some(g);
                         }
-                        // An indicator shown only in this phase.
-                        let mut indicator = phase.indicator.clone().filter(|z| indicator_names.contains(&z.as_str()));
-                        let label = indicator.clone().unwrap_or_else(|| if indicator_names.is_empty() { "no indicator yet".to_owned() } else { "none".to_owned() });
+                        // Indicators shown only in this phase, all together; or none of the others' signs.
+                        let known: Vec<String> = phase.indicators.iter().filter(|z| indicator_names.contains(&z.as_str())).cloned().collect();
+                        let (mut sign, mut otherwise) = (known.clone(), phase.otherwise);
+                        let label = if otherwise {
+                            "none of the others".to_owned()
+                        } else if !sign.is_empty() {
+                            sign.join(" + ")
+                        } else if indicator_names.is_empty() {
+                            "no indicator yet".to_owned()
+                        } else {
+                            "none".to_owned()
+                        };
                         ui.add_enabled_ui(!indicator_names.is_empty(), |ui| {
-                            egui::ComboBox::from_id_salt(("phase-indicator", i)).selected_text(label).width(120.0).show_ui(ui, |ui| {
-                                ui.selectable_value(&mut indicator, None, "none");
-                                for name in &indicator_names {
-                                    ui.selectable_value(&mut indicator, Some((*name).to_owned()), *name);
-                                }
-                            })
-                            .response
-                            .on_hover_text(SURE_SIGN_HELP);
+                            egui::ComboBox::from_id_salt(("phase-indicator", i))
+                                .selected_text(label)
+                                .width(140.0)
+                                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                                .show_ui(ui, |ui| {
+                                    for name in &indicator_names {
+                                        let mut on = sign.iter().any(|n| n == name);
+                                        if ui.checkbox(&mut on, *name).changed() {
+                                            if on {
+                                                sign.push((*name).to_owned());
+                                                otherwise = false;
+                                            } else {
+                                                sign.retain(|n| n != name);
+                                            }
+                                        }
+                                    }
+                                    ui.separator();
+                                    if ui.checkbox(&mut otherwise, "None of the others").on_hover_text(OTHERWISE_HELP).changed() && otherwise {
+                                        sign.clear();
+                                    }
+                                })
+                                .response
+                                .on_hover_text(SURE_SIGN_HELP);
                         });
-                        let sure = indicator.is_some();
-                        if indicator != phase.indicator.clone().filter(|z| indicator_names.contains(&z.as_str())) {
+                        let sure = !sign.is_empty() || otherwise;
+                        if sign != known || otherwise != phase.otherwise {
                             let mut g = inputs.clone();
-                            g.phases[i].indicator = indicator;
+                            g.phases[i].indicators = sign;
+                            g.phases[i].otherwise = otherwise;
+                            if otherwise {
+                                // One phase of no sign.
+                                g.phases.iter_mut().enumerate().filter(|(k, _)| *k != i).for_each(|(_, p)| p.otherwise = false);
+                            }
                             changed = Some(g);
                         }
                         let hold = self.inputs.holds.entry(phase.name.clone()).or_insert(phase.hold);

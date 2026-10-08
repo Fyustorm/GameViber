@@ -288,13 +288,17 @@ phase_window = 10,   -- seconds the probabilities are averaged over (2 to 60), d
   first) and `ev.confidence` (its average). When neither the sound nor the image is left,
   the phase is forgotten: `ev.phase` is nil. `input.phase`, `input.phase_confidence` and
   `input.phases.<name>` (the average probability of each) follow it.
-- In its Inputs, a phase can be tied to an **indicator** (§6.5) shown only in it (the
-  battle menu): while the indicator is shown (for half a second) the phase is certain,
+- In its Inputs, a phase can be tied to **indicators** (§6.5) shown only in it (the
+  battle menu): while they are all shown (for half a second) the phase is certain,
   entered at once with a confidence of 1, and while indicators are read it is only
-  entered through it. Each phase set up is also **kept** a few seconds (3 by default)
-  after its last sign (its indicator gone, or another phase more likely), so that a sign
-  that comes and goes does not flip it. When the indicator is gone and no other phase is
-  likely, `ev.phase` is nil.
+  entered through them. An indicator can be part of the signs of several phases: of the
+  signs shown, the one of the most indicators wins (battle: a gauge and its menu,
+  exploration: the gauge alone). One phase can be the phase of **none of the others**
+  (story): while indicators are read, it is entered when no phase's sign has been shown
+  for half a second and no phase without a sign is likely. Each phase set up is also
+  **kept** a few seconds (3 by default) after its last sign (its indicators gone, or
+  another phase more likely), so that a sign that comes and goes does not flip it. When
+  the indicators are gone and no other phase is likely, `ev.phase` is nil.
   Modes still get phases late and must not time effects on them.
 - A phase set up can also **ignore** the sound's hits (`on_audio_hit`, and `on_impact`
   from the sound) or the image's flashes (`on_impact` from the screen): while it is the

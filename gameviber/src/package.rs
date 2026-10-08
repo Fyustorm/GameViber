@@ -35,10 +35,15 @@ pub struct PhaseDef {
     pub name: String,
     pub sound: Option<String>,
     pub screen: Option<String>,
-    /// An indicator whose showing is a sure sign of the phase (its battle
-    /// menu); `zone` before the terms changed.
-    #[serde(alias = "zone")]
-    pub indicator: Option<String>,
+    /// Indicators whose showing, all together, is a sure sign of the phase (its
+    /// battle menu; a gauge and a menu); `indicator` (one) before a sign could
+    /// be several, `zone` before the terms changed.
+    #[serde(alias = "indicator", alias = "zone", deserialize_with = "one_or_many", skip_serializing_if = "Vec::is_empty")]
+    pub indicators: Vec<String>,
+    /// The phase while indicators are read and no phase's sign is shown (story:
+    /// none of the menus); one per mode.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub otherwise: bool,
     /// Seconds the phase is kept after its last sign: longer for signs that come and go.
     pub hold: f64,
     /// Events the mode does not get during the phase.
@@ -48,8 +53,22 @@ pub struct PhaseDef {
 
 impl Default for PhaseDef {
     fn default() -> Self {
-        Self { name: String::new(), sound: None, screen: None, indicator: None, hold: DEFAULT_HOLD, ignore: Ignored::default() }
+        Self { name: String::new(), sound: None, screen: None, indicators: Vec::new(), otherwise: false, hold: DEFAULT_HOLD, ignore: Ignored::default() }
     }
+}
+
+/// A list, or one indicator (or none) as stored before a sign could be several.
+fn one_or_many<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        One(Option<String>),
+        Many(Vec<String>),
+    }
+    Ok(match OneOrMany::deserialize(d)? {
+        OneOrMany::One(one) => one.into_iter().collect(),
+        OneOrMany::Many(many) => many,
+    })
 }
 
 /// Seconds a phase is kept after its last sign, unless set otherwise.
@@ -365,8 +384,9 @@ impl Inputs {
                 name: s.name.clone(),
                 sound: s.sound.clone(),
                 screen: s.screen.clone(),
-                // Only an indicator the mode still has.
-                indicator: s.indicator.clone().filter(|z| self.zones.iter().any(|zone| zone.indicator == *z)),
+                // Only indicators the mode still has.
+                indicators: s.indicators.iter().filter(|z| self.zones.iter().any(|zone| zone.indicator == **z)).cloned().collect(),
+                otherwise: s.otherwise && s.indicators.is_empty(),
                 hold: s.hold,
                 ignore: s.ignore,
             })
@@ -602,6 +622,18 @@ mod tests {
         assert!(!valid_name("2hp"));
         assert!(!valid_name("health bar"));
         assert!(!valid_name(""));
+    }
+
+    #[test]
+    fn signs_of_older_files_are_read() {
+        let phase = |json: serde_json::Value| serde_json::from_value::<PhaseDef>(json).unwrap();
+        assert_eq!(phase(serde_json::json!({ "name": "battle", "zone": "menu" })).indicators, ["menu"]);
+        assert_eq!(phase(serde_json::json!({ "name": "battle", "indicator": "menu" })).indicators, ["menu"]);
+        assert!(phase(serde_json::json!({ "name": "battle", "indicator": null })).indicators.is_empty());
+        let both = PhaseDef { name: "battle".into(), indicators: vec!["hp".into(), "menu".into()], ..PhaseDef::default() };
+        assert_eq!(phase(serde_json::to_value(&both).unwrap()), both);
+        let story = PhaseDef { name: "story".into(), otherwise: true, ..PhaseDef::default() };
+        assert_eq!(phase(serde_json::to_value(&story).unwrap()), story);
     }
 
     #[test]
