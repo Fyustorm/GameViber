@@ -10,6 +10,7 @@ use super::theme::*;
 use super::toys::{waiting_for_toys, INTIFACE_DOWNLOAD};
 use super::{gamepad_inputs, App, Page};
 use crate::engine::{Command, Shared, SourceHealth, TEST_LEVEL};
+use crate::intiface::Control;
 
 const STEPS: [&str; 4] = ["Intiface Central", "Your toys", "Your gamepad", "Pick a mode"];
 
@@ -141,6 +142,12 @@ impl App {
                 if s.intiface.connected {
                     dot(ui, OK);
                     ui.label(RichText::new("Connected to Intiface Central").strong());
+                } else if s.intiface.paused {
+                    dot(ui, IDLE);
+                    ui.label(RichText::new("Disconnected from Intiface Central").strong());
+                    if ui.add(primary("Connect")).clicked() {
+                        self.send(Command::Intiface(Control::Connect));
+                    }
                 } else {
                     ui.spinner();
                     ui.label(RichText::new("Looking for Intiface Central...").strong());

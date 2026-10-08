@@ -550,6 +550,8 @@ fn capture_status(s: &Shared) -> (egui::Color32, String) {
 fn intiface_status(s: &Shared) -> (egui::Color32, String) {
     if !s.intiface_enabled {
         (IDLE, "Intiface disabled".into())
+    } else if s.intiface.paused {
+        (IDLE, "Intiface disconnected".into())
     } else if !s.intiface.connected {
         (WARN, "Intiface not running".into())
     } else {

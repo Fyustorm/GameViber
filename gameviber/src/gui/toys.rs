@@ -8,6 +8,7 @@ use super::theme::*;
 use super::{intiface_status, App};
 use crate::config::ToySettings;
 use crate::engine::{Command, Shared, TEST_LEVEL};
+use crate::intiface::Control;
 
 pub const INTIFACE_DOWNLOAD: &str = "https://intiface.com/central/";
 
@@ -24,7 +25,7 @@ impl App {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 heading(ui, "Your toys");
                 ui.label(muted(
-                    "Found by Intiface Central. Turn a toy on and press Start Scanning in Intiface to add it.",
+                    "Found by Intiface Central. Turn a toy on while it scans to add it.",
                 ));
                 ui.add_space(8.0);
                 self.intiface_card(ui, s);
@@ -71,8 +72,10 @@ impl App {
         });
     }
 
-    /// Connection to Intiface Central: its state, how to get it running, its address.
+    /// Connection to Intiface Central: its state, how to get it running, its
+    /// address, and the buttons to disconnect, reconnect and scan for toys.
     fn intiface_card(&mut self, ui: &mut egui::Ui, s: &Shared) {
+        let status = &s.intiface;
         card(PANEL).show(ui, |ui| {
             ui.set_width(ui.available_width());
             let (color, text) = intiface_status(s);
@@ -80,17 +83,66 @@ impl App {
                 dot(ui, color);
                 ui.label(RichText::new("🔌 Intiface Central").strong());
                 ui.label(text);
+                if status.connected && !status.server.is_empty() {
+                    ui.label(muted(&status.server).size(12.0));
+                }
+                if !s.intiface_enabled {
+                    return;
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if status.paused {
+                        if ui.add(primary("Connect")).clicked() {
+                            self.send(Command::Intiface(Control::Connect));
+                        }
+                    } else if status.connected {
+                        if ui.button("Disconnect").on_hover_text("Stops your toys and leaves Intiface Central").clicked() {
+                            self.send(Command::Intiface(Control::Disconnect));
+                        }
+                        if ui.button("⟳ Reconnect").on_hover_text("Connects again, for a toy or a server that misbehaves").clicked() {
+                            self.send(Command::Intiface(Control::Connect));
+                        }
+                    } else {
+                        if ui.button("Stop trying").on_hover_text("Stays disconnected until you press Connect").clicked() {
+                            self.send(Command::Intiface(Control::Disconnect));
+                        }
+                        if ui.button("⟳ Retry now").clicked() {
+                            self.send(Command::Intiface(Control::Connect));
+                        }
+                    }
+                });
             });
-            if s.intiface_enabled && !s.intiface.connected {
+            if status.paused {
+                ui.label(muted("Disconnected: your toys get nothing from GameViber until you connect again."));
+            } else if s.intiface_enabled && !status.connected {
                 ui.label(muted(
                     "GameViber reaches your toys through Intiface Central, a free app: open it and press its \
                      Start button. GameViber connects on its own.",
                 ));
                 ui.hyperlink_to("Get Intiface Central ↗", INTIFACE_DOWNLOAD);
             }
+            if status.connected {
+                ui.horizontal(|ui| {
+                    if status.scanning {
+                        ui.spinner();
+                        ui.label("Looking for new toys");
+                        if ui.button("Stop scanning").on_hover_text("Toys already found stay connected").clicked() {
+                            self.send(Command::Intiface(Control::StopScanning));
+                        }
+                    } else {
+                        dot(ui, IDLE);
+                        ui.label("Not looking for new toys");
+                        if ui.button("🔍 Start scanning").on_hover_text("Turn the toy on first").clicked() {
+                            self.send(Command::Intiface(Control::StartScanning));
+                        }
+                    }
+                });
+                if let Some(e) = &status.error {
+                    ui.label(RichText::new(e).monospace().size(12.0).color(MUTED));
+                }
+            }
             egui::CollapsingHeader::new("Server address").id_salt("intiface-address").show(ui, |ui| {
                 self.intiface_address(ui, s);
-                if let Some(e) = &s.intiface.error {
+                if let (false, Some(e)) = (status.connected, &status.error) {
                     ui.label(RichText::new(e).monospace().size(12.0).color(MUTED));
                 }
             });

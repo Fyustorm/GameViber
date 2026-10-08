@@ -17,7 +17,7 @@ pub use crate::config::SourceChoice;
 use crate::config::{self, AudioSource, ModeEntry, OverlaySettings, Presets, Settings, ToySettings};
 use crate::gamepad::{self, PadState, BUTTONS};
 use crate::external::{self, ExternalInputs, ExternalView};
-use crate::intiface::{Intiface, IntifaceStatus, Toy, ToyOutputs};
+use crate::intiface::{self, Intiface, IntifaceStatus, Toy, ToyOutputs};
 use crate::mode::rumble_events::RumbleLevels;
 use crate::mode::phases::Sense;
 use crate::mode::{HudGauge, ModeEvent, ModeInfo, ModeRuntime, ParamValue};
@@ -107,6 +107,8 @@ pub enum Command {
     ForgetMapping(String),
     /// Intiface server address; reconnects.
     SetUrl(String),
+    /// Disconnects from Intiface, reconnects, starts or stops its scan for toys.
+    Intiface(intiface::Control),
     /// Short vibration of one toy at a 0..1 intensity (shaped by its settings), to
     /// identify it or feel its settings.
     TestToy(String, f64),
@@ -835,6 +837,11 @@ impl Engine {
                 self.restart_source();
             }
             Command::SetUrl(url) => self.set_url(url),
+            Command::Intiface(control) => {
+                if let Some(i) = &self.intiface {
+                    i.control(control);
+                }
+            }
             Command::TestToy(name, level) => self.test = Some((name, level.clamp(0.0, 1.0), Instant::now() + TEST_LENGTH)),
             Command::SetOverlay(overlay) => {
                 self.settings.overlay = overlay;
@@ -1518,7 +1525,9 @@ impl Engine {
                 _ => "No gamepad: toys stopped",
             }.to_owned());
         }
-        if self.intiface.is_some() && !toys.connected {
+        if self.intiface.is_some() && toys.paused {
+            alerts.push("Intiface Central disconnected".to_owned());
+        } else if self.intiface.is_some() && !toys.connected {
             alerts.push("Intiface Central not connected".to_owned());
         } else if self.intiface.is_some() && toys.toys.is_empty() {
             alerts.push("No toy connected".to_owned());
