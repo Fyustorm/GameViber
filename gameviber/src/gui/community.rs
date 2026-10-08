@@ -167,17 +167,18 @@ impl App {
         c.mine.poll();
         c.matches.values_mut().for_each(Remote::poll);
         c.latest.values_mut().for_each(Remote::poll);
-        if let Remote::Ready(account) = std::mem::take(&mut c.signing_in) {
-            if let Err(e) = account.save() {
-                c.message = Some((false, format!("Cannot keep the account: {e:#}")));
+        match std::mem::take(&mut c.signing_in) {
+            Remote::Ready(account) => {
+                c.message = Some(match account.save() {
+                    Ok(()) => (true, format!("Signed in as {}.", account.pseudo)),
+                    Err(e) => (false, format!("Signed in as {}, but cannot keep the account: {e:#}", account.pseudo)),
+                });
+                c.account = Some(Some(account));
+                c.password.clear();
+                c.mine = Remote::Idle;
             }
-            c.message = Some((true, format!("Signed in as {}.", account.pseudo)));
-            c.account = Some(Some(account));
-            c.password.clear();
-            c.mine = Remote::Idle;
-        } else if let Remote::Failed(e) = &c.signing_in {
-            c.message = Some((false, e.clone()));
-            c.signing_in = Remote::Idle;
+            Remote::Failed(e) => c.message = Some((false, e)),
+            other => c.signing_in = other,
         }
         c.action.poll();
         match std::mem::take(&mut c.action) {
