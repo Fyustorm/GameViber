@@ -50,6 +50,8 @@ const SHORTCUTS: &str = "Space: play or pause\n\
     P: pick the image shown (or unpick it)\n\
     A: add the images picked (else the one shown) to the captures\n\
     Esc: unpick all";
+/// The indicator followed in the timeline.
+const INDICATOR: egui::Color32 = egui::Color32::from_rgb(0xb4, 0x8c, 0xff);
 /// About what an image of the game takes as JPEG, for the estimates.
 const IMAGE_BYTES: f64 = 35_000.0;
 
@@ -59,12 +61,14 @@ pub struct State {
     deleting: Option<PathBuf>,
     /// The recording open in the player.
     player: Option<Player>,
+    /// The indicator followed in the timeline, kept from one recording to the next.
+    indicator: Option<String>,
 }
 
 impl State {
     /// Opens a recording half way through (the screenshot tour).
     pub(super) fn preview(&mut self, info: &RecordingInfo) {
-        let mut player = Player::open(info.clone());
+        let mut player = Player::open(info.clone(), None);
         player.position = info.header.duration / 2.0;
         player.picked.insert(1);
         self.player = Some(player);
@@ -127,10 +131,12 @@ struct Player {
     message: Option<(bool, String)>,
     /// The images are to be added to the captures (A), by the filmstrip.
     adding: bool,
+    /// The indicator followed in the timeline.
+    indicator: Option<String>,
 }
 
 impl Player {
-    fn open(info: RecordingInfo) -> Self {
+    fn open(info: RecordingInfo, indicator: Option<String>) -> Self {
         let (tx, rx) = mpsc::channel();
         let path = info.path.clone();
         std::thread::spawn(move || {
@@ -162,6 +168,7 @@ impl Player {
             phase: String::new(),
             message: None,
             adding: false,
+            indicator,
         }
     }
 
@@ -558,7 +565,8 @@ impl App {
             self.send(command);
         }
         if let Some(info) = open {
-            self.creator.sessions.player = Some(Player::open(info));
+            let indicator = self.creator.sessions.indicator.clone();
+            self.creator.sessions.player = Some(Player::open(info, indicator));
         }
     }
 
@@ -677,6 +685,7 @@ impl App {
             if p.sent.is_some() {
                 let _ = commands.send(Command::StopSession);
             }
+            self.creator.sessions.indicator = p.indicator.take();
             self.creator.sessions.player = None;
             return;
         }
@@ -976,7 +985,17 @@ fn transport(ui: &mut egui::Ui, p: &mut Player, cap: f64, session: &Session) {
             });
         }
     });
-    if let Some(t) = timeline(ui, p, cap, session) {
+    let (names, track) = {
+        let changes = indicator_changes(p, session);
+        let names: BTreeSet<String> = changes.iter().map(|(_, name, _)| (*name).to_owned()).collect();
+        let track: Vec<(f64, IndicatorValue)> = match &p.indicator {
+            Some(name) => changes.iter().filter(|(_, n, _)| n == name).map(|(t, _, v)| (*t, *v)).collect(),
+            None => Vec::new(),
+        };
+        (names, track)
+    };
+    let followed = p.indicator.as_deref().map(|name| (name, track.as_slice()));
+    if let Some(t) = timeline(ui, p, cap, session, followed) {
         p.seek(t);
     }
     ui.horizontal(|ui| {
@@ -986,15 +1005,68 @@ fn transport(ui: &mut egui::Ui, p: &mut Player, cap: f64, session: &Session) {
         if !p.picked.is_empty() {
             legend(ui, OK, "picked images");
         }
+        if !names.is_empty() || p.indicator.is_some() {
+            ui.add_space(8.0);
+            let (swatch, _) = ui.allocate_exact_size(Vec2::new(12.0, 10.0), Sense::hover());
+            match track.iter().find(|(_, v)| *v != IndicatorValue::Unknown).map(|(_, v)| v) {
+                Some(IndicatorValue::Visibility(_)) => {
+                    ui.painter().rect_filled(swatch, 2.0, INDICATOR.gamma_multiply(0.35));
+                }
+                _ => {
+                    ui.painter().line_segment([swatch.left_center(), swatch.right_center()], Stroke::new(2.5, INDICATOR));
+                }
+            }
+            let selected = p.indicator.as_deref().unwrap_or("no indicator");
+            egui::ComboBox::from_id_salt("session-indicator")
+                .selected_text(RichText::new(selected).size(11.0))
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut p.indicator, None, "no indicator");
+                    for name in &names {
+                        ui.selectable_value(&mut p.indicator, Some(name.clone()), name);
+                    }
+                })
+                .response
+                .on_hover_text(
+                    "An indicator to follow in the timeline: a gauge as a line, a visibility as the background \
+                     where it is shown (faint yellow where it was not found)",
+                );
+        }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.label(muted("⌨ Shortcuts").size(11.0)).on_hover_text(SHORTCUTS);
         });
     });
 }
 
-/// The whole session: the game's rumble and what the mode sent, marked moments,
-/// images picked, and the moment shown; returns where it was clicked or dragged to.
-fn timeline(ui: &mut egui::Ui, p: &Player, cap: f64, session: &Session) -> Option<f64> {
+/// When each indicator changed, and to what: as the mode was given them (read
+/// again from the images when their zones changed since), else as recorded.
+fn indicator_changes<'a>(p: &'a Player, session: &'a Session) -> Vec<(f64, &'a str, IndicatorValue)> {
+    match &p.simulation {
+        Some(Ok(sim)) => sim.indicator_changes().iter().map(|(t, name, value)| (*t, name.as_str(), *value)).collect(),
+        _ => session
+            .changes
+            .iter()
+            .filter_map(|(t, change)| match change {
+                Change::Indicator { name, value } => Some((*t, name.as_str(), *value)),
+                _ => None,
+            })
+            .collect(),
+    }
+}
+
+/// An indicator's value, as players read it.
+fn indicator_text(value: IndicatorValue) -> String {
+    match value {
+        IndicatorValue::Gauge(x) => format!("{:.0}%", x * 100.0),
+        IndicatorValue::Visibility(true) => "shown".into(),
+        IndicatorValue::Visibility(false) => "hidden".into(),
+        IndicatorValue::Unknown => "unknown".into(),
+    }
+}
+
+/// The whole session: the game's rumble and what the mode sent, the indicator
+/// followed (its name and when it changed), marked moments, images picked, and
+/// the moment shown; returns where it was clicked or dragged to.
+fn timeline(ui: &mut egui::Ui, p: &Player, cap: f64, session: &Session, indicator: Option<(&str, &[(f64, IndicatorValue)])>) -> Option<f64> {
     let duration = p.duration().max(0.001);
     let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 64.0), Sense::click_and_drag());
     let painter = ui.painter_at(rect);
@@ -1003,6 +1075,30 @@ fn timeline(ui: &mut egui::Ui, p: &Player, cap: f64, session: &Session) -> Optio
     let x_of = |t: f64| rect.left() + (t / duration).clamp(0.0, 1.0) as f32 * rect.width();
     // Under the phases' band.
     let y_of = |v: f64| rect.bottom() - 3.0 - v.clamp(0.0, 1.0) as f32 * (rect.height() - 19.0);
+    // The indicator followed: a gauge as a line, shown as the background, not found as a faint warning.
+    if let Some((_, track)) = indicator {
+        let mut line = Vec::new();
+        for (i, (from, value)) in track.iter().enumerate() {
+            let to = track.get(i + 1).map_or(duration, |(t, _)| *t);
+            let (x0, x1) = (x_of(*from), x_of(to));
+            let back = Rect::from_x_y_ranges(x0..=x1, rect.top() + 15.0..=rect.bottom() - 1.0);
+            match value {
+                IndicatorValue::Gauge(v) => {
+                    line.extend([Pos2::new(x0, y_of(*v)), Pos2::new(x1, y_of(*v))]);
+                    continue;
+                }
+                IndicatorValue::Visibility(true) => {
+                    painter.rect_filled(back, 0.0, INDICATOR.gamma_multiply(0.22));
+                }
+                IndicatorValue::Unknown => {
+                    painter.rect_filled(back, 0.0, WARN.gamma_multiply(0.08));
+                }
+                IndicatorValue::Visibility(false) => {}
+            }
+            painter.line(std::mem::take(&mut line), Stroke::new(1.4, INDICATOR));
+        }
+        painter.line(line, Stroke::new(1.4, INDICATOR));
+    }
     if let Some(Ok(sim)) = &p.simulation {
         // The phase recognized, as a band along the top.
         let ticks = sim.ticks();
@@ -1066,7 +1162,14 @@ fn timeline(ui: &mut egui::Ui, p: &Player, cap: f64, session: &Session) -> Optio
     }
     let hover = response.hover_pos().map(|pos| ((pos.x - rect.left()) / rect.width()) as f64 * duration);
     let response = match hover {
-        Some(t) => response.on_hover_text_at_pointer(clock_tenths(t.clamp(0.0, duration))),
+        Some(t) => {
+            let t = t.clamp(0.0, duration);
+            let value = indicator.and_then(|(name, track)| {
+                let at = track.partition_point(|(at, _)| *at <= t);
+                at.checked_sub(1).map(|i| format!("\n{name}: {}", indicator_text(track[i].1)))
+            });
+            response.on_hover_text_at_pointer(format!("{}{}", clock_tenths(t), value.unwrap_or_default()))
+        }
         None => response,
     };
     let seek = response.clicked() || response.dragged();

@@ -237,6 +237,11 @@ impl Simulation {
         self.indicator_changes[..to].iter().map(|(_, name, value)| (name.clone(), *value)).collect()
     }
 
+    /// When an indicator changed, and to what, as the mode was given them.
+    pub fn indicator_changes(&self) -> &[(f64, String, IndicatorValue)] {
+        &self.indicator_changes
+    }
+
     /// The mode declares phases, or was given some.
     pub fn has_phases(&self) -> bool {
         self.has_phases
