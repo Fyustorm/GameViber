@@ -22,8 +22,11 @@ use crate::sharing;
 /// The community server, chosen at build time (`GAMEVIBER_COMMUNITY_URL`).
 pub const URL: &str = match option_env!("GAMEVIBER_COMMUNITY_URL") {
     Some(url) => url,
-    None => "http://localhost:8080",
+    None => LOCAL_URL,
 };
+/// The server of builds without `GAMEVIBER_COMMUNITY_URL`, which every build
+/// talked to before the public one.
+const LOCAL_URL: &str = "http://localhost:8080";
 const ORIGIN_FILE: &str = "community.json";
 const ACCOUNT_FILE: &str = "community.toml";
 const LINKS_FILE: &str = "community-links.json";
@@ -138,6 +141,9 @@ impl Source {
 /// Where a mode installed from the community, or published from here, comes from.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Origin {
+    /// The server it comes from: on another one, the mode is the player's own.
+    #[serde(default = "local_url")]
+    pub server: String,
     /// Its id on the server, and the code it was installed with (private modes).
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -157,11 +163,16 @@ pub struct Origin {
     pub vote: i8,
 }
 
+fn local_url() -> String {
+    LOCAL_URL.into()
+}
+
 impl Origin {
-    /// Where the mode `entry` (or the mode it is a variant of) comes from, if from the community.
+    /// Where the mode `entry` (or the mode it is a variant of) comes from, if
+    /// from this build's community server.
     pub fn of(entry: &ModeEntry) -> Option<Origin> {
         let text = fs::read_to_string(entry.dir()?.join(ORIGIN_FILE)).ok()?;
-        serde_json::from_str(&text).ok()
+        serde_json::from_str::<Origin>(&text).ok().filter(|o| o.server.trim_end_matches('/') == URL.trim_end_matches('/'))
     }
 
     pub fn save(&self, entry: &ModeEntry) -> anyhow::Result<()> {
@@ -563,7 +574,7 @@ pub fn install(client: &Client, source: &Source, detail: &ModeDetail) -> anyhow:
         Source::Id(_) => None,
     };
     let script = entry.source()?;
-    Origin { id: detail.id.clone(), code, version: version.number, own: false, script_sha256: script_sha256(&script), pinned: false, vote: 0 }.save(&entry)?;
+    Origin { server: URL.into(), id: detail.id.clone(), code, version: version.number, own: false, script_sha256: script_sha256(&script), pinned: false, vote: 0 }.save(&entry)?;
     Ok(imported)
 }
 
@@ -617,7 +628,7 @@ pub fn publish(
     };
     let script = entry.source()?;
     let version = detail.latest().map_or(1, |v| v.number);
-    Origin { id: detail.id.clone(), code: None, version, own: true, script_sha256: script_sha256(&script), pinned: false, vote: 0 }.save(&entry)?;
+    Origin { server: URL.into(), id: detail.id.clone(), code: None, version, own: true, script_sha256: script_sha256(&script), pinned: false, vote: 0 }.save(&entry)?;
     Ok(detail)
 }
 
@@ -677,10 +688,18 @@ mod tests {
         let mut report = PlayReport::default();
         report.add(&mode, 60.0, true);
         assert!(report.pending.is_empty());
-        Origin { id: "x".into(), code: None, version: 1, own: false, script_sha256: String::new(), pinned: false, vote: 0 }.save(&entry).unwrap();
+        let origin = Origin { server: URL.into(), id: "x".into(), code: None, version: 1, own: false, script_sha256: String::new(), pinned: false, vote: 0 };
+        // One from another server is not: the mode is the player's there.
+        Origin { server: "https://elsewhere.example".into(), ..origin.clone() }.save(&entry).unwrap();
+        report.add(&mode, 60.0, true);
+        assert!(report.pending.is_empty());
+        origin.save(&entry).unwrap();
         report.add(&mode, 60.0, true);
         report.add(&mode, 30.0, false);
         assert_eq!(report.pending["x"], (90.0, 1));
+        // Saved before servers were told apart: from the local one.
+        let old = r#"{"id":"x","version":1,"own":true,"script_sha256":""}"#;
+        assert_eq!(serde_json::from_str::<Origin>(old).unwrap().server, LOCAL_URL);
         let _ = fs::remove_dir_all(root);
     }
 
