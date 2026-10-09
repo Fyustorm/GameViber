@@ -46,8 +46,11 @@ When the mode sends several feelings, **Length** on its card can give its stroke
 length to one of them: the feelings it plays then set only their speed. Where it
 is sent shows on its card, on Live, in the simulator and in the session player,
 to check a mode without watching the toy. A mode can also say what the strokes
-should be, and add single strokes for its big moments (`stroke()` and `thrust()`,
-see the mode specification §8.5). **↕ Stroke** and the **Feel** buttons try it. Panic, a lost gamepad and silence
+should be, add single strokes for its big moments (`stroke()` and `thrust()`), and
+play funscripts on an event: add `.funscript` files to it in Creator › **Funscripts**
+(▶ Try plays one on every toy), and its script plays them with
+`play(funscript("name"))` (see the mode specification §8.5). They travel with the
+mode when it is shared. **↕ Stroke** and the **Feel** buttons try it. Panic, a lost gamepad and silence
 stop it where it is. The global cap slows and shortens its strokes.
 
 ## A mode for your game

@@ -12,12 +12,14 @@ pub mod phases;
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashSet};
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use mlua::{Function, Lua, LuaOptions, StdLib, Table, Value, Variadic, VmState};
 use serde::{Deserialize, Serialize};
 
 use crate::audio::{AudioHit, AudioLevels, Embedding};
+use crate::funscript::{Funscripts, Track};
 use crate::gamepad::{ButtonEvent, PadState, AXES, BUTTONS};
 use crate::screen::ScreenLevels;
 use phases::{Ignored, PhaseChange, PhaseDecl, PhaseTracker, Sense};
@@ -195,6 +197,8 @@ pub struct TickOutput {
     pub strokes: BTreeMap<String, StrokeIntent>,
     /// Single strokes asked during this tick (`thrust()`), by channel.
     pub thrusts: Vec<(String, ThrustIntent)>,
+    /// Motions playing (`play()` of a funscript), by channel.
+    pub motions: BTreeMap<String, crate::stroke::MotionDrive>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -230,6 +234,10 @@ struct Ctx {
     declared: Option<Table>,
     param_seq: u64,
     rng: u64,
+    /// The package's funscripts, by name (`funscript()`).
+    funscripts: Funscripts,
+    /// Motions made by the script (`funscript()`, `motion {}`): Lua values hold their index.
+    motions: Vec<Arc<Track>>,
 }
 
 impl Ctx {
@@ -323,6 +331,17 @@ impl ModeRuntime {
         saved: &BTreeMap<String, ParamValue>,
         persist: Option<&PersistValue>,
     ) -> LoadResult<Self> {
+        Self::load_with(chunk_name, source, saved, persist, Funscripts::new())
+    }
+
+    /// `load`, with the funscripts of the mode's package (`funscript()`).
+    pub fn load_with(
+        chunk_name: &str,
+        source: &str,
+        saved: &BTreeMap<String, ParamValue>,
+        persist: Option<&PersistValue>,
+        funscripts: Funscripts,
+    ) -> LoadResult<Self> {
         let libs = StdLib::MATH | StdLib::STRING | StdLib::TABLE | StdLib::BIT | StdLib::UTF8;
         let lua = Lua::new_with(libs, LuaOptions::new()).map_err(lua_err)?;
         lua.set_memory_limit(MEMORY_LIMIT).map_err(lua_err)?;
@@ -351,6 +370,8 @@ impl ModeRuntime {
             declared: None,
             param_seq: 0,
             rng: seed(),
+            funscripts,
+            motions: Vec::new(),
         }));
         library::register(&lua, &ctx).map_err(lua_err)?;
         lua.sandbox(true).map_err(lua_err)?;
@@ -815,9 +836,10 @@ impl ModeRuntime {
         let hud_events = std::mem::take(&mut ctx.hud_events);
         let hud = ctx.hud.clone();
         let outputs = ctx.outputs().map_err(lua_err)?;
+        let motions = outputs.motions(time);
         let channels = outputs.evaluate(time);
         let (strokes, thrusts) = (outputs.strokes(), outputs.take_thrusts());
-        Ok(TickOutput { channels, plots, hud, hud_events, strokes, thrusts })
+        Ok(TickOutput { channels, plots, hud, hud_events, strokes, thrusts, motions })
     }
 
     /// What the current phase keeps from the mode.

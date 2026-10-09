@@ -23,12 +23,15 @@ import java.util.zip.ZipOutputStream;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 
 /**
  * A `.gameviber` file sent to be published, checked the way GameViber checks
  * one it imports (`gameviber/src/sharing.rs`), and cleaned: only the entries a
  * mode's package has, the captures stripped of everything but their image
- * (PNG text and metadata chunks can hold anything).
+ * (PNG text and metadata chunks can hold anything), the funscripts of
+ * everything but their actions.
  */
 public final class SharedPackage {
     /** The layout GameViber writes, and the mode API versions it runs. */
@@ -36,7 +39,10 @@ public final class SharedPackage {
     static final Set<Integer> APIS = Set.of(1);
     static final int MAX_VARIANTS = 16;
     static final int MAX_CAPTURES = 8 * 40;
-    static final int MAX_ENTRIES = 2 + MAX_VARIANTS + MAX_CAPTURES;
+    /** Funscripts in a package, and points in one (`gameviber/src/funscript.rs`). */
+    static final int MAX_FUNSCRIPTS = 32;
+    static final int MAX_FUNSCRIPT_POINTS = 20_000;
+    static final int MAX_ENTRIES = 2 + MAX_VARIANTS + MAX_CAPTURES + MAX_FUNSCRIPTS;
     static final long MAX_ENTRY_SIZE = 8L << 20;
     static final long MAX_TOTAL_SIZE = 64L << 20;
     static final int MAX_NAME_CHARS = 100;
@@ -45,6 +51,7 @@ public final class SharedPackage {
     private static final String SCRIPT = "mode.luau";
     private static final String VARIANTS = "variants/";
     private static final String CAPTURES = "captures/";
+    private static final String FUNSCRIPTS = "funscripts/";
     private static final byte[] PNG_SIGNATURE = { (byte) 0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n' };
     /** PNG chunks kept: the image, its palette and transparency. */
     private static final Set<String> PNG_KEPT = Set.of("IHDR", "PLTE", "tRNS", "IDAT", "IEND");
@@ -105,6 +112,7 @@ public final class SharedPackage {
         kept.put(SCRIPT, script);
         int api = api(SCRIPT, script);
         int variants = 0;
+        int funscripts = 0;
         for (var entry : entries.entrySet()) {
             String name = entry.getKey();
             if (name.equals(MANIFEST) || name.equals(SCRIPT)) {
@@ -118,6 +126,11 @@ public final class SharedPackage {
                 kept.put(name, entry.getValue());
             } else if (name.startsWith(CAPTURES) && name.endsWith(".png") && safe(name.substring(CAPTURES.length()))) {
                 kept.put(name, stripPng(name, entry.getValue()));
+            } else if (name.startsWith(FUNSCRIPTS) && name.endsWith(".funscript") && safe(name.substring(FUNSCRIPTS.length()))) {
+                if (++funscripts > MAX_FUNSCRIPTS) {
+                    throw new Invalid("a mode has at most " + MAX_FUNSCRIPTS + " funscripts");
+                }
+                kept.put(name, cleanFunscript(name, entry.getValue()));
             } else {
                 throw new Invalid("unexpected file in a mode: " + name);
             }
@@ -186,6 +199,38 @@ public final class SharedPackage {
     }
 
     /** A PNG with only its image chunks, each checked. */
+    /** A funscript's actions (and whether it is inverted), nothing else. */
+    static byte[] cleanFunscript(String name, byte[] funscript) throws Invalid {
+        JsonNode actions;
+        boolean inverted;
+        try {
+            JsonNode root = JSON.readTree(funscript);
+            actions = root.path("actions");
+            inverted = root.path("inverted").asBoolean(false);
+        } catch (IOException e) {
+            throw new Invalid(name + " is not JSON");
+        }
+        if (!actions.isArray() || actions.size() < 2 || actions.size() > MAX_FUNSCRIPT_POINTS) {
+            throw new Invalid(name + " is not a funscript of 2 to " + MAX_FUNSCRIPT_POINTS + " actions");
+        }
+        ObjectNode clean = JSON.createObjectNode();
+        clean.put("inverted", inverted);
+        ArrayNode kept = clean.putArray("actions");
+        for (JsonNode action : actions) {
+            JsonNode at = action.path("at");
+            JsonNode pos = action.path("pos");
+            if (!at.isNumber() || !pos.isNumber() || at.asDouble() < 0 || !Double.isFinite(at.asDouble()) || !Double.isFinite(pos.asDouble())) {
+                throw new Invalid(name + " has an action without a time and a position");
+            }
+            kept.addObject().put("at", at.asDouble()).put("pos", pos.asDouble());
+        }
+        try {
+            return JSON.writeValueAsBytes(clean);
+        } catch (IOException e) {
+            throw new Invalid(name + " cannot be written again");
+        }
+    }
+
     static byte[] stripPng(String name, byte[] png) throws Invalid {
         var in = ByteBuffer.wrap(png);
         if (png.length < PNG_SIGNATURE.length || !java.util.Arrays.equals(png, 0, PNG_SIGNATURE.length, PNG_SIGNATURE, 0, PNG_SIGNATURE.length)) {

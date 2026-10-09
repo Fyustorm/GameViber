@@ -1,14 +1,20 @@
 //! Output channels written by modes: a latched base level, temporary pulses
 //! and keyframed patterns. A channel's value is the max of all three, and of
-//! the speed of its strokes: strokes (`stroke()`, held) and single ones
-//! (`thrust()`, also a pulse) are for strokers, other toys play their intensity.
+//! the speed of its strokes: strokes (`stroke()`, held), single ones
+//! (`thrust()`, also a pulse) and motions (`play()` of a funscript) are for
+//! strokers, other toys play their intensity.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
+
+use crate::funscript::Track;
+use crate::stroke::MotionDrive;
 
 pub const ALL_CHANNELS: &str = "*";
 /// Pulses and patterns going on at once, on all channels (docs/spec-modes.md §10).
 const MAX_PULSES: usize = 64;
 const MAX_PATTERNS: usize = 16;
+const MAX_MOTIONS: usize = 16;
 
 /// Strokes asked with `stroke()`, held until changed.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -25,6 +31,45 @@ pub struct ThrustIntent {
     /// 0..1, as `StrokeIntent::length`.
     pub length: f64,
     pub seconds: f64,
+}
+
+/// How a motion is played (`play()`'s options).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MotionOptions {
+    /// 0 = loop forever.
+    pub loops: u32,
+    /// Playback speed: 2 plays it twice as fast.
+    pub rate: f64,
+    /// Share of the toy's range it uses (0..1), around `center` (0..1 of the range).
+    pub depth: f64,
+    pub center: f64,
+}
+
+impl Default for MotionOptions {
+    fn default() -> Self {
+        Self { loops: 1, rate: 1.0, depth: 1.0, center: 0.5 }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct MotionPlay {
+    id: u64,
+    channel: String,
+    track: Arc<Track>,
+    start: f64,
+    options: MotionOptions,
+}
+
+impl MotionPlay {
+    /// Where it is in its own time, or None once finished.
+    fn at(&self, time: f64) -> Option<f64> {
+        let duration = self.track.duration();
+        let elapsed = (time - self.start).max(0.0) * self.options.rate;
+        if self.options.loops > 0 && elapsed >= duration * self.options.loops as f64 {
+            return None;
+        }
+        Some(elapsed % duration)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -89,6 +134,8 @@ pub struct Outputs {
     strokes: BTreeMap<String, StrokeIntent>,
     /// Asked since the last `take_thrusts`.
     thrusts: Vec<(String, ThrustIntent)>,
+    /// One per channel at most: a new one replaces it.
+    motions: Vec<MotionPlay>,
 }
 
 impl Outputs {
@@ -102,6 +149,7 @@ impl Outputs {
             next_id: 1,
             strokes: BTreeMap::new(),
             thrusts: Vec::new(),
+            motions: Vec::new(),
         }
     }
 
@@ -192,8 +240,43 @@ impl Outputs {
         std::mem::take(&mut self.thrusts)
     }
 
+    /// Plays a motion on the channel, in place of the one it was playing.
+    pub fn play_motion(&mut self, channel: &str, track: Arc<Track>, options: MotionOptions, now: f64) -> Result<u64, String> {
+        let targets = self.targets(channel)?;
+        self.motions.retain(|m| !targets.contains(&m.channel));
+        if self.motions.len() + targets.len() > MAX_MOTIONS {
+            return Err(format!("play: at most {MAX_MOTIONS} motions at once"));
+        }
+        let options = MotionOptions {
+            loops: options.loops,
+            rate: if options.rate.is_finite() { options.rate.clamp(0.1, 10.0) } else { 1.0 },
+            depth: options.depth.clamp(0.0, 1.0),
+            center: options.center.clamp(0.0, 1.0),
+        };
+        let id = self.next_id;
+        self.next_id += 1;
+        for c in targets {
+            self.motions.push(MotionPlay { id, channel: c, track: track.clone(), start: now, options });
+        }
+        Ok(id)
+    }
+
+    /// The motions playing at `now`, by channel.
+    pub fn motions(&self, now: f64) -> BTreeMap<String, MotionDrive> {
+        self.motions
+            .iter()
+            .filter_map(|m| {
+                let at = m.at(now)?;
+                let MotionOptions { rate, depth, center, .. } = m.options;
+                Some((m.channel.clone(), MotionDrive { id: m.id, track: m.track.clone(), at, rate, depth, center }))
+            })
+            .collect()
+    }
+
+    /// Stops a pattern or a motion.
     pub fn stop_pattern(&mut self, id: u64) {
         self.patterns.retain(|p| p.id != id);
+        self.motions.retain(|m| m.id != id);
     }
 
     pub fn stop_all(&mut self) {
@@ -202,6 +285,7 @@ impl Outputs {
         self.patterns.clear();
         self.strokes.clear();
         self.thrusts.clear();
+        self.motions.clear();
     }
 
     /// Final value per channel at `now`; drops finished pulses and patterns.
@@ -220,6 +304,13 @@ impl Outputs {
             let Some(level) = p.value(now) else { return false };
             let v = values.entry(p.channel.clone()).or_default();
             *v = v.max(level.clamp(0.0, 1.0));
+            true
+        });
+        // Other toys feel how fast a motion moves.
+        self.motions.retain(|m| {
+            let Some(at) = m.at(now) else { return false };
+            let v = values.entry(m.channel.clone()).or_default();
+            *v = v.max(m.track.intensity(at) * m.options.rate * m.options.depth);
             true
         });
         values
@@ -298,6 +389,29 @@ mod tests {
         o.stroke("main", None).unwrap();
         assert_eq!(o.evaluate(5.0)["main"], 0.2);
         assert!(o.stroke("nope", None).is_err());
+    }
+
+    #[test]
+    fn motions_play_replace_each_other_and_end() {
+        let mut o = outputs();
+        let track = Arc::new(Track::new(vec![(0.0, 0.0), (1.0, 1.0)]).unwrap());
+        let first = o.play_motion("main", track.clone(), MotionOptions::default(), 0.0).unwrap();
+        let options = MotionOptions { loops: 2, rate: 2.0, depth: 0.5, ..Default::default() };
+        let second = o.play_motion("main", track.clone(), options, 1.0).unwrap();
+        assert_ne!(first, second);
+        let motions = o.motions(1.25);
+        assert_eq!((motions.len(), motions["main"].id), (1, second));
+        assert!((motions["main"].at - 0.5).abs() < 1e-9);
+        // Felt by other toys: 1 length per second, twice as fast, half as deep.
+        let felt = o.evaluate(1.4)["main"];
+        assert!((felt - 1.0 / 3.0).abs() < 1e-9, "{felt}");
+        // Looped once (1.5 s), over after the second loop (2 s).
+        assert!((o.motions(1.75)["main"].at - 0.5).abs() < 1e-9);
+        assert_eq!(o.evaluate(2.0)["main"], 0.0);
+        assert!(o.motions(2.0).is_empty());
+        let third = o.play_motion("*", track, MotionOptions::default(), 3.0).unwrap();
+        o.stop_pattern(third);
+        assert!(o.motions(3.1).is_empty());
     }
 
     #[test]

@@ -21,6 +21,7 @@ mod keybindings;
 mod library;
 mod live;
 mod luau;
+mod motions;
 mod onboarding;
 mod pad_setup;
 mod overlay;
@@ -102,6 +103,7 @@ pub struct App {
     screen: screen::State,
     library: library::State,
     inputs: inputs::State,
+    motions: motions::State,
     sharing: sharing::State,
     /// The engine was told the Screen page is open.
     watching_screen: bool,
@@ -158,6 +160,7 @@ impl App {
             screen: screen::State::default(),
             library: library::State::default(),
             inputs: inputs::State::default(),
+            motions: motions::State::default(),
             sharing: sharing::State::default(),
             watching_screen: false,
             tour: tour::Tour::from_env(),

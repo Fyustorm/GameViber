@@ -456,7 +456,10 @@ impl ModeEntry {
     }
 
     pub fn modified(&self) -> Option<SystemTime> {
-        fs::metadata(self.path()?).and_then(|m| m.modified()).ok()
+        let script = fs::metadata(self.path()?).and_then(|m| m.modified()).ok()?;
+        // Funscripts added or removed reload the mode too.
+        let funscripts = self.dir().and_then(|d| fs::metadata(d.join(crate::package::FUNSCRIPTS_DIR)).and_then(|m| m.modified()).ok());
+        Some(funscripts.map_or(script, |f| f.max(script)))
     }
 
     fn params_path(&self) -> PathBuf {

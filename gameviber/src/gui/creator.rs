@@ -33,6 +33,8 @@ pub(super) enum Tab {
     Screen,
     /// Values from other programs.
     Programs,
+    /// Motions for strokers.
+    Funscripts,
     Script,
     Sessions,
     Logs,
@@ -46,7 +48,7 @@ impl Tab {
             Tab::Screen => Some(Part::Image),
             Tab::Programs => Some(Part::Programs),
             Tab::Script => Some(Part::Script),
-            Tab::Sessions | Tab::Logs => None,
+            Tab::Funscripts | Tab::Sessions | Tab::Logs => None,
         }
     }
 }
@@ -153,6 +155,9 @@ impl App {
                 }
                 (Tab::Programs, Some(game)) => {
                     egui::ScrollArea::vertical().show(ui, |ui| self.programs_tab(ui, s, game));
+                }
+                (Tab::Funscripts, Some(game)) => {
+                    egui::ScrollArea::vertical().show(ui, |ui| self.motions_tab(ui, s, game));
                 }
             }
         });
@@ -276,6 +281,7 @@ impl App {
             tab(ui, Tab::Phases, "Phases", count(phases, "recommended"), if phases > 0 { OK } else { GAME });
             tab(ui, Tab::Screen, "Captures & indicators", count(screen, "optional"), MUTED);
             tab(ui, Tab::Programs, "Other programs", count(programs, "optional"), MUTED);
+            tab(ui, Tab::Funscripts, "Funscripts", count(s.funscripts.len(), "optional"), MUTED);
             tab(ui, Tab::Script, "Script", script.0.to_owned(), script.1);
             ui.label(muted("|"));
             tab(ui, Tab::Sessions, "Sessions", String::new(), MUTED);

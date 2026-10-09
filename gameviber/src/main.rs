@@ -8,6 +8,7 @@ mod audio;
 mod community;
 mod config;
 mod engine;
+mod funscript;
 mod external;
 mod gamepad;
 mod gui;

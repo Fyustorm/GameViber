@@ -32,7 +32,8 @@ use crate::screen::{self, Frame, ImagePhases, ScreenLevels, ScreenView};
 use crate::rumble::RumbleState;
 use crate::session::{self, Change, Recorder, RecordingInfo, Senses};
 use crate::mode::outputs::StrokeIntent;
-use crate::stroke::{Calibration, Drive, Thrust};
+use crate::funscript::{self, Funscripts};
+use crate::stroke::{Calibration, Drive, MotionDrive, Thrust};
 pub use crate::source::SourceHealth;
 use crate::source::{ActiveSource, EventSender, PadInfo, SourceEvent, SourceKind, SourceOptions, Sources};
 /// Play with a mode in one go that counts as a session of it (community stats).
@@ -51,6 +52,8 @@ const STROKE_TEST_LENGTH: Duration = Duration::from_secs(4);
 /// How long a single stroke (`thrust()`) stays in what strokers are asked, for the
 /// output task to see it (it plays each one once).
 const THRUST_KEEP: f64 = 0.3;
+/// Ids of the funscripts tried start here: above the mode's, so they play over its motions.
+const TRY_ID: u64 = 1 << 62;
 /// How often a lost gamepad is looked for again (proxy source).
 const SOURCE_RETRY: Duration = Duration::from_secs(2);
 /// What `Command::SaveRecent` saves: the last seconds of play.
@@ -121,6 +124,11 @@ pub enum Command {
     /// Short vibration of one toy at a 0..1 intensity (shaped by its settings), to
     /// identify it or feel its settings.
     TestToy(String, f64),
+    /// Adds funscript files to the active mode's package (the mode reloads).
+    AddFunscripts(Vec<PathBuf>),
+    RemoveFunscript(String),
+    /// Plays one of the active mode's funscripts on every toy, once (None: stops it).
+    TryFunscript(Option<String>),
     /// A stroker plays a calibration step instead of the mode (None: back to the mode).
     Calibrate(Option<(String, Calibration)>),
     /// First-launch setup done (or skipped).
@@ -298,6 +306,10 @@ pub struct Shared {
     pub toy_levels: BTreeMap<String, f64>,
     /// Stroker name -> where it was sent (0..1).
     pub toy_positions: BTreeMap<String, f64>,
+    /// The active mode's funscripts, by name.
+    pub funscripts: Funscripts,
+    /// The funscript tried on the toys, and how far it got (seconds).
+    pub trying: Option<(String, f64)>,
     /// The stroker being calibrated, its step, and the seconds since it started.
     pub calibration: Option<(String, Calibration, f64)>,
     /// Games currently showing the in-game overlay.
@@ -439,6 +451,10 @@ struct Engine {
     test: Option<(String, f64, Instant)>,
     /// Stroker being calibrated, its step and when it started.
     calibration: Option<(String, Calibration, Instant)>,
+    /// The active mode's funscripts.
+    funscripts: Funscripts,
+    /// A funscript tried on every toy: its name, its motion and when it started.
+    trying: Option<(String, MotionDrive, f64)>,
     /// Single strokes the mode asked lately, by channel, with when (`THRUST_KEEP`).
     thrusts: Vec<(String, Thrust, f64)>,
     /// Id of the last one.
@@ -553,6 +569,8 @@ async fn run_async(
         calibration: None,
         thrusts: Vec::new(),
         last_thrust: 0,
+        funscripts: Funscripts::new(),
+        trying: None,
         recorder: None,
         recent: Recorder::rolling(0.0, RECENT_SECS),
         mark_save: None,
@@ -878,6 +896,22 @@ impl Engine {
                 let length = if stroker { STROKE_TEST_LENGTH } else { TEST_LENGTH };
                 self.test = Some((name, level.clamp(0.0, 1.0), Instant::now() + length));
             }
+            Command::AddFunscripts(paths) => self.add_funscripts(&paths),
+            Command::RemoveFunscript(name) => {
+                let file = self.mode_inputs.dir.join(package::FUNSCRIPTS_DIR).join(format!("{name}.{}", funscript::EXTENSION));
+                if let Err(e) = std::fs::remove_file(&file) {
+                    log::error!("cannot remove {}: {e}", file.display());
+                }
+                self.reload_mode();
+            }
+            Command::TryFunscript(name) => {
+                self.trying = name.and_then(|name| {
+                    let track = self.funscripts.get(&name)?.clone();
+                    self.last_thrust += 1;
+                    let motion = MotionDrive { id: TRY_ID + self.last_thrust, track, at: 0.0, rate: 1.0, depth: 1.0, center: 0.5 };
+                    Some((name, motion, self.time()))
+                });
+            }
             Command::Calibrate(calibration) => self.calibration = calibration.map(|(name, test)| (name, test, Instant::now())),
             Command::SetOverlay(overlay) => {
                 self.settings.overlay = overlay;
@@ -1054,6 +1088,7 @@ impl Engine {
             self.panic = true;
             self.calibration = None;
             self.thrusts.clear();
+            self.trying = None;
         }
     }
 
@@ -1148,7 +1183,8 @@ impl Engine {
 
     fn load(entry: &ModeEntry, persist: Option<&crate::mode::PersistValue>) -> Result<ModeRuntime, String> {
         let source = entry.source().map_err(|e| format!("cannot read {}: {e}", entry.id))?;
-        ModeRuntime::load(&entry.chunk_name(), &source, &entry.load_params(), persist)
+        let funscripts = entry.dir().map(|dir| package::funscripts(&dir)).unwrap_or_default();
+        ModeRuntime::load_with(&entry.chunk_name(), &source, &entry.load_params(), persist, funscripts)
     }
 
     fn select_mode(&mut self, id: &str) {
@@ -1162,6 +1198,7 @@ impl Engine {
         }
         let entry = ModeEntry::from_id(id);
         self.set_mode_inputs(package::Inputs::of(&entry));
+        self.refresh_funscripts();
         let mut active = ActiveMode {
             modified: entry.modified(),
             presets: entry.load_presets(),
@@ -1218,6 +1255,7 @@ impl Engine {
                 active.error = Some(format!("reload failed (previous version still running): {e}"));
             }
         }
+        self.refresh_funscripts();
         self.shared.lock().unwrap().plots.clear();
         self.publish_mode();
     }
@@ -1432,6 +1470,7 @@ impl Engine {
 
         let mut channels = BTreeMap::new();
         let mut strokes: BTreeMap<String, StrokeIntent> = BTreeMap::new();
+        let mut motions: BTreeMap<String, MotionDrive> = BTreeMap::new();
         let mut plots = Vec::new();
         let mut hud = Vec::new();
         let events = std::mem::take(&mut self.events);
@@ -1446,6 +1485,7 @@ impl Engine {
                         Ok(out) => {
                             channels = out.channels;
                             strokes = out.strokes;
+                            motions = out.motions;
                             for (channel, t) in out.thrusts {
                                 self.last_thrust += 1;
                                 let thrust = Thrust { id: self.last_thrust, length: t.length, seconds: t.seconds };
@@ -1469,6 +1509,7 @@ impl Engine {
         if let Some(replay) = self.replay.as_ref().filter(|_| !self.panic) {
             channels = replay.channels(time);
             strokes.clear();
+            motions.clear();
             self.thrusts.clear();
         }
         self.thrusts.retain(|(.., at)| time - at < THRUST_KEEP);
@@ -1488,12 +1529,23 @@ impl Engine {
         if self.test.as_ref().is_some_and(|(_, _, until)| now >= *until) {
             self.test = None;
         }
+        // A funscript tried plays on every toy, once.
+        let tried = self.trying.as_mut().and_then(|(_, motion, start)| {
+            motion.at = time - *start;
+            (motion.at < motion.track.duration()).then(|| motion.clone())
+        });
+        if tried.is_none() {
+            self.trying = None;
+        }
         let mut toy_outputs = ToyOutputs::new();
         let mut toy_levels = BTreeMap::new();
         for toy in &toys.toys {
             let mut level = channels.iter().filter(|(c, _)| self.routed(c, &toy.name)).map(|(_, v)| *v).fold(0.0, f64::max);
             if let Some((_, test, _)) = self.test.as_ref().filter(|(name, ..)| !self.panic && *name == toy.name) {
                 level = level.max(*test);
+            }
+            if let Some(motion) = &tried {
+                level = level.max(motion.track.intensity(motion.at));
             }
             let shape = self.settings.toys.get(&toy.name).copied().unwrap_or_default();
             let level = shape.shape(level).min(cap);
@@ -1511,7 +1563,15 @@ impl Engine {
                 .or_else(|| self.settings.stroke_length.get(&toy.name).and_then(|c| channels.get(c)).copied())
                 .map(|v| v.min(cap));
             let thrust = self.thrusts.iter().rev().find(|(c, ..)| routed(c)).map(|(_, t, _)| Thrust { length: t.length.min(cap), ..*t });
-            let drive = Drive { level, length, thrust };
+            // The motion started last among those it plays, within the cap.
+            let motion = motions
+                .iter()
+                .filter(|(c, _)| routed(c) && !self.source_lost)
+                .map(|(_, m)| m)
+                .chain(&tried)
+                .max_by_key(|m| m.id)
+                .map(|m| MotionDrive { depth: m.depth.min(cap), ..m.clone() });
+            let drive = Drive { level, length, thrust, motion };
             toy_outputs.insert(toy.index, ToyOutput { drive, stroke: shape.stroke, calibration });
             toy_levels.insert(toy.name.clone(), level);
         }
@@ -1547,6 +1607,7 @@ impl Engine {
         shared.axes = self.pad.axes().clone();
         shared.toy_levels = toy_levels;
         shared.toy_positions = toy_positions;
+        shared.trying = self.trying.as_ref().map(|(name, motion, _)| (name.clone(), motion.at));
         shared.calibration = self.calibration.as_ref().map(|(name, test, start)| (name.clone(), *test, now.duration_since(*start).as_secs_f64()));
         shared.recording = self.recorder.as_ref().map(|r| r.elapsed(time));
         shared.replay = self.replay.as_ref().map(|r| ReplayView { path: r.path.clone(), position: r.position(time) });
@@ -1773,6 +1834,45 @@ impl Engine {
     }
 
     /// The active mode's inputs changed, or another mode became active.
+    /// The active mode's funscripts, read again from its package.
+    fn refresh_funscripts(&mut self) {
+        self.funscripts = package::funscripts(&self.mode_inputs.dir);
+        self.shared.lock().unwrap().funscripts = self.funscripts.clone();
+    }
+
+    /// Copies funscript files into the active mode's package, named after them
+    /// (`a-name_2`), and reloads the mode.
+    fn add_funscripts(&mut self, paths: &[PathBuf]) {
+        let dir = self.mode_inputs.dir.join(package::FUNSCRIPTS_DIR);
+        if self.mode_inputs.dir.as_os_str().is_empty() || config::create_dir(&dir).is_err() {
+            log::error!("the active mode has no package to add funscripts to");
+            return;
+        }
+        for path in paths {
+            if package::funscripts(&self.mode_inputs.dir).len() >= funscript::MAX_FUNSCRIPTS {
+                log::error!("a mode has at most {} funscripts", funscript::MAX_FUNSCRIPTS);
+                break;
+            }
+            let stem = path.file_stem().map(|s| s.to_string_lossy().to_lowercase()).unwrap_or_default();
+            let mut name: String = stem.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' }).take(48).collect();
+            if name.is_empty() {
+                name = "motion".into();
+            }
+            let base = name.clone();
+            let mut n = 1;
+            while dir.join(format!("{name}.{}", funscript::EXTENSION)).exists() {
+                n += 1;
+                name = format!("{base}_{n}");
+            }
+            let file = dir.join(format!("{name}.{}", funscript::EXTENSION));
+            match funscript::read(path).map_err(anyhow::Error::msg).and_then(|_| Ok(std::fs::copy(path, &file)?)) {
+                Ok(_) => log::info!("funscript {name} added to {}", self.mode_inputs.dir.display()),
+                Err(e) => log::error!("cannot add {}: {e:#}", path.display()),
+            }
+        }
+        self.reload_mode();
+    }
+
     fn set_mode_inputs(&mut self, inputs: package::Inputs) {
         if inputs.dir != self.mode_inputs.dir {
             self.indicators.clear();

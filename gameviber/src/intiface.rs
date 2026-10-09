@@ -55,7 +55,7 @@ pub struct IntifaceStatus {
 }
 
 /// What one toy is asked for.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ToyOutput {
     /// Intensity (`Drive::level`, 0..1), and for a stroker the length and single
     /// strokes asked.
@@ -252,12 +252,12 @@ async fn run(
                     let wanted = outputs.borrow().clone();
                     let time = started.elapsed().as_secs_f64();
                     for (index, device) in client.devices() {
-                        let output = wanted.get(&index).copied();
+                        let output = wanted.get(&index);
                         let value = output.map_or(0.0, |o| o.drive.level).clamp(0.0, 1.0);
                         if let Some(kind) = stroker(&device) {
                             let stroke = output.map(|o| o.stroke).unwrap_or_default();
                             let calibration = output.and_then(|o| o.calibration);
-                            let drive = output.map(|o| o.drive).unwrap_or_default();
+                            let drive = output.map(|o| o.drive.clone()).unwrap_or_default();
                             let planner = planners.entry(index).or_default();
                             let motion = match calibration {
                                 Some((test, elapsed)) => planner.calibrate(time, test, elapsed, &stroke),

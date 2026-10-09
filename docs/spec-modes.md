@@ -589,8 +589,34 @@ thrust(length, seconds [, channel]) -- one stroke there and back, at once
   milliseconds late: strokes carry the mood (a slow stroke in exploration, a fast one
   in battle), thrusts the moments.
 - A channel at 0 stops the toy, `stroke()` or not. `stop_all()` clears the strokes.
+
+**Motions** are positions over time, played whole: a parry's lunge, a finisher, a loop
+for a phase.
+
+```lua
+local finisher = funscript("finisher")   -- funscripts/finisher.funscript in the mode's package
+local lunge = motion { { 0, 0.2 }, { 0.15, 0.9 }, { 0.4, 0.2 } }  -- { time in s, position 0..1 }
+
+local h = play(finisher, { channel = "main", loops = 1, speed = 1, depth = 1, center = 0.5 })
+h:stop()
+after(finisher.duration, function() ... end)  -- duration: seconds, one loop at speed 1
+```
+
+- `funscript(name)` reads a funscript the player added to the mode (Creator ›
+  Funscripts); a name the package lacks is an error when the mode loads. `motion {}`
+  writes one in the script: at least 2 points, 256 at most. Positions go from 0 (the
+  bottom of the toy's range) to 1 (its top).
+- `play()` options: `loops` (0 = forever, default 1), `speed` (playback speed, 0.1..10),
+  `depth` (share of the range used, 0..1) around `center` (0..1 of the range). A motion
+  replaces the one playing on its channel; `:stop()` ends it.
+- While a motion plays, a stroker follows it rather than the channel's intensity,
+  strokes and thrusts, even at 0: each move ends when the motion gets to its point.
+  Points closer than the toy can turn are skipped, and moves farther than it can go in
+  the time are shortened: the rhythm is kept. Other toys feel how fast it moves.
+- Motions set the mood of a moment the mode knows; never play one on every tick.
+- A mode makes 64 motions at most (each `funscript()` name once); 16 play at once.
 - Recorded sessions keep the channels' values only: replayed, strokes play as their
-  speed.
+  speed, and motions as how fast they move.
 
 ## 9. Utilities
 
@@ -666,7 +692,6 @@ resolution is therefore 20 ms.
 
 - **Chaining**: `input.upstream` would expose the output of the previous mode.
 - **Per-game mode**: detecting the game process and mapping it to a mode.
-- **Funscripts** played on an event, for strokers (§8.5).
 - **Multiple gamepads**: `ev.pad` and `input.pads[i]`.
 - **Block editor** generating Luau.
 - **The game's image without the overlay**: through the desktop's screen capture, for

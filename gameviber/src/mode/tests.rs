@@ -209,6 +209,39 @@ fn strokes_and_thrusts_for_strokers() {
 }
 
 #[test]
+fn motions_from_funscripts_and_scripts() {
+    let track = crate::funscript::Track::new(vec![(0.0, 0.0), (0.5, 1.0), (1.0, 0.0)]).unwrap();
+    let funscripts = crate::funscript::Funscripts::from([("hit".to_owned(), std::sync::Arc::new(track))]);
+    let source = wrap(
+        "local hit = funscript('hit')\n\
+         local wave = motion { { 0, 0.5 }, { 2, 1 } }\n\
+         local n = 0\n\
+         function tick(dt, input)\n\
+           n = n + 1\n\
+           if n == 1 then plot('d', hit.duration + wave.duration); play(hit, { speed = 2, depth = 0.5 }) end\n\
+           if n == 2 then h = play(wave, { channel = 'aux', loops = 0 }) end\n\
+           if n == 3 then h:stop() end\n\
+         end",
+    );
+    let mut rt = ModeRuntime::load_with("test", &source, &BTreeMap::new(), None, funscripts).expect("load");
+    rt.start().unwrap();
+    let out = step(&mut rt, rumble(0.0, 0.0));
+    assert_eq!(plot_value(&out, "d"), 3.0);
+    let main = &out.motions["main"];
+    assert_eq!((main.rate, main.depth, main.center), (2.0, 0.5, 0.5));
+    let out = step(&mut rt, rumble(0.0, 0.0));
+    assert!(out.motions.contains_key("aux") && out.motions.contains_key("main"));
+    // Felt by other toys as how fast it moves: 2 lengths a second, twice as fast, half as deep.
+    assert!(out.channels["main"] > 0.5);
+    let out = step(&mut rt, rumble(0.0, 0.0));
+    assert!(!out.motions.contains_key("aux"));
+    // A funscript the package lacks is an error at load, as a motion that is not one.
+    let missing = ModeRuntime::load("test", &wrap("local m = funscript('nope')"), &BTreeMap::new(), None).err().unwrap();
+    assert!(missing.contains("no funscript 'nope'"), "{missing}");
+    assert!(load_err(&wrap("local m = motion { { 0, 0 } }")).contains("at least two points"));
+}
+
+#[test]
 fn timers_after_every_and_cancel() {
     let src = wrap(
         "count, once = 0, 0

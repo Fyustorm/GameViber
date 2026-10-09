@@ -82,7 +82,7 @@ wider screens.
 Errors answer `{"error": "<a sentence to show>"}`. A package is checked as
 GameViber checks one it imports (`SharedPackage`): its entries, their sizes,
 the format, the mode API its scripts declare; its captures keep only their
-image (PNG metadata is dropped).
+image (PNG metadata is dropped), its funscripts only their actions.
 
 ---
 

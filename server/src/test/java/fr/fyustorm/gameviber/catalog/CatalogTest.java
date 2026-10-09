@@ -95,7 +95,10 @@ public class CatalogTest {
     }
 
     public static byte[] gameviber(String game, Long app) {
-        return gameviber(game, app, SCRIPT, Map.of("variants/boss.luau", SCRIPT.getBytes(StandardCharsets.UTF_8), "captures/battle-1.png", png()));
+        byte[] funscript = "{\"metadata\": {\"creator\": \"x\"}, \"actions\": [{\"at\": 0, \"pos\": 10}, {\"at\": 400, \"pos\": 90}]}"
+                .getBytes(StandardCharsets.UTF_8);
+        return gameviber(game, app, SCRIPT, Map.of("variants/boss.luau", SCRIPT.getBytes(StandardCharsets.UTF_8), "captures/battle-1.png", png(),
+                "funscripts/hit.funscript", funscript));
     }
 
     public static io.restassured.response.ValidatableResponse publish(String token, byte[] file, String visibility) {
@@ -144,6 +147,9 @@ public class CatalogTest {
         byte[] png = entries.get("captures/battle-1.png");
         assertFalse(new String(png, StandardCharsets.ISO_8859_1).contains("tEXt"), "metadata stripped");
         assertArrayEquals(SharedPackage.stripPng("x", png), png, "still a valid PNG");
+        String funscript = new String(entries.get("funscripts/hit.funscript"), StandardCharsets.UTF_8);
+        assertFalse(funscript.contains("creator"), "only its actions");
+        assertTrue(funscript.contains("\"pos\":90"), funscript);
 
         // Public: listed, its downloads counted.
         as(token).contentType(ContentType.JSON).body(Map.of("visibility", "public")).patch("/api/modes/" + id).then().statusCode(200);
@@ -187,6 +193,8 @@ public class CatalogTest {
         publish(token, gameviber("Game", null, SCRIPT, Map.of("captures/../evil.png", png())), "public").statusCode(400).body("error", containsString("unexpected file"));
         publish(token, gameviber("Game", null, SCRIPT, Map.of("captures/x.png", "nope".getBytes(StandardCharsets.UTF_8))), "public").statusCode(400)
                 .body("error", containsString("not a PNG"));
+        publish(token, gameviber("Game", null, SCRIPT, Map.of("funscripts/hit.funscript", "{\"actions\": [{\"at\": 0}]}".getBytes(StandardCharsets.UTF_8))), "public")
+                .statusCode(400).body("error", containsString("not a funscript"));
         publish(token, gameviber("", null), "public").statusCode(400).body("error", containsString("names no game"));
         publish(token, gameviber("Game", null), "everyone").statusCode(400);
         given().multiPart("package", "m.gameviber", gameviber("Game", null), "application/zip").post("/api/modes").then().statusCode(401);

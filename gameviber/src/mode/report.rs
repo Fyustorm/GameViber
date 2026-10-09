@@ -84,7 +84,7 @@ pub fn simulate(
     session: Session,
     progress: &Progress,
 ) -> Result<Simulation, String> {
-    let mut rt = ModeRuntime::load(chunk_name, source, params, None)?;
+    let mut rt = ModeRuntime::load_with(chunk_name, source, params, None, crate::package::funscripts(&inputs.dir))?;
     rt.start()?;
     let info = rt.info().clone();
     let duration = session.header.duration;

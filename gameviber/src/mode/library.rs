@@ -2,16 +2,22 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use mlua::{Function, Lua, Table, Value, Variadic};
 
-use super::outputs::StrokeIntent;
+use super::outputs::{MotionOptions, StrokeIntent};
 use super::{display, Ctx, HudGauge, ParamDef, ParamKind, ParamValue, Question, Timer};
+use crate::funscript::Track;
 use crate::gamepad::BUTTONS;
 
 const PARAM_TAG: &str = "__param";
 const ORDER_TAG: &str = "__order";
 const PATTERN_TAG: &str = "__pattern";
+/// Index of a motion in `Ctx::motions`.
+const MOTION_TAG: &str = "__motion";
+/// Motions a mode may make (`funscript()` once per name, `motion {}`).
+const MAX_MOTIONS: usize = 64;
 const QUESTION_TAG: &str = "__question";
 const DEFAULT_CHANNEL: &str = "main";
 const MAX_HUD_GAUGES: usize = 4;
@@ -171,10 +177,43 @@ pub(super) fn register(lua: &Lua, ctx: &Rc<RefCell<Ctx>>) -> mlua::Result<()> {
     {
         let ctx = ctx.clone();
         g.set(
+            "funscript",
+            lua.create_function(move |lua, name: String| {
+                let track = ctx.borrow().funscripts.get(&name).cloned().ok_or_else(|| {
+                    runtime_err(format!("no funscript '{name}' in this mode (funscripts/{name}.funscript in its package)"))
+                })?;
+                motion_value(lua, &ctx, track)
+            })?,
+        )?;
+    }
+    {
+        let ctx = ctx.clone();
+        g.set(
+            "motion",
+            lua.create_function(move |lua, points: Table| {
+                let mut copy = Vec::new();
+                for point in points.sequence_values::<Table>() {
+                    let point = point?;
+                    copy.push((point.get::<f64>(1)?, point.get::<f64>(2)?));
+                    if copy.len() > MAX_PATTERN_POINTS {
+                        return Err(runtime_err(format!("motion: at most {MAX_PATTERN_POINTS} points")));
+                    }
+                }
+                let track = Track::new(copy).map_err(runtime_err)?;
+                motion_value(lua, &ctx, Arc::new(track))
+            })?,
+        )?;
+    }
+    {
+        let ctx = ctx.clone();
+        g.set(
             "play",
             lua.create_function(move |lua, (pattern, opts): (Table, Option<Table>)| {
+                if let Some(index) = pattern.raw_get::<Option<usize>>(MOTION_TAG)? {
+                    return play_motion(lua, &ctx, index, opts);
+                }
                 if !pattern.raw_get::<bool>(PATTERN_TAG).unwrap_or(false) {
-                    return Err(runtime_err("play() expects a value built with pattern { ... }"));
+                    return Err(runtime_err("play() expects a value built with pattern { ... }, motion { ... } or funscript(name)"));
                 }
                 let mut points = Vec::new();
                 for point in pattern.raw_get::<Table>("points")?.sequence_values::<Table>() {
@@ -446,4 +485,54 @@ pub(super) fn parse_param(name: &str, def: &Table) -> Result<(u64, ParamDef), St
         other => return Err(format!("param '{name}': unknown type '{other}'")),
     };
     Ok((order, ParamDef { name: name.to_owned(), label, kind, default }))
+}
+
+/// The Lua value of a motion: its index in `Ctx::motions` and its duration.
+fn motion_value(lua: &Lua, ctx: &Rc<RefCell<Ctx>>, track: Arc<Track>) -> mlua::Result<Table> {
+    let mut c = ctx.borrow_mut();
+    let index = match c.motions.iter().position(|m| Arc::ptr_eq(m, &track)) {
+        Some(index) => index,
+        None if c.motions.len() >= MAX_MOTIONS => return Err(runtime_err(format!("at most {MAX_MOTIONS} motions per mode"))),
+        None => {
+            c.motions.push(track.clone());
+            c.motions.len() - 1
+        }
+    };
+    let value = lua.create_table()?;
+    value.raw_set(MOTION_TAG, index)?;
+    value.raw_set("duration", track.duration())?;
+    Ok(value)
+}
+
+/// `play()` of a motion: on its channel, in place of the one playing there.
+fn play_motion(lua: &Lua, ctx: &Rc<RefCell<Ctx>>, index: usize, opts: Option<Table>) -> mlua::Result<Table> {
+    let defaults = MotionOptions::default();
+    let (channel, options) = match &opts {
+        Some(o) => (
+            o.get::<Option<String>>("channel")?.unwrap_or_else(|| DEFAULT_CHANNEL.into()),
+            MotionOptions {
+                loops: o.get::<Option<u32>>("loops")?.unwrap_or(defaults.loops),
+                rate: o.get::<Option<f64>>("speed")?.unwrap_or(defaults.rate),
+                depth: o.get::<Option<f64>>("depth")?.unwrap_or(defaults.depth),
+                center: o.get::<Option<f64>>("center")?.unwrap_or(defaults.center),
+            },
+        ),
+        None => (DEFAULT_CHANNEL.into(), defaults),
+    };
+    let id = {
+        let mut c = ctx.borrow_mut();
+        let track = c.motions.get(index).cloned().ok_or_else(|| runtime_err("not a motion of this mode"))?;
+        let now = c.time;
+        c.outputs()?.play_motion(&channel, track, options, now).map_err(runtime_err)?
+    };
+    let handle = lua.create_table()?;
+    let ctx = ctx.clone();
+    handle.raw_set(
+        "stop",
+        lua.create_function(move |_, _: Variadic<Value>| {
+            ctx.borrow_mut().outputs()?.stop_pattern(id);
+            Ok(())
+        })?,
+    )?;
+    Ok(handle)
 }

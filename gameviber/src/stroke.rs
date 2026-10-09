@@ -9,11 +9,19 @@
 //! (first move, a move interrupted) where it may be is kept as an interval, and
 //! the next move is timed for the farthest point of it.
 //!
+//! Motions (funscripts) are followed point by point: each move ends when the
+//! motion gets to its point; points too close for the toy to turn are skipped,
+//! and a move too far for the time is shortened (the rhythm is kept).
+//!
 //! What a toy can do is found with the player (`Calibration`): it goes where the
 //! player puts its range, then strokes faster, turns more often and strokes
 //! slower in steps, until the player says it stopped following.
 
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
+
+use crate::funscript::Track;
 
 /// Requested intensities below this stop the toy (as `ToySettings::SILENT`).
 const SILENT: f64 = 0.01;
@@ -221,7 +229,7 @@ impl Ramp {
 }
 
 /// What a stroker is asked for on a send period.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Drive {
     /// Intensity, 0..1: the speed of its strokes, and their length unless `length` says.
     pub level: f64,
@@ -229,6 +237,38 @@ pub struct Drive {
     pub length: Option<f64>,
     /// The last single stroke asked (`thrust()`), played once.
     pub thrust: Option<Thrust>,
+    /// A motion playing: it takes the place of the strokes, whatever the intensity.
+    pub motion: Option<MotionDrive>,
+}
+
+/// A motion playing (`play()` of a funscript), where it is now.
+#[derive(Debug, Clone)]
+pub struct MotionDrive {
+    /// Tells this play from the others.
+    pub id: u64,
+    pub track: Arc<Track>,
+    /// Where the motion is, in its own time (seconds, within one loop).
+    pub at: f64,
+    /// How fast it plays.
+    pub rate: f64,
+    /// Share of the range it uses (0..1), around `center` (0..1 of the range).
+    pub depth: f64,
+    pub center: f64,
+}
+
+impl PartialEq for MotionDrive {
+    fn eq(&self, other: &Self) -> bool {
+        (self.id, self.at, self.rate, self.depth, self.center) == (other.id, other.at, other.rate, other.depth, other.center)
+            && Arc::ptr_eq(&self.track, &other.track)
+    }
+}
+
+/// A motion being followed: its id, and the time (its own) of the point the last
+/// move went to.
+#[derive(Debug, Clone, Copy)]
+struct Following {
+    id: u64,
+    sent_to: f64,
 }
 
 /// One stroke there and back, at once.
@@ -298,12 +338,13 @@ pub struct Planner {
     thrust: Option<ThrustPlay>,
     /// Id of the last thrust played.
     last_thrust: u64,
+    following: Option<Following>,
 }
 
 impl Default for Planner {
     /// The toy may be anywhere.
     fn default() -> Self {
-        Self { at: (0.0, 1.0), moving: None, last_move: f64::NEG_INFINITY, level: 0.0, up: false, thrust: None, last_thrust: 0 }
+        Self { at: (0.0, 1.0), moving: None, last_move: f64::NEG_INFINITY, level: 0.0, up: false, thrust: None, last_thrust: 0, following: None }
     }
 }
 
@@ -311,7 +352,16 @@ impl Planner {
     /// What to send at `time` (seconds, monotonic) for what the toy is asked, if anything.
     pub fn tick(&mut self, time: f64, drive: &Drive, settings: &StrokeSettings) -> Option<Motion> {
         let settings = settings.sanitized();
-        let Drive { level, length, thrust } = *drive;
+        let Drive { level, length, thrust, ref motion } = *drive;
+        if let Some(motion) = motion {
+            // Thrusts asked meanwhile are not played after it.
+            if let Some(thrust) = thrust {
+                self.last_thrust = thrust.id;
+            }
+            self.thrust = None;
+            return self.follow(time, motion, &settings);
+        }
+        self.following = None;
         if level.is_nan() || level < SILENT {
             self.thrust = None;
             return self.stop(time);
@@ -407,12 +457,62 @@ impl Planner {
             return None;
         }
         let speed = if known { speed } else { speed.min(APPROACH_SPEED) };
-        let seconds = (distance / speed).max(min_turn);
-        let ms = (seconds * 1000.0).ceil();
+        Some(self.send(time, to, (distance / speed).max(min_turn)))
+    }
+
+    /// The next move of a motion: to its first point at least `min_turn` ahead, timed
+    /// to get there with it, as far as the toy can go in that time.
+    fn follow(&mut self, time: f64, motion: &MotionDrive, settings: &StrokeSettings) -> Option<Motion> {
+        let mut following = match self.following {
+            Some(f) if f.id == motion.id => f,
+            _ => Following { id: motion.id, sent_to: f64::NEG_INFINITY },
+        };
+        let duration = motion.track.duration();
+        // Its time went back: it looped.
+        if following.sent_to > motion.at + duration / 2.0 {
+            following.sent_to = f64::NEG_INFINITY;
+        }
+        self.following = Some(following);
+        // A move of the motion's goes to its end; the first one cuts the strokes short.
+        let started = following.sent_to > f64::NEG_INFINITY;
+        if self.moving.is_some_and(|m| time < m.end) && started {
+            return None;
+        }
+        if time - self.last_move < settings.min_turn {
+            return None;
+        }
+        let rate = motion.rate.max(0.05);
+        let points = motion.track.points();
+        let after = (motion.at + settings.min_turn * rate).max(following.sent_to + 1e-9);
+        let &(point, position) = points.get(points.partition_point(|p| p.0 < after))?;
+        let to = settings.bottom
+            + (settings.top - settings.bottom) * (motion.center + (position - 0.5) * motion.depth).clamp(0.0, 1.0);
+        if let Some(segment) = self.moving.take() {
+            self.at = segment.bounds(time);
+        }
+        let (a, b) = self.at;
+        let fastest = 1.0 / settings.fastest;
+        let seconds = (point - motion.at) / rate;
+        let (to, seconds) = if b - a < EPSILON {
+            let reach = fastest * seconds;
+            (a + (to - a).clamp(-reach, reach), seconds)
+        } else {
+            // From where it might be anywhere: there gently, the motion going on meanwhile.
+            let distance = (to - a).abs().max((to - b).abs());
+            (to, (distance / APPROACH_SPEED.min(fastest)).max(seconds))
+        };
+        self.following = Some(Following { sent_to: point, ..following });
+        Some(self.send(time, to, seconds))
+    }
+
+    /// Sends the toy from where it may be to `to` in `seconds`.
+    fn send(&mut self, time: f64, to: f64, seconds: f64) -> Motion {
+        let ms = (seconds * 1000.0).ceil().max(1.0);
+        let here = (self.at.0 + self.at.1) / 2.0;
         self.moving = Some(Segment { from: self.at, to, start: time, end: time + ms / 1000.0 });
         self.last_move = time;
         self.up = to > here;
-        Some(Motion::Move { position: to, ms: ms as u32 })
+        Motion::Move { position: to, ms: ms as u32 }
     }
 
     /// Where the toy should be at `time`, for toys sent positions to go to at once
@@ -551,7 +651,7 @@ mod tests {
             let mut sent = Vec::new();
             for i in 0..400 {
                 let time = i as f64 * PERIOD;
-                if let Some(Motion::Move { position, ms }) = planner.tick(time, &Drive { level: 0.2, length: Some(length), thrust: None }, &settings) {
+                if let Some(Motion::Move { position, ms }) = planner.tick(time, &Drive { level: 0.2, length: Some(length), ..Default::default() }, &settings) {
                     sent.push((position, ms));
                 }
             }
@@ -576,7 +676,7 @@ mod tests {
         for i in 0..200 {
             let time = i as f64 * PERIOD;
             // Slow strokes; the thrust is asked at 3 s, then stays in what the toy is asked.
-            let drive = Drive { level: 0.05, length: None, thrust: (time >= 3.0).then_some(thrust) };
+            let drive = Drive { level: 0.05, thrust: (time >= 3.0).then_some(thrust), ..Default::default() };
             if let Some(motion) = planner.tick(time, &drive, &settings) {
                 sent.push((time, toy.at(time), motion));
                 toy.apply(time, motion);
@@ -599,6 +699,83 @@ mod tests {
         let (low, high) = settings.window(0.05);
         assert!(position == low || position == high, "{after:?}");
         assert!(after[3..].iter().all(|(.., m)| matches!(m, Motion::Move { position, .. } if *position == low || *position == high)));
+    }
+
+    /// Plays `track` from 0 (its time at `rate`) on a toy known at `start`, until `seconds`.
+    fn follow(settings: &StrokeSettings, track: &Arc<Track>, rate: f64, start: f64, seconds: f64) -> Vec<(f64, f64, Motion)> {
+        let mut planner = Planner::default();
+        planner.at = (start, start);
+        let mut toy = Toy { position: start, moving: None };
+        let mut sent = Vec::new();
+        let mut time = 0.0;
+        while time < seconds {
+            let at = (time * rate) % track.duration();
+            let motion = MotionDrive { id: 7, track: track.clone(), at, rate, depth: 1.0, center: 0.5 };
+            if let Some(m) = planner.tick(time, &Drive { motion: Some(motion), ..Default::default() }, settings) {
+                sent.push((time, toy.at(time), m));
+                toy.apply(time, m);
+            }
+            time += PERIOD;
+        }
+        sent
+    }
+
+    #[test]
+    fn a_motion_is_followed_point_by_point() {
+        let settings = StrokeSettings { fastest: 0.25, ..Default::default() };
+        let track = Arc::new(Track::new(vec![(0.0, 0.0), (1.0, 1.0), (1.5, 0.2), (2.5, 0.8)]).unwrap());
+        let sent = follow(&settings, &track, 1.0, 0.0, 2.4);
+        let moves: Vec<(f64, u32)> = sent.iter().map(|&(_, _, m)| match m { Motion::Move { position, ms } => (position, ms), Motion::Stop => panic!() }).collect();
+        // Each move ends when the motion gets to its point (within a send period), even at no intensity.
+        assert_eq!(moves.len(), 3, "{sent:?}");
+        assert_eq!(moves[0].0, 1.0);
+        assert!((moves[0].1 as f64 - 1000.0).abs() <= 1.0);
+        assert!((moves[1].0 - 0.2).abs() < 1e-9 && (sent[1].0 + moves[1].1 as f64 / 1000.0 - 1.5).abs() < 0.06);
+        assert!((moves[2].0 - 0.8).abs() < 1e-9 && (sent[2].0 + moves[2].1 as f64 / 1000.0 - 2.5).abs() < 0.06);
+    }
+
+    #[test]
+    fn a_motion_too_fast_is_shortened_and_too_close_points_skipped() {
+        let settings = StrokeSettings { fastest: 1.0, min_turn: 0.25, ..Default::default() };
+        // Whole-length strokes every 0.2 s: faster than the toy, closer than its turns.
+        let points = (0..=40).map(|i| (i as f64 * 0.2, (i % 2) as f64)).collect();
+        let track = Arc::new(Track::new(points).unwrap());
+        let sent = follow(&settings, &track, 1.0, 0.5, 6.0);
+        assert!(sent.len() > 10);
+        let mut last = f64::NEG_INFINITY;
+        for &(time, from, motion) in &sent {
+            let Motion::Move { position, ms } = motion else { panic!() };
+            assert!((position - from).abs() / (ms as f64 / 1000.0) <= 1.0 + 1e-6, "too fast at {time}");
+            assert!(time - last >= settings.min_turn - 1e-9, "turned again after {}", time - last);
+            last = time;
+        }
+    }
+
+    #[test]
+    fn a_motion_from_an_unknown_place_gets_there_gently_then_catches_up() {
+        let settings = StrokeSettings::default();
+        let track = Arc::new(Track::new((0..=20).map(|i| (i as f64 * 0.5, (i % 2) as f64)).collect()).unwrap());
+        let mut planner = Planner::default();
+        let motion = |at: f64| MotionDrive { id: 1, track: track.clone(), at, rate: 1.0, depth: 1.0, center: 0.5 };
+        let Some(Motion::Move { ms, .. }) = planner.tick(0.0, &Drive { motion: Some(motion(0.0)), ..Default::default() }, &settings) else { panic!() };
+        assert!(ms as f64 >= 1000.0 / APPROACH_SPEED - 1.0, "{ms}");
+        // Nothing until it is there, then the points still ahead.
+        assert_eq!(planner.tick(1.0, &Drive { motion: Some(motion(1.0)), ..Default::default() }, &settings), None);
+        let Some(Motion::Move { position, ms }) = planner.tick(2.1, &Drive { motion: Some(motion(2.1)), ..Default::default() }, &settings) else { panic!() };
+        assert_eq!((position, ms), (1.0, 400));
+    }
+
+    #[test]
+    fn strokes_go_on_after_a_motion() {
+        let settings = StrokeSettings::default();
+        let track = Arc::new(Track::new(vec![(0.0, 0.0), (1.0, 1.0)]).unwrap());
+        let mut planner = Planner::default();
+        planner.at = (0.0, 0.0);
+        let motion = MotionDrive { id: 1, track, at: 0.0, rate: 1.0, depth: 1.0, center: 0.5 };
+        assert!(planner.tick(0.0, &Drive { level: 0.0, motion: Some(motion), ..Default::default() }, &settings).is_some());
+        // Ended: the intensity drives again; at 0 it stops the toy.
+        assert_eq!(planner.tick(0.5, &Drive::default(), &settings), Some(Motion::Stop));
+        assert!(planner.tick(2.0, &Drive { level: 0.5, ..Default::default() }, &settings).is_some());
     }
 
     #[test]

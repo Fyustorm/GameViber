@@ -21,6 +21,16 @@ use crate::screen::Frame;
 /// The inputs of a mode, in its package.
 pub const INPUTS_FILE: &str = "mode.json";
 pub const CAPTURES_DIR: &str = "captures";
+/// Motions for strokers the script plays (`funscript()`, docs/spec-modes.md §8.5).
+pub const FUNSCRIPTS_DIR: &str = "funscripts";
+
+/// The funscripts of the package in `dir` (none without a package).
+pub fn funscripts(dir: &Path) -> crate::funscript::Funscripts {
+    if dir.as_os_str().is_empty() {
+        return Default::default();
+    }
+    crate::funscript::load_dir(&dir.join(FUNSCRIPTS_DIR))
+}
 /// A mode keeps at most this many captures per phase.
 pub const MAX_CAPTURES: usize = 40;
 /// A mode has at most this many phases (as modes may declare).
