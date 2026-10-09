@@ -48,7 +48,13 @@ is sent shows on its card, on Live, in the simulator and in the session player,
 to check a mode without watching the toy. A mode can also say what the strokes
 should be, add single strokes for its big moments (`stroke()` and `thrust()`), and
 play funscripts on an event: add `.funscript` files to it in Creator › **Funscripts**
-(▶ Try plays one on every toy), and its script plays them with
+(▶ Try plays one on every toy; rename them there), or write one in its editor (**✏ New**,
+**✏ Edit**): click to add points, drag them, right-click to remove them, insert strokes at
+the cursor, select a part on the timeline to try it, delete or cut it out, or make a
+new funscript of it. As in usual funscript editors, the keyboard does most of it: 0 to 9
+set a point at the cursor (0%, 100%), ← → move the cursor a step (Shift: ten), ↑ ↓ go
+to the next or previous point, Delete removes, Space tries. With **Grid** on, times snap
+to its step (the cursor, points added or moved, the selection) and ← → move one step. Its script plays them with
 `play(funscript("name"))` (see the mode specification §8.5). They travel with the
 mode when it is shared. **↕ Stroke** and the **Feel** buttons try it. Panic, a lost gamepad and silence
 stop it where it is. The global cap slows and shortens its strokes.

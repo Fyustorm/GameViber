@@ -127,8 +127,12 @@ pub enum Command {
     /// Adds funscript files to the active mode's package (the mode reloads).
     AddFunscripts(Vec<PathBuf>),
     RemoveFunscript(String),
-    /// Plays one of the active mode's funscripts on every toy, once (None: stops it).
-    TryFunscript(Option<String>),
+    RenameFunscript { from: String, to: String },
+    /// Writes a funscript to the active mode's package, in place of `replaces` if
+    /// given (the mode reloads).
+    SaveFunscript { name: String, track: Arc<funscript::Track>, replaces: Option<String> },
+    /// Plays a motion on every toy, once, under a name (None: stops it).
+    TryFunscript(Option<(String, Arc<funscript::Track>)>),
     /// A stroker plays a calibration step instead of the mode (None: back to the mode).
     Calibrate(Option<(String, Calibration)>),
     /// First-launch setup done (or skipped).
@@ -898,18 +902,39 @@ impl Engine {
             }
             Command::AddFunscripts(paths) => self.add_funscripts(&paths),
             Command::RemoveFunscript(name) => {
-                let file = self.mode_inputs.dir.join(package::FUNSCRIPTS_DIR).join(format!("{name}.{}", funscript::EXTENSION));
-                if let Err(e) = std::fs::remove_file(&file) {
-                    log::error!("cannot remove {}: {e}", file.display());
+                if let Err(e) = std::fs::remove_file(self.funscript_path(&name)) {
+                    log::error!("cannot remove the funscript {name}: {e}");
                 }
                 self.reload_mode();
             }
-            Command::TryFunscript(name) => {
-                self.trying = name.and_then(|name| {
-                    let track = self.funscripts.get(&name)?.clone();
+            Command::RenameFunscript { from, to } => {
+                let target = self.funscript_path(&to);
+                if !funscript::valid_name(&to) || target.exists() {
+                    log::error!("cannot rename the funscript {from} to {to}: invalid or taken");
+                } else if let Err(e) = std::fs::rename(self.funscript_path(&from), &target) {
+                    log::error!("cannot rename the funscript {from}: {e}");
+                }
+                self.reload_mode();
+            }
+            Command::SaveFunscript { name, track, replaces } => {
+                let path = self.funscript_path(&name);
+                let taken = path.exists() && replaces.as_deref() != Some(name.as_str());
+                if !funscript::valid_name(&name) || taken || self.mode_inputs.dir.as_os_str().is_empty() {
+                    log::error!("cannot save the funscript {name}: invalid name, taken, or no package");
+                } else if let Err(e) = config::write_file(&path, &track.to_json()) {
+                    log::error!("cannot save the funscript {name}: {e}");
+                } else if let Some(old) = replaces.filter(|old| *old != name) {
+                    if let Err(e) = std::fs::remove_file(self.funscript_path(&old)) {
+                        log::warn!("cannot remove the funscript {old}: {e}");
+                    }
+                }
+                self.reload_mode();
+            }
+            Command::TryFunscript(tried) => {
+                self.trying = tried.map(|(name, track)| {
                     self.last_thrust += 1;
                     let motion = MotionDrive { id: TRY_ID + self.last_thrust, track, at: 0.0, rate: 1.0, depth: 1.0, center: 0.5 };
-                    Some((name, motion, self.time()))
+                    (name, motion, self.time())
                 });
             }
             Command::Calibrate(calibration) => self.calibration = calibration.map(|(name, test)| (name, test, Instant::now())),
@@ -1834,6 +1859,11 @@ impl Engine {
     }
 
     /// The active mode's inputs changed, or another mode became active.
+    /// Where the active mode's funscript `name` is.
+    fn funscript_path(&self, name: &str) -> PathBuf {
+        self.mode_inputs.dir.join(package::FUNSCRIPTS_DIR).join(format!("{name}.{}", funscript::EXTENSION))
+    }
+
     /// The active mode's funscripts, read again from its package.
     fn refresh_funscripts(&mut self) {
         self.funscripts = package::funscripts(&self.mode_inputs.dir);
@@ -1853,11 +1883,7 @@ impl Engine {
                 log::error!("a mode has at most {} funscripts", funscript::MAX_FUNSCRIPTS);
                 break;
             }
-            let stem = path.file_stem().map(|s| s.to_string_lossy().to_lowercase()).unwrap_or_default();
-            let mut name: String = stem.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' }).take(48).collect();
-            if name.is_empty() {
-                name = "motion".into();
-            }
+            let mut name = funscript::name_of(&path.file_stem().map(|s| s.to_string_lossy()).unwrap_or_default());
             let base = name.clone();
             let mut n = 1;
             while dir.join(format!("{name}.{}", funscript::EXTENSION)).exists() {
