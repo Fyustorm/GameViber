@@ -2,6 +2,8 @@
 
 use super::{Action, Status};
 
+pub const CONFIGURABLE: bool = false;
+
 pub struct Shortcuts;
 
 impl Shortcuts {

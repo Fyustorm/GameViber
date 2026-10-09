@@ -3,6 +3,8 @@
 
 // Without an OS backend (see `platform`), what only backends use is left unused.
 #![cfg_attr(not(target_os = "linux"), allow(dead_code))]
+// Windows: no console window behind the GUI in release builds (logs: Creator › Logs).
+#![cfg_attr(all(target_os = "windows", not(debug_assertions)), windows_subsystem = "windows")]
 
 mod audio;
 mod community;

@@ -20,7 +20,8 @@ accepted = [
     "OFL-1.1",
     "Ubuntu-font-1.0",
 ]
-targets = ["x86_64-unknown-linux-gnu", "i686-unknown-linux-gnu"]
+# Linux and Windows: one list for both systems' packages.
+targets = ["x86_64-unknown-linux-gnu", "i686-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
 ignore-build-dependencies = true
 ignore-dev-dependencies = true
 # GameViber's own crates (LICENSE, LICENSE-MIT).

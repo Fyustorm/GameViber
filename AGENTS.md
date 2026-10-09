@@ -16,8 +16,8 @@ the rumble games send to a gamepad, listens to the game's sound, looks at its im
 through the in-game overlay, takes values other programs send, transforms all of it
 through a Lua (Luau) **mode**, and drives toys connected to Intiface Central (Buttplug
 protocol).
-Linux only for now; everything OS-specific is isolated so that other systems
-(Windows first) can be added later (see Platforms).
+Linux first; a Windows version with fewer features is under way
+(`docs/windows.md`); everything OS-specific is isolated (see Platforms).
 
 Pipeline: **source** (interception), **audio** (the game's sound), **screen** (its
 image, the mode's indicators) and **external inputs** (other programs) → **mode**
@@ -39,7 +39,7 @@ accepted; nothing else of them is left.
 
 | Path | Contents |
 |---|---|
-| `gameviber/src/platform/` | what differs between operating systems for the rest of the code (paths, local time, stop signals, the GUI window system dialogs open over, file dialogs); `linux/`: XDG paths, the privileged helper (`helper/`, `gameviber helper`, started through pkexec), the device hider, the desktop's portals (`portal.rs`; file chooser: `files.rs`), the desktop entry (`desktop.rs`) |
+| `gameviber/src/platform/` | what differs between operating systems for the rest of the code (paths, local time, stop signals, the GUI window system dialogs open over, file dialogs); `linux/`: XDG paths, the privileged helper (`helper/`, `gameviber helper`, started through pkexec), the device hider, the desktop's portals (`portal.rs`; file chooser: `files.rs`), the desktop entry (`desktop.rs`); `windows/`: `%APPDATA%`, the system's file dialogs (`files.rs`), named pipes (`pipe.rs`), the registry (`registry.rs`) |
 | `gameviber/src/source/` | interception sources, OS backends started through `Sources`: `linux/proxy` (uinput virtual gamepad) and `linux/ebpf` |
 | `gameviber/src/audio/` | the game's sound: `capture` (what to listen to; `linux`: PipeWire `pw-record` / `pw-dump`), `features` (levels, hits), `clap` (sound phase model: mel spectrogram, encoder) |
 | `gameviber/src/models.rs` | phase models downloaded on demand (CLAP, CLIP): download, ONNX sessions, text embeddings |
@@ -71,6 +71,7 @@ accepted; nothing else of them is left.
 | `gameviber/src/overlay/` | the games' overlays and their frame memory; `linux/`: the Unix socket and sealed memfds, `linux/install.rs`: layer and launcher installation |
 | `docs/spec-modes.md` | mode API specification (source of truth for the script API) |
 | `README.md`, `docs/user-guide.md`, `CONTRIBUTING.md` | for players: install and first steps (keep it short), then the full guide; for developers: build, architecture, packaging and releases |
+| `packaging/windows/` | the Inno Setup installer (`gameviber.iss`: GameViber, the `gameviber://` scheme, the ViGEmBus and HidHide installers offered) and the zip archive, made by `package.sh` |
 | `packaging/linux/` | files a package installs under `/usr` (Vulkan layer manifests, OpenGL launcher, udev rule, polkit action, desktop entry), `stage.sh` laying them out with the built binaries, `postinstall.sh`; tests check they match what the code expects. `package.sh` makes the release files (deb, rpm, Arch with `nfpm.yaml`, an archive for systems without packages) |
 | `packaging/third-party/` | `licenses.sh` writing `THIRD-PARTY-LICENSES.txt` for the packages: cargo-about (`about.toml`: accepted licenses), Luau, ONNX Runtime's notices |
 | `LICENSE`, `LICENSE-MIT` | GPL-3.0-or-later for GameViber; MIT for the built-in modes, the mode spec and the prompts; MIT or GPL-2.0-or-later for the eBPF probe and `gameviber-common` |
@@ -86,7 +87,8 @@ cargo build --release
 cargo test
 SKIP_EBPF_BUILD=1 cargo test   # without the eBPF toolchain (nightly + bpf-linker)
 cargo build-overlay32          # 32-bit overlay layer (i686 target + 32-bit glibc headers)
-tools/check-windows.sh         # the code outside `linux` modules still builds for Windows
+tools/check-windows.sh         # the code still builds for Windows (no Windows toolchain needed)
+cargo xwin test --target x86_64-pc-windows-msvc -p gameviber   # Windows build, tests under Wine (docs/windows.md)
 ```
 
 Run `cargo test` after any change to the runtime or to a mode.
@@ -140,8 +142,8 @@ Run `cargo test` after any change to the runtime or to a mode.
 
 ## Platforms
 
-GameViber only runs on Linux today, but a Windows version (with fewer features:
-no eBPF, an overlay of its own) is planned. Keep the way open:
+GameViber runs on Linux and, with fewer features (no eBPF, no in-game
+panel; `docs/windows.md`), on Windows. Keep the way open for other systems:
 
 - **OS-specific code lives only in modules named after the OS**: `linux.rs` or
   `linux/`, declared with `#[cfg(target_os = "linux")]`. That means any use
@@ -152,19 +154,20 @@ no eBPF, an overlay of its own) is planned. Keep the way open:
   privileged helper) in `platform/`; a part's backend next to that part
   (`source/linux/`, `audio/capture/linux.rs`, `overlay/linux/`,
   `shortcuts/linux.rs`, `external/linux.rs`, `update/linux.rs`, `links/linux.rs`,
-  `gameviber-overlay/src/linux/`).
+  `gameviber-overlay/src/linux/`), and the same for `windows`.
   The part's `mod.rs` holds the neutral types and logic and re-exports the
   backend's items under the same names for every OS.
 - **Other systems** get each part's `unsupported.rs` (same API, "not available
-  on this system yet"), so the rest still builds and runs. A Windows backend
-  is a `windows.rs` / `windows/` next to `linux`, with the fallback's `cfg`
-  narrowed to `not(any(target_os = "linux", target_os = "windows"))`.
+  on this system yet"), so the rest still builds and runs: its `cfg` is
+  `not(any(target_os = "linux", target_os = "windows"))`. The parent module
+  names the Windows backend `self::windows`, the `windows` crate having the same name.
 - **Data stays neutral**: sources translate their gamepad to Linux's key and
   axis numbering (`gamepad::codes`) and to evdev force-feedback effects
   (`rumble::Effect`), and audio to mono f32 samples, whatever the OS.
-- **Linux-only crates** go in `[target.'cfg(target_os = "linux")'.dependencies]`.
+- **Linux-only crates** go in `[target.'cfg(target_os = "linux")'.dependencies]`,
+  Windows-only ones (`windows`, `vigem-client`) in the Windows section.
 - `tools/check-windows.sh` checks the Windows build without a Windows toolchain;
-  it must stay free of errors and warnings.
+  it must stay free of errors and warnings. CI also tests on Windows.
 
 ## Known pitfalls
 

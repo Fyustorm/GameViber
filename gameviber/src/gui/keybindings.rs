@@ -93,7 +93,9 @@ impl App {
                             ui.end_row();
                         }
                     });
-                    if ui.button("Change the keys").on_hover_text("Opens the desktop's shortcut settings").clicked() {
+                    if crate::shortcuts::CONFIGURABLE
+                        && ui.button("Change the keys").on_hover_text("Opens the desktop's shortcut settings").clicked()
+                    {
                         self.send(Command::ConfigureShortcuts);
                     }
                 }

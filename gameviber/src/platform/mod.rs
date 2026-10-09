@@ -4,11 +4,11 @@
 //! privileged helper's entry point.
 //!
 //! OS-specific code lives only in modules named after the OS (`linux.rs` or
-//! `linux/`, declared with `#[cfg(target_os = "linux")]`): here, and in the
-//! parts with a backend per OS (`source`, `audio::capture`, `overlay`,
-//! `shortcuts`, `external`). Other systems get each part's `unsupported`
-//! module, so that everything else builds and runs there without these
-//! features. See AGENTS.md, Platforms.
+//! `linux/`, `windows.rs` or `windows/`, declared with `#[cfg(target_os = ...)]`):
+//! here, and in the parts with a backend per OS (`source`, `audio::capture`,
+//! `overlay`, `shortcuts`, `external`, `links`, `update`). Other systems get each
+//! part's `unsupported` module, so that everything else builds and runs there
+//! without these features. See AGENTS.md, Platforms.
 
 #[cfg(target_os = "linux")]
 pub mod linux;
@@ -18,9 +18,17 @@ pub use linux::{
     window_created, window_expected, window_focused, StopSignals,
 };
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "windows")]
+pub mod windows;
+#[cfg(target_os = "windows")]
+pub use self::windows::{
+    chown_to_caller, config_dir, data_dir, keep_private, local_time, open_file, open_files, privileged_subcommand, save_file, steam_app_id, window_closing,
+    window_created, window_expected, window_focused, StopSignals,
+};
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 mod unsupported;
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 pub use unsupported::{
     chown_to_caller, config_dir, data_dir, keep_private, local_time, open_file, open_files, privileged_subcommand, save_file, steam_app_id, window_closing,
     window_created, window_expected, window_focused, StopSignals,

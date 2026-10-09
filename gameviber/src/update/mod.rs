@@ -2,7 +2,8 @@
 //! way this GameViber was installed (`Installation`). Our own packages and
 //! archive are downloaded, checked against the release's SHA256SUMS and
 //! installed (`linux`: through the system's package manager, or by replacing
-//! the archive's files); a GameViber a store or a package repository updates,
+//! the archive's files; `windows`: by the installer, when GameViber restarts,
+//! or by replacing the archive's files); a GameViber a store or a package repository updates,
 //! or one built from source, is only told about new versions.
 //!
 //! Pre-releases are offered while this GameViber is one (alpha, beta).
@@ -11,9 +12,13 @@
 mod linux;
 #[cfg(target_os = "linux")]
 use linux as backend;
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "windows")]
+mod windows;
+#[cfg(target_os = "windows")]
+use self::windows as backend;
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 mod unsupported;
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 use unsupported as backend;
 
 use std::io::{Read, Write};
@@ -60,6 +65,8 @@ pub enum PackageKind {
     Deb,
     Rpm,
     Arch,
+    /// Windows' installer, run when GameViber restarts.
+    Installer,
 }
 
 impl Installation {
@@ -68,6 +75,7 @@ impl Installation {
             Installation::Package(PackageKind::Deb) => "Debian / Ubuntu package".into(),
             Installation::Package(PackageKind::Rpm) => "RPM package".into(),
             Installation::Package(PackageKind::Arch) => "Arch package".into(),
+            Installation::Package(PackageKind::Installer) => "installed with its installer".into(),
             Installation::Archive(dir) => format!("archive in {}", dir.display()),
             Installation::Managed(by) => format!("updated by {by}"),
             Installation::Source => "built from source".into(),
@@ -79,13 +87,24 @@ impl Installation {
         matches!(self, Installation::Package(_) | Installation::Archive(_))
     }
 
+    /// Installing asks for the user's password (Linux packages).
+    pub fn asks_password(&self) -> bool {
+        matches!(self, Installation::Package(PackageKind::Deb | PackageKind::Rpm | PackageKind::Arch))
+    }
+
+    /// The update is installed once GameViber closes (Windows' installer).
+    pub fn installs_on_restart(&self) -> bool {
+        matches!(self, Installation::Package(PackageKind::Installer))
+    }
+
     /// The release file to install (None: GameViber does not install updates).
     fn asset_suffix(&self) -> Option<&'static str> {
         Some(match self {
             Installation::Package(PackageKind::Deb) => ".deb",
             Installation::Package(PackageKind::Rpm) => ".rpm",
             Installation::Package(PackageKind::Arch) => ".pkg.tar.zst",
-            Installation::Archive(_) => ".tar.gz",
+            Installation::Package(PackageKind::Installer) => "-windows-x86_64-setup.exe",
+            Installation::Archive(_) => backend::ARCHIVE_SUFFIX,
             Installation::Managed(_) | Installation::Source => return None,
         })
     }
@@ -514,7 +533,8 @@ mod tests {
     #[test]
     fn each_installation_gets_its_own_file() {
         assert_eq!(Installation::Package(PackageKind::Arch).asset_suffix(), Some(".pkg.tar.zst"));
-        assert_eq!(Installation::Archive(PathBuf::from("/x")).asset_suffix(), Some(".tar.gz"));
+        assert_eq!(Installation::Package(PackageKind::Installer).asset_suffix(), Some("-windows-x86_64-setup.exe"));
+        assert_eq!(Installation::Archive(PathBuf::from("/x")).asset_suffix(), Some(backend::ARCHIVE_SUFFIX));
         assert_eq!(Installation::Managed("Flathub".into()).asset_suffix(), None);
         assert!(!Installation::Source.installs_updates());
     }

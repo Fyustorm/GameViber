@@ -1,5 +1,5 @@
-# Tests, and the check that the code outside `linux` modules builds for
-# Windows (AGENTS.md, Platforms).
+# Tests on Linux and Windows, and the check that the code builds for Windows
+# without a Windows toolchain (AGENTS.md, Platforms).
 name: CI
 
 on:
@@ -25,3 +25,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test
       - run: tools/check-windows.sh
+
+  windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p gameviber

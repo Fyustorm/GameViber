@@ -13,6 +13,9 @@ use zbus::blocking::{Connection, Proxy};
 use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
 
 use super::{Action, Status, APP_ID};
+
+/// The desktop lets the player change the keys (`Shortcuts::configure`).
+pub const CONFIGURABLE: bool = true;
 use crate::platform::linux::portal::{PORTAL, PORTAL_PATH};
 
 const SHORTCUTS: &str = "org.freedesktop.portal.GlobalShortcuts";

@@ -1,5 +1,6 @@
 # Builds the Linux packages (deb, rpm, Arch) and the archive, with
-# packaging/linux/package.sh, on Ubuntu 24.04. On a v* tag (v0.1.0-alpha.1), they are attached
+# packaging/linux/package.sh, on Ubuntu 24.04, and the Windows installer and
+# archive, with packaging/windows/package.sh. On a v* tag (v0.1.0-alpha.1), they are attached
 # to a draft GitHub release, published by hand. Nothing goes to any store or
 # package repository.
 name: Packages
@@ -16,6 +17,7 @@ env:
   BPF_LINKER_VERSION: v0.11.1
   NFPM_VERSION: v2.47.0
   CARGO_ABOUT_VERSION: 0.9.2
+  INNO_SETUP_VERSION: 6.7.3
 
 jobs:
   build:
@@ -61,21 +63,56 @@ jobs:
         run: packaging/linux/package.sh
       - uses: actions/upload-artifact@v4
         with:
-          name: packages
+          name: packages-linux
+          path: target/package/*
+          if-no-files-found: error
+
+  windows:
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust
+        run: rustup default stable
+      - name: cargo-about and Inno Setup
+        run: |
+          curl -sSfL "https://github.com/EmbarkStudios/cargo-about/releases/download/$CARGO_ABOUT_VERSION/cargo-about-$CARGO_ABOUT_VERSION-x86_64-pc-windows-msvc.tar.gz" \
+            | tar -xz -C "$HOME/.cargo/bin" --strip-components=1 "cargo-about-$CARGO_ABOUT_VERSION-x86_64-pc-windows-msvc/cargo-about.exe"
+          curl -sSfL -o innosetup.exe "https://github.com/jrsoftware/issrc/releases/download/is-${INNO_SETUP_VERSION//./_}/innosetup-$INNO_SETUP_VERSION.exe"
+          ./innosetup.exe //VERYSILENT //SUPPRESSMSGBOXES //CURRENTUSER //DIR="C:\inno"
+          echo "ISCC=/c/inno/ISCC.exe" >> "$GITHUB_ENV"
+      - name: The tag matches the version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' gameviber/Cargo.toml | head -n1)
+          test "v$version" = "$GITHUB_REF_NAME" || { echo "tag $GITHUB_REF_NAME, but gameviber/Cargo.toml says $version"; exit 1; }
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --release -p gameviber
+      - name: Package
+        run: packaging/windows/package.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages-windows
           path: target/package/*
           if-no-files-found: error
 
   release:
     if: startsWith(github.ref, 'refs/tags/')
-    needs: build
+    needs: [build, windows]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: packages
+          pattern: packages-*
+          merge-multiple: true
           path: packages
+      - name: SHA256SUMS of every file
+        run: cd packages && rm -f SHA256SUMS && sha256sum -- * > SHA256SUMS
       - name: Draft release
         env:
           GH_TOKEN: ${{ github.token }}

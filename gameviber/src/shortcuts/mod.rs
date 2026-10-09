@@ -1,15 +1,19 @@
 //! Keyboard shortcuts for the gamepad combos' actions (stop, mark a moment,
 //! capture the screen), through the desktop (`linux`: its global shortcuts
-//! portal).
+//! portal; `windows`: system-wide hot keys).
 
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]
-pub use linux::Shortcuts;
-#[cfg(not(target_os = "linux"))]
+pub use linux::{Shortcuts, CONFIGURABLE};
+#[cfg(target_os = "windows")]
+mod windows;
+#[cfg(target_os = "windows")]
+pub use self::windows::{Shortcuts, CONFIGURABLE};
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 mod unsupported;
-#[cfg(not(target_os = "linux"))]
-pub use unsupported::Shortcuts;
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+pub use unsupported::{Shortcuts, CONFIGURABLE};
 
 /// The id the desktop knows GameViber by (Linux: its desktop entry, which the
 /// shortcuts portal needs, else it files them under the terminal GameViber started from).

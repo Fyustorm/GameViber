@@ -14,6 +14,8 @@ use super::{Installation, PackageKind};
 use crate::platform::linux::helper;
 
 const MARKER: &str = "distribution";
+/// The release file of the archive (`packaging/linux/package.sh`).
+pub const ARCHIVE_SUFFIX: &str = ".tar.gz";
 const PACKAGE_EXE: &str = "/usr/bin/gameviber";
 const PACKAGE_DIR: &str = "/usr/lib/gameviber";
 
@@ -91,6 +93,7 @@ fn install_package(kind: PackageKind, file: &Path) -> anyhow::Result<()> {
         PackageKind::Rpm if exists("zypper") => vec!["zypper", "--non-interactive", "install", "--allow-unsigned-rpm", &file],
         PackageKind::Rpm => vec!["rpm", "-U", &file],
         PackageKind::Arch => vec!["pacman", "-U", "--noconfirm", &file],
+        PackageKind::Installer => anyhow::bail!("not a Linux package"),
     };
     log::info!("installing the update: pkexec {}", command.join(" "));
     helper::dialog::prepare(helper::PKEXEC_ACTION);

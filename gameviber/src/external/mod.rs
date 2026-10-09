@@ -1,7 +1,8 @@
 //! Values and events other programs send (docs/spec-modes.md §6.5): a game's
 //! existing mod, a script reading a game's API, a stream deck... They reach
 //! GameViber as JSON over a local WebSocket (`ws://127.0.0.1:<port>`) or, one
-//! message per line, through a named pipe (`linux`: in the runtime directory):
+//! message per line, through a named pipe (`linux`: in the runtime directory;
+//! `windows`: `\\.\pipe\gameviber-<user>-external`):
 //!
 //! ```json
 //! {"set": {"hp": 0.4, "ammo": 12}}
@@ -15,6 +16,10 @@
 mod linux;
 #[cfg(target_os = "linux")]
 use linux::start_pipe;
+#[cfg(target_os = "windows")]
+mod windows;
+#[cfg(target_os = "windows")]
+use self::windows::start_pipe;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -120,7 +125,7 @@ impl ExternalInputs {
         let (tx, rx) = mpsc::unbounded_channel();
         let status = Arc::new(Mutex::new(Status::default()));
         let server = (port != 0).then(|| tokio::spawn(serve(port, tx.clone(), status.clone())));
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
         start_pipe(tx, status.clone());
         Self { rx, status, server, values: BTreeMap::new(), events: Vec::new() }
     }

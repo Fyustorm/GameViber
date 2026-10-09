@@ -4,6 +4,8 @@ use std::path::Path;
 
 use super::Installation;
 
+pub const ARCHIVE_SUFFIX: &str = ".tar.gz";
+
 pub fn installation() -> Installation {
     Installation::Source
 }

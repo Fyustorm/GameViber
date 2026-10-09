@@ -548,7 +548,7 @@ mod tests {
         assert!(error(write("big.gameviber", &[(MANIFEST, &manifest(FORMAT, "m")), (MODE, &big)])).contains("too large"));
 
         let imported = import_into(&write("ok.gameviber", &[(MANIFEST, &manifest(FORMAT, "../x y")), (MODE, MODE_SOURCE.as_bytes()), ("captures/../../evil.png", PNG_SIGNATURE)]), &modes).unwrap();
-        assert!(imported.mode.ends_with("/modes/xy/mode.luau"), "{}", imported.mode);
+        assert!(Path::new(&imported.mode).ends_with("modes/xy/mode.luau"), "{}", imported.mode);
         assert!(Inputs::of(&ModeEntry::from_id(&imported.mode)).captures.is_empty(), "paths are refused");
         assert!(!root.join("evil.png").exists());
         let _ = fs::remove_dir_all(root);

@@ -1,6 +1,6 @@
 //! `gameviber://` links, the website's "Open in GameViber": the desktop
 //! starts GameViber with the link (`linux`: its desktop entry,
-//! `platform::linux::desktop`), and one instance runs at a time. A second
+//! `platform::linux::desktop`; `windows`: the registry), and one instance runs at a time. A second
 //! start hands its link (or nothing: show yourself) to the first one and quits,
 //! rather than run a second engine on the same gamepad.
 //!
@@ -12,9 +12,13 @@
 mod linux;
 #[cfg(target_os = "linux")]
 pub use linux::{claim, Instance};
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "windows")]
+mod windows;
+#[cfg(target_os = "windows")]
+pub use self::windows::{claim, Instance};
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 mod unsupported;
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 pub use unsupported::{claim, Instance};
 
 pub const SCHEME: &str = "gameviber";

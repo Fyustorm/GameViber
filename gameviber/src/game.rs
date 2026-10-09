@@ -70,7 +70,9 @@ fn path(id: &str) -> PathBuf {
 /// them to its modes).
 pub(crate) fn migrate_legacy() {
     let Ok(entries) = fs::read_dir(games_dir()) else { return };
-    for path in entries.filter_map(Result::ok).map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "json")) {
+    // Listed first: the directory changes as profiles move (Windows refuses to rename in a directory being read).
+    let profiles: Vec<PathBuf> = entries.filter_map(Result::ok).map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "json")).collect();
+    for path in profiles {
         let Ok(text) = fs::read_to_string(&path) else { continue };
         let Ok(serde_json::Value::Object(mut map)) = serde_json::from_str::<serde_json::Value>(&text) else { continue };
         if map.contains_key("name") {
@@ -224,6 +226,8 @@ mod tests {
         let _ = fs::remove_dir_all(dir);
     }
 
+    // Only Linux versions wrote them.
+    #[cfg(target_os = "linux")]
     #[test]
     fn legacy_profiles_become_games() {
         let dir = test_dir("legacy");

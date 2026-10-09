@@ -26,6 +26,9 @@ impl App {
         }
         let text = match updater.status().phase {
             Phase::Available(release) => format!("GameViber {} is available.", release.version),
+            Phase::Installed(release) if updater.status().installation.as_ref().is_some_and(Installation::installs_on_restart) => {
+                format!("GameViber {} is ready: restart GameViber to install it.", release.version)
+            }
             Phase::Installed(release) => format!("GameViber {} is installed: restart GameViber to use it.", release.version),
             _ => return,
         };
@@ -105,13 +108,17 @@ impl App {
             Phase::Installing(release) => {
                 ui.horizontal(|ui| {
                     ui.spinner();
-                    let password = matches!(installation, Some(Installation::Package(_)));
+                    let password = installation.as_ref().is_some_and(Installation::asks_password);
                     let text = if password { "Installing: enter your password in the dialog" } else { "Installing" };
                     ui.label(format!("{text} (GameViber {})...", release.version));
                 });
             }
             Phase::Installed(release) => {
-                ui.label(RichText::new(format!("✔ GameViber {} is installed.", release.version)).color(OK));
+                let text = match installation.as_ref().is_some_and(Installation::installs_on_restart) {
+                    true => format!("✔ GameViber {} is downloaded: it installs when GameViber restarts.", release.version),
+                    false => format!("✔ GameViber {} is installed.", release.version),
+                };
+                ui.label(RichText::new(text).color(OK));
                 ui.horizontal(|ui| {
                     if ui.add(primary("Restart GameViber now")).clicked() {
                         update::request_restart();

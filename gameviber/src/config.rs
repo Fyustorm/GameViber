@@ -610,7 +610,7 @@ mod tests {
         let e = ModeEntry::from_id("/x/modes/combo/variants/boss.luau");
         assert_eq!((e.key.as_str(), e.variant.as_deref(), e.chunk_name().as_str()), ("combo.boss", Some("boss"), "combo.boss.luau"));
         assert_eq!(e.dir(), Some(PathBuf::from("/x/modes/combo")), "the package's inputs");
-        assert_eq!(e.main_id(), "/x/modes/combo/mode.luau");
+        assert_eq!(Path::new(&e.main_id()), Path::new("/x/modes/combo/mode.luau"));
         let e = ModeEntry::from_id("/elsewhere/combo.luau");
         assert_eq!((e.key.as_str(), e.dir()), ("combo", None), "a file run from elsewhere has no package");
         assert_eq!(ModeEntry::from_id("builtin:combo").dir(), None);
