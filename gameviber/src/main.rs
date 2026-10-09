@@ -24,6 +24,7 @@ mod rumble;
 mod screen;
 mod session;
 mod sharing;
+mod stroke;
 mod shortcuts;
 mod source;
 mod update;

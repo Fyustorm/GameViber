@@ -523,7 +523,12 @@ stop_all()                    -- resets the base level to 0 and cancels pulses a
 - Values outside 0..1 are silently clamped.
 - **Final channel value** = `max(base level, active pulses, active patterns)`.
 - v1: a channel drives all the actuators (vibration, rotation, oscillation) of the toys
-  mapped to it. For the script, it is always an intensity between 0 and 1.
+  mapped to it. For the script, it is always an intensity between 0 and 1. A stroker
+  (a toy moving to positions) plays it as strokes, faster and longer as it rises
+  (§12): a mode does not need to know it.
+- Strokers follow the intensity a few hundred milliseconds late, at the next change of
+  direction (a strong rise turns them sooner), and cannot render waveforms faster than
+  their strokes: give them the envelope, not the pulses.
 - Without routing settings, `main` drives all toys and the other channels none.
 
 ### 8.3 Patterns
@@ -615,6 +620,12 @@ resolution is therefore 20 ms.
   and the effects the game was playing are dropped, so the rumble reads 0. The standard
   (proxy) source looks for the gamepad again every 2 s; the kernel probe picks up
   gamepads by itself.
+- **Strokers**: GameViber does not know where a stroker is. Each one has a range, a
+  fastest and a slowest move and a shortest time between two changes of direction,
+  adjustable on the Toys page; its strokes never go faster, nor turn more often, nor
+  leave the range. A move from where the toy might be anywhere (the first one, after
+  a stop) is timed for the farthest point, at a gentle speed. A channel value below
+  0.01, the panic button and source loss stop it where it is.
 - **Output rate**: 20 sends/s maximum per toy. A change smaller than 0.01 is not sent,
   except going to 0, which is always sent.
 
@@ -622,7 +633,8 @@ resolution is therefore 20 ms.
 
 - **Chaining**: `input.upstream` would expose the output of the previous mode.
 - **Per-game mode**: detecting the game process and mapping it to a mode.
-- **Linear outputs** (`LinearCmd`, for strokers): `stroke(speed, range)`.
+- **Strokes written by the mode** (strokers already play the intensity, §8.2):
+  `stroke(speed, range)`, funscripts played on an event.
 - **Multiple gamepads**: `ev.pad` and `input.pads[i]`.
 - **Block editor** generating Luau.
 - **The game's image without the overlay**: through the desktop's screen capture, for

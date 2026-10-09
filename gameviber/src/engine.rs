@@ -17,7 +17,7 @@ pub use crate::config::SourceChoice;
 use crate::config::{self, AudioSource, ModeEntry, OverlaySettings, Presets, Settings, ToySettings};
 use crate::gamepad::{self, PadState, BUTTONS};
 use crate::external::{self, ExternalInputs, ExternalView};
-use crate::intiface::{self, Intiface, IntifaceStatus, Toy, ToyOutputs};
+use crate::intiface::{self, Intiface, IntifaceStatus, Toy, ToyOutput, ToyOutputs};
 use crate::mode::rumble_events::RumbleLevels;
 use crate::mode::phases::Sense;
 use crate::mode::{HudGauge, ModeEvent, ModeInfo, ModeRuntime, ParamValue};
@@ -44,6 +44,8 @@ pub const HISTORY_SECS: f64 = 10.0;
 /// "Buzz" test of a single toy from the GUI.
 pub const TEST_LEVEL: f64 = 0.5;
 const TEST_LENGTH: Duration = Duration::from_millis(800);
+/// A stroker tested from an unknown position first gets there gently, then strokes.
+const STROKE_TEST_LENGTH: Duration = Duration::from_secs(4);
 /// How often a lost gamepad is looked for again (proxy source).
 const SOURCE_RETRY: Duration = Duration::from_secs(2);
 /// What `Command::SaveRecent` saves: the last seconds of play.
@@ -842,7 +844,11 @@ impl Engine {
                     i.control(control);
                 }
             }
-            Command::TestToy(name, level) => self.test = Some((name, level.clamp(0.0, 1.0), Instant::now() + TEST_LENGTH)),
+            Command::TestToy(name, level) => {
+                let stroker = self.last_toys.iter().any(|t| t.name == name && t.stroker);
+                let length = if stroker { STROKE_TEST_LENGTH } else { TEST_LENGTH };
+                self.test = Some((name, level.clamp(0.0, 1.0), Instant::now() + length));
+            }
             Command::SetOverlay(overlay) => {
                 self.settings.overlay = overlay;
                 self.settings.save();
@@ -1449,7 +1455,7 @@ impl Engine {
             }
             let shape = self.settings.toys.get(&toy.name).copied().unwrap_or_default();
             let level = shape.shape(level).min(cap);
-            toy_outputs.insert(toy.index, level);
+            toy_outputs.insert(toy.index, ToyOutput { level, stroke: shape.stroke });
             toy_levels.insert(toy.name.clone(), level);
         }
         if let Some(i) = &self.intiface {

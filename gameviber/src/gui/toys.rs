@@ -1,6 +1,6 @@
 //! Toys page: the connection to Intiface Central, what it found, a test buzz,
 //! which output channel of the active mode each toy plays, and per-toy
-//! intensity settings.
+//! intensity settings (and what a stroker can do).
 
 use eframe::egui::{self, Margin, RichText, Vec2};
 
@@ -8,7 +8,8 @@ use super::theme::*;
 use super::{intiface_status, App};
 use crate::config::ToySettings;
 use crate::engine::{Command, Shared, TEST_LEVEL};
-use crate::intiface::Control;
+use crate::intiface::{Control, Toy};
+use crate::stroke::{StrokeSettings, StrokeStyle};
 
 pub const INTIFACE_DOWNLOAD: &str = "https://intiface.com/central/";
 
@@ -38,12 +39,13 @@ impl App {
                     return;
                 }
                 let channels = s.mode.info.as_ref().map(|i| i.channels.clone()).unwrap_or_else(|| vec!["main".into()]);
-                tile_grid(ui, s.intiface.toys.len(), 360.0, 270.0, |ui, i, size| {
+                let height = if s.intiface.toys.iter().any(|t| t.stroker) { 440.0 } else { 270.0 };
+                tile_grid(ui, s.intiface.toys.len(), 360.0, height, |ui, i, size| {
                     let toy = &s.intiface.toys[i];
                     card(PANEL).show(ui, |ui| {
                         ui.set_width(size.x - 32.0);
                         ui.set_min_height(size.y - 32.0);
-                        self.toy_card(ui, s, &toy.name, &channels);
+                        self.toy_card(ui, s, toy, &channels);
                     });
                 });
                 ui.add_space(8.0);
@@ -168,12 +170,18 @@ impl App {
         ui.label(muted("Intiface Central shows it on its main screen. The default is ws://127.0.0.1:12345.").size(12.0));
     }
 
-    fn toy_card(&self, ui: &mut egui::Ui, s: &Shared, name: &str, channels: &[String]) {
+    fn toy_card(&self, ui: &mut egui::Ui, s: &Shared, toy: &Toy, channels: &[String]) {
+        let name = toy.name.as_str();
         ui.horizontal(|ui| {
-            ui.label(RichText::new("📳").size(20.0).color(ACCENT));
+            ui.label(RichText::new(if toy.stroker { "↕" } else { "📳" }).size(20.0).color(ACCENT));
             ui.label(RichText::new(name).size(15.0).strong());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("⚡ Buzz").on_hover_text("Short vibration to find which toy this is").clicked() {
+                let (label, hint) = if toy.stroker {
+                    ("↕ Stroke", "A few strokes to find which toy this is (it first gets in place slowly)")
+                } else {
+                    ("⚡ Buzz", "Short vibration to find which toy this is")
+                };
+                if ui.button(label).on_hover_text(hint).clicked() {
                     self.send(Command::TestToy(name.to_owned(), TEST_LEVEL));
                 }
             });
@@ -208,13 +216,20 @@ impl App {
         if let Some(settings) = toy_settings(ui, name, settings) {
             self.send(Command::SetToySettings { toy: name.to_owned(), settings });
         }
+        if toy.stroker {
+            ui.separator();
+            if let Some(stroke) = stroke_settings(ui, settings.stroke) {
+                self.send(Command::SetToySettings { toy: name.to_owned(), settings: ToySettings { stroke, ..settings } });
+            }
+        }
+        let hints = if toy.stroker {
+            ["The slowest, shortest strokes a mode can ask for", "Strokes at half strength", "The fastest, longest strokes a mode can ask for (within Strongest)"]
+        } else {
+            ["The gentlest vibration a mode can ask for", "A vibration at half strength", "The strongest vibration a mode can ask for (within Strongest)"]
+        };
         ui.horizontal(|ui| {
             ui.add_sized(Vec2::new(60.0, 18.0), egui::Label::new(muted("Feel")));
-            for (label, level, hint) in [
-                ("Weakest", ToySettings::SILENT, "The gentlest vibration a mode can ask for"),
-                ("Medium", TEST_LEVEL, "A vibration at half strength"),
-                ("Strongest", 1.0, "The strongest vibration a mode can ask for (within Max)"),
-            ] {
+            for ((label, level), hint) in [("Weakest", ToySettings::SILENT), ("Medium", TEST_LEVEL), ("Strongest", 1.0)].into_iter().zip(hints) {
                 if ui.button(label).on_hover_text(hint).clicked() {
                     self.send(Command::TestToy(name.to_owned(), level));
                 }
@@ -263,6 +278,60 @@ fn labeled(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut egui::Ui) -> eg
         add(ui)
     })
     .inner
+}
+
+/// What a stroker can do and how far it goes: its range, its fastest and slowest
+/// moves, how often it may turn, and what the intensity changes. Returns the new
+/// settings when one changed.
+fn stroke_settings(ui: &mut egui::Ui, settings: StrokeSettings) -> Option<StrokeSettings> {
+    let mut new = settings;
+    ui.spacing_mut().slider_width = (ui.available_width() - 150.0).max(80.0);
+    let mut bottom = new.bottom * 100.0;
+    let mut top = new.top * 100.0;
+    labeled(ui, "Lowest", |ui| ui.add(egui::Slider::new(&mut bottom, 0.0..=100.0).suffix("%").integer()))
+        .on_hover_text("The lowest position the toy goes to, from its whole length");
+    labeled(ui, "Highest", |ui| ui.add(egui::Slider::new(&mut top, 0.0..=100.0).suffix("%").integer()))
+        .on_hover_text("The highest position the toy goes to, from its whole length");
+    // Lowest and highest push each other rather than crossing.
+    if bottom != new.bottom * 100.0 {
+        new.bottom = bottom / 100.0;
+        new.top = new.top.max(new.bottom);
+    } else if top != new.top * 100.0 {
+        new.top = top / 100.0;
+        new.bottom = new.bottom.min(new.top);
+    }
+    labeled(ui, "Fastest", |ui| {
+        ui.add(egui::Slider::new(&mut new.fastest, StrokeSettings::FASTEST_RANGE).suffix(" s").step_by(0.05).fixed_decimals(2))
+    })
+    .on_hover_text(
+        "Time of the fastest move over the toy's whole length. GameViber never asks for faster: \
+         raise it if the toy stops following (shorter strokes, stutters)",
+    );
+    labeled(ui, "Slowest", |ui| {
+        ui.add(egui::Slider::new(&mut new.slowest, StrokeSettings::SLOWEST_RANGE).suffix(" s").step_by(0.5).fixed_decimals(1))
+    })
+    .on_hover_text("Time of the slowest move over the toy's whole length: lower it if slow strokes jerk");
+    labeled(ui, "Turns", |ui| {
+        ui.add(egui::Slider::new(&mut new.min_turn, StrokeSettings::TURN_RANGE).suffix(" s").step_by(0.05).fixed_decimals(2))
+    })
+    .on_hover_text("Shortest time between two changes of direction: raise it if quick turns get lost");
+    new.slowest = new.slowest.max(new.fastest);
+    ui.horizontal(|ui| {
+        ui.add_sized(Vec2::new(60.0, 18.0), egui::Label::new(muted("Stronger")));
+        for style in StrokeStyle::ALL {
+            let hint = match style {
+                StrokeStyle::Both => "Faster and longer strokes",
+                StrokeStyle::Speed => "Faster strokes, always over the whole range",
+                StrokeStyle::Depth => "Longer strokes, at a medium speed",
+            };
+            if ui.selectable_label(new.style == style, style.label()).on_hover_text(hint).clicked() {
+                new.style = style;
+            }
+        }
+    })
+    .response
+    .on_hover_text("What a stronger feeling changes in the strokes");
+    (new != settings).then_some(new)
 }
 
 /// Requested intensity (x) -> toy intensity (y).

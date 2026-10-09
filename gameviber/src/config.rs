@@ -14,6 +14,7 @@ pub use gameviber_common::overlay::Corner;
 
 use crate::mode::ParamValue;
 use crate::platform;
+use crate::stroke::StrokeSettings;
 
 pub const BUILTIN_PREFIX: &str = "builtin:";
 pub const MODE_EXTENSION: &str = "luau";
@@ -141,11 +142,13 @@ pub struct ToySettings {
     pub max: f64,
     /// Response curve exponent: below 1 low levels feel stronger, above 1 softer.
     pub curve: f64,
+    /// Strokers: how the shaped intensity becomes strokes (`stroke`).
+    pub stroke: StrokeSettings,
 }
 
 impl Default for ToySettings {
     fn default() -> Self {
-        Self { min: 0.0, max: 1.0, curve: 1.0 }
+        Self { min: 0.0, max: 1.0, curve: 1.0, stroke: StrokeSettings::default() }
     }
 }
 
@@ -641,13 +644,13 @@ mod tests {
         let default = ToySettings::default();
         assert_eq!(default.shape(0.0), 0.0);
         assert_eq!(default.shape(0.42), 0.42);
-        let toy = ToySettings { min: 0.2, max: 0.8, curve: 2.0 };
+        let toy = ToySettings { min: 0.2, max: 0.8, curve: 2.0, ..Default::default() };
         assert_eq!(toy.shape(0.0), 0.0);
         assert_eq!(toy.shape(0.005), 0.0);
         assert!((toy.shape(0.5) - (0.2 + 0.6 * 0.25)).abs() < 1e-9);
         assert!((toy.shape(1.0) - 0.8).abs() < 1e-9);
         // An inverted range never goes above max.
-        let odd = ToySettings { min: 0.9, max: 0.5, curve: 1.0 };
+        let odd = ToySettings { min: 0.9, max: 0.5, curve: 1.0, ..Default::default() };
         assert!(odd.shape(0.1) <= 0.5);
     }
 

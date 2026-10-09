@@ -1,7 +1,8 @@
 //! Output to Intiface Central (official Buttplug client over websocket).
 //! The task keeps the connection alive, publishes the toy list and applies
 //! the requested per-toy intensity to every actuator able to render it,
-//! rate-limited as described in the spec (safety layer). The player can
+//! rate-limited as described in the spec (safety layer); strokers get the
+//! strokes their planner makes of it (`stroke`). The player can
 //! disconnect it, reconnect it at once and start or stop the scan for toys
 //! (`Control`).
 
@@ -16,6 +17,8 @@ use buttplug_core::message::OutputType;
 use futures::StreamExt;
 use tokio::sync::{mpsc, watch};
 
+use crate::stroke::{Motion, Planner, StrokeSettings};
+
 const RETRY_DELAY: Duration = Duration::from_secs(5);
 /// At most 20 commands per second and per toy.
 const SEND_PERIOD: Duration = Duration::from_millis(50);
@@ -24,6 +27,8 @@ const MIN_CHANGE: f64 = 0.01;
 
 /// Actuator types driven with the intensity (0..1).
 const OUTPUTS: [OutputType; 3] = [OutputType::Vibrate, OutputType::Rotate, OutputType::Oscillate];
+/// Smaller position changes are not sent to toys going to positions at once.
+const MIN_MOVE: f64 = 0.005;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Toy {
@@ -33,6 +38,8 @@ pub struct Toy {
     /// Another toy has the same name: this one got a number, which depends on the
     /// connection order.
     pub numbered: bool,
+    /// It moves to positions (strokes) rather than vibrating.
+    pub stroker: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -47,8 +54,17 @@ pub struct IntifaceStatus {
     pub error: Option<String>,
 }
 
-/// Toy index -> intensity.
-pub type ToyOutputs = BTreeMap<u32, f64>;
+/// What one toy is asked for.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ToyOutput {
+    /// Intensity, 0..1.
+    pub level: f64,
+    /// How a stroker renders it.
+    pub stroke: StrokeSettings,
+}
+
+/// Toy index -> what it is asked for.
+pub type ToyOutputs = BTreeMap<u32, ToyOutput>;
 
 /// What the player asks of the connection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -110,25 +126,25 @@ impl Intiface {
 /// Toys by index. Names identify toys in the routing, so they are unique: the
 /// name given in Intiface Central if any, then " #2", " #3"... for identical toys.
 fn toy_list(client: &ButtplugClient) -> Vec<Toy> {
-    let mut devices: Vec<(u32, String)> = client
+    let mut devices: Vec<(u32, String, bool)> = client
         .devices()
         .into_iter()
-        .map(|(index, d)| (index, d.display_name().clone().unwrap_or_else(|| d.name().to_string())))
+        .map(|(index, d)| (index, d.display_name().clone().unwrap_or_else(|| d.name().to_string()), stroker(&d).is_some()))
         .collect();
-    devices.sort();
+    devices.sort_by_key(|d| d.0);
     unique_names(devices)
 }
 
-fn unique_names(devices: Vec<(u32, String)>) -> Vec<Toy> {
+fn unique_names(devices: Vec<(u32, String, bool)>) -> Vec<Toy> {
     let mut toys: Vec<Toy> = Vec::with_capacity(devices.len());
-    for (index, name) in devices {
+    for (index, name, stroker) in devices {
         let mut unique = name.clone();
         let mut n = 1;
         while toys.iter().any(|t| t.name == unique) {
             n += 1;
             unique = format!("{name} #{n}");
         }
-        toys.push(Toy { index, name: unique, numbered: n > 1 });
+        toys.push(Toy { index, name: unique, numbered: n > 1, stroker });
     }
     toys
 }
@@ -139,7 +155,12 @@ mod tests {
 
     #[test]
     fn identical_toys_get_distinct_names() {
-        let toys = unique_names(vec![(0, "Lush 3".into()), (1, "Nora".into()), (2, "Lush 3".into()), (3, "Lush 3".into())]);
+        let toys = unique_names(vec![
+            (0, "Lush 3".into(), false),
+            (1, "Nora".into(), false),
+            (2, "Lush 3".into(), false),
+            (3, "Lush 3".into(), false),
+        ]);
         let names: Vec<_> = toys.iter().map(|t| t.name.as_str()).collect();
         assert_eq!(names, ["Lush 3", "Nora", "Lush 3 #2", "Lush 3 #3"]);
         assert_eq!(toys[2].index, 2);
@@ -208,13 +229,23 @@ async fn run(
         status.send_replace(current.clone());
 
         let mut sent: BTreeMap<u32, f64> = BTreeMap::new();
+        let mut planners: BTreeMap<u32, Planner> = BTreeMap::new();
+        let started = tokio::time::Instant::now();
         let mut ticker = tokio::time::interval(SEND_PERIOD);
         let end = loop {
             tokio::select! {
                 _ = ticker.tick() => {
                     let wanted = outputs.borrow().clone();
+                    let time = started.elapsed().as_secs_f64();
                     for (index, device) in client.devices() {
-                        let value = wanted.get(&index).copied().unwrap_or(0.0).clamp(0.0, 1.0);
+                        let output = wanted.get(&index).copied();
+                        let value = output.map_or(0.0, |o| o.level).clamp(0.0, 1.0);
+                        if let Some(kind) = stroker(&device) {
+                            let stroke = output.map(|o| o.stroke).unwrap_or_default();
+                            let planner = planners.entry(index).or_default();
+                            apply_stroker(&device, kind, planner, time, value, &stroke, &mut sent).await;
+                            continue;
+                        }
                         let changed = match sent.get(&index).copied() {
                             None => true,
                             Some(last) => (value - last).abs() >= MIN_CHANGE || (value == 0.0 && last != 0.0),
@@ -234,6 +265,7 @@ async fn run(
                     Some(ButtplugClientEvent::DeviceRemoved(device)) => {
                         log::info!("toy removed: {}", device.name());
                         sent.remove(&device.index());
+                        planners.remove(&device.index());
                         current.toys = toy_list(&client);
                     }
                     Some(ButtplugClientEvent::ScanningFinished) => {
@@ -333,5 +365,65 @@ async fn apply_device(device: &ButtplugClientDevice, value: f64) {
         if let Err(e) = device.run_output(&cmd).await {
             log::warn!("{output:?} command refused by {}: {e}", device.name());
         }
+    }
+}
+
+/// How a stroker is sent where to go.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Stroker {
+    /// A position and the time to get there.
+    WithDuration,
+    /// A position to go to at once.
+    Position,
+}
+
+fn stroker(device: &ButtplugClientDevice) -> Option<Stroker> {
+    if device.output_available(OutputType::HwPositionWithDuration) {
+        Some(Stroker::WithDuration)
+    } else if device.output_available(OutputType::Position) {
+        Some(Stroker::Position)
+    } else {
+        None
+    }
+}
+
+/// Sends a stroker the planner's moves (`sent`: the last position sent to a
+/// `Stroker::Position` toy).
+async fn apply_stroker(
+    device: &ButtplugClientDevice,
+    kind: Stroker,
+    planner: &mut Planner,
+    time: f64,
+    value: f64,
+    stroke: &StrokeSettings,
+    sent: &mut BTreeMap<u32, f64>,
+) {
+    let motion = planner.tick(time, value, stroke);
+    let cmd = match (kind, motion) {
+        (_, Some(Motion::Stop)) => {
+            sent.remove(&device.index());
+            if let Err(e) = device.stop().await {
+                log::warn!("stop refused by {}: {e}", device.name());
+            }
+            return;
+        }
+        (Stroker::WithDuration, Some(Motion::Move { position, ms })) => {
+            ClientDeviceOutputCommand::HwPositionWithDuration(ClientDeviceCommandValue::Percent(position), ms)
+        }
+        (Stroker::WithDuration, None) => return,
+        (Stroker::Position, _) => {
+            if value < crate::config::ToySettings::SILENT {
+                return;
+            }
+            let position = planner.position(time);
+            if sent.get(&device.index()).is_some_and(|last| (position - last).abs() < MIN_MOVE) {
+                return;
+            }
+            sent.insert(device.index(), position);
+            ClientDeviceOutputCommand::Position(ClientDeviceCommandValue::Percent(position))
+        }
+    };
+    if let Err(e) = device.run_output(&cmd).await {
+        log::warn!("{:?} command refused by {}: {e}", OutputType::from(&cmd), device.name());
     }
 }
