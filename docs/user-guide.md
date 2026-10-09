@@ -217,6 +217,10 @@ to set some up.
   segments or made of hearts is read by its look: draw the rectangle exactly on it
   (not its icon), take its look on a capture where it is full, then add its
   empty look from captures where it is low.
+  A curved bar (an arc, a ring) is drawn as a **〰 Path** rather than a
+  rectangle: click points along its middle, from the end it fills from to its
+  full end, and set its thickness; only the pixels along it are read, by its
+  colors or its look.
 - **Sound**: which application to listen to (by default, the game showing the
   overlay, otherwise everything the computer plays), shared by the game's
   modes.

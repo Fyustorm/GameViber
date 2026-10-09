@@ -215,6 +215,14 @@ pub struct Zone {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub capture: Option<String>,
     pub direction: Direction,
+    /// Gauge: a curved bar's middle line, as points clicked along it (fractions
+    /// of the screen), from the end it fills from to its full end: the bar is
+    /// read along it rather than across `rect` (then around it, for the
+    /// editor), and `direction` is left out...
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub path: Vec<[f32; 2]>,
+    /// ...across this thickness (a fraction of the screen's height).
+    pub thickness: f32,
     /// Gauge: how far (0..255 per channel) a pixel may be from `color`.
     pub tolerance: f32,
 }
@@ -242,6 +250,8 @@ impl Default for Zone {
             phase: None,
             capture: None,
             direction: Direction::Right,
+            path: Vec::new(),
+            thickness: 0.01,
             tolerance: 60.0,
         }
     }

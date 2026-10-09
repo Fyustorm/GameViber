@@ -8,7 +8,9 @@
 //! wherever it is; a bar filled again over itself in other colors reads
 //! each of them as a tier of its value). A bar whose colors
 //! do not tell (gradients, segments, hearts) is read by its look instead: the
-//! bar full, and empty, along its length, taken from captures.
+//! bar full, and empty, along its length, taken from captures. A curved bar
+//! (an arc, a ring) is read along a path clicked on it rather than across a
+//! rectangle (`Strip`).
 
 use std::collections::BTreeMap;
 
@@ -157,12 +159,12 @@ pub fn weighted_share(zone: &Zone) -> f32 {
 }
 
 /// The color of a bar's filled part: the average of its most colorful pixels.
-pub fn bar_color(frame: &Frame, rect: [f32; 4]) -> [u8; 3] {
-    let (x0, y0, x1, y1) = bounds(frame, rect);
+pub fn bar_color(zone: &Zone, frame: &Frame) -> [u8; 3] {
+    let strip = Strip::new(zone, frame, (0, 0));
     let mut pixels: Vec<([u8; 3], u8)> = Vec::new();
-    for y in y0..y1 {
-        for x in x0..x1 {
-            let p = pixel(frame, x, y);
+    for i in 0..strip.length {
+        for j in 0..strip.across {
+            let p = strip.at(i, j);
             let (max, min) = (*p.iter().max().unwrap(), *p.iter().min().unwrap());
             pixels.push((p, max - min));
         }
@@ -273,14 +275,95 @@ pub fn bar_length(zone: &Zone, frame: &Frame) -> f32 {
 }
 
 /// Where the bar was found in the zone, as fractions of the zone's length
-/// along its axis (left to right, top to bottom): its full part, then its
-/// empty part. For the editor.
+/// along its axis (left to right, top to bottom; along its path from its
+/// first point): its full part, then its empty part. For the editor.
 pub fn bar_extent(zone: &Zone, frame: &Frame) -> ((f32, f32), (f32, f32)) {
     let bar = bar(zone, frame);
     let full = (bar.end - bar.start) * bar.shown;
-    match zone.direction {
-        Direction::Left | Direction::Up => ((bar.end - full, bar.end), (bar.start, bar.end - full)),
-        Direction::Right | Direction::Down => ((bar.start, bar.start + full), (bar.start + full, bar.end)),
+    if reversed(zone) {
+        ((bar.end - full, bar.end), (bar.start, bar.end - full))
+    } else {
+        ((bar.start, bar.start + full), (bar.start + full, bar.end))
+    }
+}
+
+/// The zone is read along its path rather than across its rectangle.
+pub fn has_path(zone: &Zone) -> bool {
+    zone.path.len() >= 2
+}
+
+/// The bar fills from the end of its strip (a rectangle filling to the left or upwards).
+fn reversed(zone: &Zone) -> bool {
+    !has_path(zone) && matches!(zone.direction, Direction::Left | Direction::Up)
+}
+
+/// A zone's pixels as a strip along its bar: `length` steps, `across`
+/// pixels each. A rectangle's steps are its columns, left to right (its rows,
+/// top to bottom, for a bar filling up or down); a path's are along its line
+/// from its first point, each across its thickness. `shift` moves it by whole pixels.
+struct Strip<'a> {
+    frame: &'a Frame,
+    length: usize,
+    across: usize,
+    /// A path's pixels, `across` for each step; empty for a rectangle...
+    points: Vec<(usize, usize)>,
+    /// ...whose left top and axis are these.
+    origin: (usize, usize),
+    horizontal: bool,
+}
+
+impl<'a> Strip<'a> {
+    fn new(zone: &Zone, frame: &'a Frame, shift: (i32, i32)) -> Self {
+        let (w, h) = (frame.width as f32, frame.height as f32);
+        if !has_path(zone) {
+            let [x, y, width, height] = zone.rect;
+            let (x0, y0, x1, y1) = bounds(frame, [x + shift.0 as f32 / w.max(1.0), y + shift.1 as f32 / h.max(1.0), width, height]);
+            let horizontal = horizontal(zone.direction);
+            let (length, across) = if horizontal { (x1 - x0, y1 - y0) } else { (y1 - y0, x1 - x0) };
+            return Self { frame, length, across, points: Vec::new(), origin: (x0, y0), horizontal };
+        }
+        // The path in pixels, without points on top of each other.
+        let mut line: Vec<(f32, f32)> = Vec::new();
+        for p in &zone.path {
+            let q = (p[0] * w + shift.0 as f32, p[1] * h + shift.1 as f32);
+            if line.last().is_none_or(|l| (l.0 - q.0).hypot(l.1 - q.1) >= 0.5) {
+                line.push(q);
+            }
+        }
+        let segments: Vec<f32> = line.windows(2).map(|s| (s[1].0 - s[0].0).hypot(s[1].1 - s[0].1)).collect();
+        let total: f32 = segments.iter().sum();
+        let length = (total.round() as usize).max(2);
+        let across = ((zone.thickness * h).round() as usize).max(1);
+        let mut points = Vec::with_capacity(length * across);
+        let (mut k, mut before) = (0, 0.0);
+        for i in 0..length {
+            let at = (i as f32 + 0.5) / length as f32 * total;
+            while k + 1 < segments.len() && at > before + segments[k] {
+                before += segments[k];
+                k += 1;
+            }
+            let (a, b, len) = (line[k.min(line.len() - 1)], line[(k + 1).min(line.len() - 1)], segments.get(k).copied().unwrap_or(0.0));
+            let (dx, dy) = if len > 0.0 { ((b.0 - a.0) / len, (b.1 - a.1) / len) } else { (1.0, 0.0) };
+            let t = if len > 0.0 { ((at - before) / len).clamp(0.0, 1.0) } else { 0.0 };
+            let (px, py) = (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t);
+            for j in 0..across {
+                // Across the line, its middle on the path.
+                let off = j as f32 - (across - 1) as f32 / 2.0;
+                let (x, y) = (px - dy * off, py + dx * off);
+                points.push((x.round().clamp(0.0, w - 1.0) as usize, y.round().clamp(0.0, h - 1.0) as usize));
+            }
+        }
+        Self { frame, length, across, points, origin: (0, 0), horizontal: true }
+    }
+
+    /// The pixel of step `i`, `j` across.
+    fn at(&self, i: usize, j: usize) -> [u8; 3] {
+        if !self.points.is_empty() {
+            let (x, y) = self.points[i * self.across + j];
+            return pixel(self.frame, x, y);
+        }
+        let (x0, y0) = self.origin;
+        if self.horizontal { pixel(self.frame, x0 + i, y0 + j) } else { pixel(self.frame, x0 + j, y0 + i) }
     }
 }
 
@@ -321,7 +404,7 @@ fn bar(zone: &Zone, frame: &Frame) -> Bar {
     let parts = columns(zone, frame);
     let len = parts.len().max(1) as f32;
     // Which end the bar fills from: its full part is read from there.
-    let reversed = matches!(zone.direction, Direction::Left | Direction::Up);
+    let reversed = reversed(zone);
     if zone.empty_color.is_some() {
         // The longest run of bar columns, one stray column allowed inside.
         let (mut best, mut best_start) = (0, 0);
@@ -371,10 +454,9 @@ fn tiered_fill(zone: &Zone, parts: &[Part]) -> (f32, f32) {
 /// lighter line over a darker one, and the color was picked on one), empty
 /// when most of them are near the empty color.
 fn columns(zone: &Zone, frame: &Frame) -> Vec<Part> {
-    let (x0, y0, x1, y1) = bounds(frame, zone.rect);
-    let horizontal = matches!(zone.direction, Direction::Right | Direction::Left);
-    let (length, across) = if horizontal { (x1 - x0, y1 - y0) } else { (y1 - y0, x1 - x0) };
-    let at = |i: usize, j: usize| if horizontal { pixel(frame, x0 + i, y0 + j) } else { pixel(frame, x0 + j, y0 + i) };
+    let strip = Strip::new(zone, frame, (0, 0));
+    let (length, across) = (strip.length, strip.across);
+    let at = |i: usize, j: usize| strip.at(i, j);
     let distance = |p: [u8; 3], color: [u8; 3]| (0..3).map(|c| (p[c] as f32 - color[c] as f32).powi(2)).sum::<f32>().sqrt();
     // Distances of a pixel to the nearest full and empty colors (a bar may
     // have several shades), and the tier of the full one.
@@ -417,7 +499,7 @@ fn columns(zone: &Zone, frame: &Frame) -> Vec<Part> {
             }
         })
         .collect();
-    if matches!(zone.direction, Direction::Left | Direction::Up) {
+    if reversed(zone) {
         parts.reverse();
     }
     parts
@@ -433,10 +515,10 @@ fn horizontal(direction: Direction) -> bool {
 }
 
 /// The zone's colors on the look grid: `LOOK_ACROSS` cells for each step
-/// along it (left to right, or top to bottom), each the average of its pixels.
-fn look_cells(frame: &Frame, rect: [f32; 4], horizontal: bool) -> Vec<[f32; 3]> {
-    let (x0, y0, x1, y1) = bounds(frame, rect);
-    let (length, across) = if horizontal { (x1 - x0, y1 - y0) } else { (y1 - y0, x1 - x0) };
+/// along its strip, each the average of its pixels.
+fn look_cells(zone: &Zone, frame: &Frame, shift: (i32, i32)) -> Vec<[f32; 3]> {
+    let strip = Strip::new(zone, frame, shift);
+    let (length, across) = (strip.length, strip.across);
     // The pixels of cell `k` of `cells` over `n` pixels: at least one.
     let span = |k: usize, cells: usize, n: usize| {
         let start = (k * n / cells).min(n - 1);
@@ -449,7 +531,7 @@ fn look_cells(frame: &Frame, rect: [f32; 4], horizontal: bool) -> Vec<[f32; 3]> 
             let mut count = 0.0;
             for a in span(i, LOOK_LENGTH, length) {
                 for b in span(j, LOOK_ACROSS, across) {
-                    let p = if horizontal { pixel(frame, x0 + a, y0 + b) } else { pixel(frame, x0 + b, y0 + a) };
+                    let p = strip.at(a, b);
                     (0..3).for_each(|c| sum[c] += p[c] as f32);
                     count += 1.0;
                 }
@@ -461,8 +543,12 @@ fn look_cells(frame: &Frame, rect: [f32; 4], horizontal: bool) -> Vec<[f32; 3]> 
 }
 
 /// The zone's look on `frame` (taken on a capture where the bar is full).
-pub fn look(frame: &Frame, rect: [f32; 4], direction: Direction) -> Vec<[u8; 3]> {
-    look_cells(frame, rect, horizontal(direction)).iter().map(|c| c.map(|v| v.round() as u8)).collect()
+pub fn look(zone: &Zone, frame: &Frame) -> Vec<[u8; 3]> {
+    look_at(zone, frame, (0, 0))
+}
+
+fn look_at(zone: &Zone, frame: &Frame, shift: (i32, i32)) -> Vec<[u8; 3]> {
+    look_cells(zone, frame, shift).iter().map(|c| c.map(|v| v.round() as u8)).collect()
 }
 
 /// The zone's empty look with what `frame` shows of the bar empty added: the
@@ -473,10 +559,10 @@ pub fn add_empty_look(zone: &Zone, frame: &Frame) -> Vec<Option<[u8; 3]>> {
     if !has_look(zone) {
         return empty;
     }
-    let (fill, _, rect) = look_fill(zone, frame);
-    let cells = look(frame, rect, zone.direction);
+    let (fill, _, shift) = look_fill(zone, frame);
+    let cells = look_at(zone, frame, shift);
     let full = (fill * LOOK_LENGTH as f32).round() as usize;
-    let reversed = matches!(zone.direction, Direction::Left | Direction::Up);
+    let reversed = reversed(zone);
     for k in (if full > 0 { full + 1 } else { 0 })..LOOK_LENGTH {
         let i = if reversed { LOOK_LENGTH - 1 - k } else { k };
         for j in 0..LOOK_ACROSS {
@@ -499,24 +585,19 @@ pub fn empty_seen(zone: &Zone) -> f32 {
 /// returns how far the columns are, on average, from the look they were
 /// given (those not seen empty left out): too far (`LOOK_FOUND`), the bar
 /// is not on screen.
-fn look_fill(zone: &Zone, frame: &Frame) -> (f32, f32, [f32; 4]) {
+fn look_fill(zone: &Zone, frame: &Frame) -> (f32, f32, (i32, i32)) {
     // The bar may have moved a pixel or two since its look was taken: read where it fits best (also returned).
-    let (w, h) = (frame.width.max(1) as f32, frame.height.max(1) as f32);
-    let [x, y, width, height] = zone.rect;
     let shifts = (-LOOK_SHIFT..=LOOK_SHIFT).flat_map(|dx| (-LOOK_SHIFT..=LOOK_SHIFT).map(move |dy| (dx, dy)));
     shifts
-        .map(|(dx, dy)| {
-            let rect = [x + dx as f32 / w, y + dy as f32 / h, width, height];
-            (look_fill_at(zone, frame, rect), rect)
-        })
+        .map(|shift| (look_fill_at(zone, frame, shift), shift))
         .min_by(|a, b| a.0 .2.total_cmp(&b.0 .2))
-        .map(|((fill, far, _), rect)| (fill, far, rect))
-        .unwrap_or((0.0, f32::INFINITY, zone.rect))
+        .map(|((fill, far, _), shift)| (fill, far, shift))
+        .unwrap_or((0.0, f32::INFINITY, (0, 0)))
 }
 
-/// `look_fill` in `rect`, and what the boundary found costs (to compare places).
-fn look_fill_at(zone: &Zone, frame: &Frame, rect: [f32; 4]) -> (f32, f32, f32) {
-    let cells = look_cells(frame, rect, horizontal(zone.direction));
+/// `look_fill` with the strip moved by `shift`, and what the boundary found costs (to compare places).
+fn look_fill_at(zone: &Zone, frame: &Frame, shift: (i32, i32)) -> (f32, f32, f32) {
+    let cells = look_cells(zone, frame, shift);
     let cap = 2.0 * zone.tolerance;
     let distance = |p: [f32; 3], c: [u8; 3]| (0..3).map(|k| (p[k] - c[k] as f32).powi(2)).sum::<f32>().sqrt();
     let mut costs: Vec<(f32, Option<f32>)> = (0..LOOK_LENGTH)
@@ -529,7 +610,7 @@ fn look_fill_at(zone: &Zone, frame: &Frame, rect: [f32; 4]) -> (f32, f32, f32) {
             (mean(&|k| zone.full_look.get(k).copied()).unwrap_or(cap), mean(&|k| zone.empty_look.get(k).copied().flatten()))
         })
         .collect();
-    if matches!(zone.direction, Direction::Left | Direction::Up) {
+    if reversed(zone) {
         costs.reverse();
     }
     // Full up to `k`, empty after: the `k` that costs least.
@@ -971,7 +1052,7 @@ mod tests {
         let full = move |x: u32, _| if gap(x) { [25, 25, 35] } else { [(220 - (x - 16) * 2) as u8, (40 + (x - 16) * 2) as u8, 40] };
         let empty = move |x: u32, _| if gap(x) { [25, 25, 35] } else { [30, 40, 90] };
         let bar = look_bar(rect, false, full, empty);
-        let mut zone = Zone { indicator: "hp".into(), kind: IndicatorKind::Gauge, rect, full_look: look(&bar(1.0), rect, Direction::Right), ..Zone::default() };
+        let mut zone = Zone { indicator: "hp".into(), kind: IndicatorKind::Gauge, rect, full_look: look(&Zone { rect, ..Zone::default() }, &bar(1.0)), ..Zone::default() };
         assert!(has_look(&zone));
         for level in [1.0, 0.75, 0.5, 0.25, 0.0] {
             let got = measure(&zone, &bar(level)).unwrap();
@@ -1007,7 +1088,7 @@ mod tests {
         let full = move |x, y| if inside(x, y) { [220, 30, 40] } else { [25, 25, 35] };
         let empty = move |x, y| if inside(x, y) { [50, 50, 50] } else { [25, 25, 35] };
         let bar = look_bar(rect, false, full, empty);
-        let mut zone = Zone { indicator: "hp".into(), kind: IndicatorKind::Gauge, rect, full_look: look(&bar(1.0), rect, Direction::Right), ..Zone::default() };
+        let mut zone = Zone { indicator: "hp".into(), kind: IndicatorKind::Gauge, rect, full_look: look(&Zone { rect, ..Zone::default() }, &bar(1.0)), ..Zone::default() };
         // Without the empty look, the edges of an empty heart (mostly
         // background) look full too: the reading is within a heart.
         for level in [1.0, 0.75, 0.45, 0.1] {
@@ -1023,6 +1104,67 @@ mod tests {
         let left = Zone { direction: Direction::Left, ..zone.clone() };
         let got = measure(&left, &look_bar(rect, true, full, empty)(0.3)).unwrap();
         assert!((got - 0.3).abs() < 0.04, "{got}");
+    }
+
+    /// The Witcher 3's stamina: an arc 3 px thick, filling from its left end,
+    /// over scenery that crosses the rectangle around it.
+    #[test]
+    fn curved_bars_are_read_along_their_path() {
+        let (yellow, track) = ([230, 190, 40], [70, 30, 30]);
+        // An arc of a circle around (80, 100), from 200° to 340°.
+        let (from, to) = (200f32.to_radians(), 340f32.to_radians());
+        let bar = |level: f32| {
+            frame(move |x, y| {
+                let (dx, dy) = (x as f32 - 80.0, y as f32 - 100.0);
+                let mut angle = dy.atan2(dx);
+                if angle < 0.0 {
+                    angle += std::f32::consts::TAU;
+                }
+                if ((dx * dx + dy * dy).sqrt() - 60.0).abs() <= 1.5 && (from..=to).contains(&angle) {
+                    if angle - from < level * (to - from) { yellow } else { track }
+                } else if (x / 3 + y / 5) % 4 == 0 {
+                    [225, 185, 45]
+                } else {
+                    [40, 50, 30]
+                }
+            })
+        };
+        let path: Vec<[f32; 2]> = (0..=14)
+            .map(|k| {
+                let a = from + (to - from) * k as f32 / 14.0;
+                [(80.0 + 60.0 * a.cos()) / 160.0, (100.0 + 60.0 * a.sin()) / 90.0]
+            })
+            .collect();
+        let zone = Zone {
+            indicator: "stamina".into(),
+            kind: IndicatorKind::Gauge,
+            rect: [20.0 / 160.0, 35.0 / 90.0, 120.0 / 160.0, 50.0 / 90.0],
+            path,
+            thickness: 3.0 / 90.0,
+            color: yellow,
+            empty_color: Some(track),
+            tolerance: 40.0,
+            ..Zone::default()
+        };
+        assert!(has_path(&zone));
+        let zone = Zone { length: bar_length(&zone, &bar(0.5)), ..zone };
+        assert!(zone.length > 0.9, "{}", zone.length);
+        for level in [1.0, 0.8, 0.5, 0.2, 0.0] {
+            let got = measure(&zone, &bar(level)).unwrap();
+            assert!((got - level).abs() < 0.05, "colors, {level}: {got}");
+        }
+        // Its middle line lost: unknown.
+        assert_eq!(measure(&zone, &frame(|_, _| [20, 80, 120])), None);
+        // Along the path, the scenery's yellow stripes are not the bar; across the rectangle they are.
+        let across = Zone { path: Vec::new(), empty_color: None, ..zone.clone() };
+        assert!(measure(&across, &bar(0.0)).unwrap() > 0.2);
+        // Read by its look as well.
+        let mut by_look = Zone { full_look: look(&zone, &bar(1.0)), empty_color: None, ..zone };
+        by_look.empty_look = add_empty_look(&by_look, &bar(0.0));
+        for level in [1.0, 0.7, 0.3, 0.0] {
+            let got = measure(&by_look, &bar(level)).unwrap();
+            assert!((got - level).abs() < 0.05, "look, {level}: {got}");
+        }
     }
 
     #[test]
@@ -1043,7 +1185,7 @@ mod tests {
             })
         };
         let rect = [20.0 / 160.0, 10.0 / 90.0, 80.0 / 160.0, 6.0 / 90.0];
-        let color = bar_color(&bar(1.0), rect);
+        let color = bar_color(&Zone { kind: IndicatorKind::Gauge, rect, ..Zone::default() }, &bar(1.0));
         assert!(color[0] > 180 && color[1] < 60, "{color:?}");
         let zone = Zone { indicator: "hp".into(), kind: IndicatorKind::Gauge, rect, color, ..Zone::default() };
         for level in [1.0, 0.75, 0.3, 0.0] {

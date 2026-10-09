@@ -245,8 +245,11 @@ impl State {
         let base = d.editing.and_then(|i| inputs.zones.get(i)).or(first).cloned().unwrap_or_default();
         let drawn = d.drawn_on.as_ref().and_then(|f| self.captures.get(f)).map(|(frame, _)| frame);
         let phase = d.drawn_on.as_ref().and_then(|f| inputs.captures.iter().find(|c| c.file == *f)).map(|c| c.phase.clone());
+        let shape = d.shape()?;
         let mut zone = Zone {
             rect,
+            path: shape.path,
+            thickness: shape.thickness,
             threshold: d.threshold,
             phase: if drawn.is_some() { phase.filter(|s| !s.is_empty()) } else { base.phase.clone() },
             capture: if drawn.is_some() { d.drawn_on.clone() } else { base.capture.clone() },
@@ -270,11 +273,11 @@ impl State {
                 (zone.shown_on, zone.hidden_on) = (Vec::new(), Vec::new());
                 if d.full.is_empty() {
                     zone.color = match drawn {
-                        Some(frame) => indicators::bar_color(frame, rect),
+                        Some(frame) => indicators::bar_color(&zone, frame),
                         None => base.color,
                     };
                 }
-                match d.look.as_ref().filter(|l| d.by_look && l.fits(rect, zone.direction)) {
+                match d.look.as_ref().filter(|l| d.by_look && l.fits(d)) {
                     Some(look) => (zone.full_look, zone.empty_look) = (look.full.clone(), look.empty.clone()),
                     None => (zone.full_look, zone.empty_look) = (Vec::new(), Vec::new()),
                 }
@@ -315,7 +318,7 @@ impl State {
             Some("Draw it on the image.")
         } else if d.kind == IndicatorKind::Visibility && d.editing.is_none() && d.rect().is_some() && d.drawn_on.is_none() {
             Some("Draw the rectangle on a capture that shows the element.")
-        } else if d.kind == IndicatorKind::Gauge && d.by_look && placing && !d.rect().is_some_and(|r| d.look.as_ref().is_some_and(|l| l.fits(r, d.direction))) {
+        } else if d.kind == IndicatorKind::Gauge && d.by_look && placing && !d.look.as_ref().is_some_and(|l| l.fits(d)) {
             Some("Take the bar's look full, on a capture where it is full.")
         } else if !valid_name(&d.name) {
             Some("Name: letters, digits and _, starting with a letter.")
@@ -477,23 +480,38 @@ struct Draft {
     /// The captures marked as showing it, and as not (`Zone::shown_on`, `hidden_on`).
     shown_on: Vec<String>,
     hidden_on: Vec<String>,
+    /// A gauge drawn as a path along a curved bar (`Zone::path`) rather than a
+    /// rectangle: clicks on the image add its points...
+    tracing: bool,
+    path: Vec<Pos2>,
+    thickness: f32,
+    /// ...and the point being dragged.
+    point: Option<usize>,
     /// The draft as it was opened, to tell whether it changed.
     opened: Option<Box<Draft>>,
 }
 
-/// A bar's look (`Zone::full_look`, `empty_look`), and the rectangle and
-/// axis it was taken with: once they change, it must be taken again.
+/// A bar's look (`Zone::full_look`, `empty_look`), and the zone it was
+/// taken with (its rectangle and axis, or its path): once it changes, it must
+/// be taken again.
 #[derive(Clone, PartialEq)]
 struct Look {
-    rect: [f32; 4],
-    horizontal: bool,
+    zone: Zone,
     full: Vec<[u8; 3]>,
     empty: Vec<Option<[u8; 3]>>,
 }
 
 impl Look {
-    fn fits(&self, rect: [f32; 4], direction: Direction) -> bool {
-        self.horizontal == horizontal(direction) && self.rect.iter().zip(rect).all(|(a, b)| (a - b).abs() < 1e-5)
+    fn fits(&self, draft: &Draft) -> bool {
+        let Some(now) = draft.shape() else { return false };
+        let close = |a: &[f32], b: &[f32]| a.len() == b.len() && a.iter().zip(b).all(|(a, b)| (a - b).abs() < 1e-5);
+        let points = |z: &Zone| z.path.iter().flatten().copied().collect::<Vec<f32>>();
+        let z = &self.zone;
+        if indicators::has_path(&now) {
+            close(&points(z), &points(&now)) && (z.thickness - now.thickness).abs() < 1e-6
+        } else {
+            !indicators::has_path(z) && horizontal(z.direction) == horizontal(now.direction) && close(&z.rect, &now.rect)
+        }
     }
 }
 
@@ -527,6 +545,10 @@ impl Default for Draft {
             weights: None,
             shown_on: Vec::new(),
             hidden_on: Vec::new(),
+            tracing: false,
+            path: Vec::new(),
+            thickness: Zone::default().thickness,
+            point: None,
             opened: None,
         }
     }
@@ -554,6 +576,8 @@ impl Draft {
             || self.weights != o.weights
             || self.shown_on != o.shown_on
             || self.hidden_on != o.hidden_on
+            || self.tracing != o.tracing
+            || (self.tracing && (self.path != o.path || self.thickness != o.thickness))
             || self.threshold != o.threshold
             || self.start != o.start
             || self.end != o.end
@@ -593,34 +617,70 @@ impl Draft {
         self.picking = None;
         self.by_look = indicators::has_look(zone);
         self.look = self.by_look.then(|| Look {
-            rect: zone.rect,
-            horizontal: horizontal(zone.direction),
+            zone: Zone { kind: IndicatorKind::Gauge, rect: zone.rect, direction: zone.direction, path: zone.path.clone(), thickness: zone.thickness, ..Zone::default() },
             full: zone.full_look.clone(),
             empty: zone.empty_look.clone(),
         });
         self.weights = indicators::has_weights(zone).then(|| (zone.rect, zone.weights.clone()));
         (self.shown_on, self.hidden_on) = (zone.shown_on.clone(), zone.hidden_on.clone());
+        self.tracing = indicators::has_path(zone);
+        self.path = zone.path.iter().map(|p| Pos2::new(p[0], p[1])).collect();
+        self.thickness = zone.thickness;
+        self.point = None;
         // The zone as it is saved is where its changes count from.
         if let Some(o) = &mut self.opened {
             (o.editing, o.start, o.end, o.threshold, o.drawn_on) = (self.editing, self.start, self.end, self.threshold, None);
             (o.by_look, o.look, o.weights) = (self.by_look, self.look.clone(), self.weights.clone());
             (o.shown_on, o.hidden_on) = (self.shown_on.clone(), self.hidden_on.clone());
+            (o.tracing, o.path, o.thickness) = (self.tracing, self.path.clone(), self.thickness);
         }
     }
 
-    /// Moves the rectangle by `delta` (fractions of the image), inside it.
+    /// Moves the rectangle (or the path) by `delta` (fractions of the image), inside it.
     fn nudge(&mut self, delta: Vec2) {
         let Some([x, y, w, h]) = self.rect() else { return };
         let dx = delta.x.clamp(-x, 1.0 - x - w);
         let dy = delta.y.clamp(-y, 1.0 - y - h);
+        if self.traced() {
+            self.path.iter_mut().for_each(|p| *p += Vec2::new(dx, dy));
+            return;
+        }
         self.start = Some(Pos2::new(x + dx, y + dy));
         self.end = Some(Pos2::new(x + dx + w, y + dy + h));
     }
 
+    /// A gauge drawn as a path.
+    fn traced(&self) -> bool {
+        self.tracing && self.kind == IndicatorKind::Gauge
+    }
+
+    /// The zone's rectangle: around its path, for a path.
     fn rect(&self) -> Option<[f32; 4]> {
+        if self.traced() {
+            if self.path.len() < 2 {
+                return None;
+            }
+            let pad = self.thickness / 2.0;
+            let (x0, x1) = self.path.iter().fold((1f32, 0f32), |(a, b), p| (a.min(p.x), b.max(p.x)));
+            let (y0, y1) = self.path.iter().fold((1f32, 0f32), |(a, b), p| (a.min(p.y), b.max(p.y)));
+            let (x0, y0, x1, y1) = ((x0 - pad).max(0.0), (y0 - pad).max(0.0), (x1 + pad).min(1.0), (y1 + pad).min(1.0));
+            return Some([x0, y0, (x1 - x0).max(0.003), (y1 - y0).max(0.003)]);
+        }
         let (a, b) = (self.start?, self.end?);
         let (x0, y0, x1, y1) = (a.x.min(b.x), a.y.min(b.y), a.x.max(b.x), a.y.max(b.y));
         (x1 - x0 > 0.002 && y1 - y0 > 0.002).then_some([x0, y0, x1 - x0, y1 - y0])
+    }
+
+    /// The zone's shape (rectangle, axis, path) as drawn; None until it is.
+    fn shape(&self) -> Option<Zone> {
+        Some(Zone {
+            kind: self.kind,
+            rect: self.rect()?,
+            direction: self.direction,
+            path: if self.traced() { self.path.iter().map(|p| [p.x, p.y]).collect() } else { Vec::new() },
+            thickness: self.thickness,
+            ..Zone::default()
+        })
     }
 
     /// Follows a drag to `p` (a fraction of the image).
@@ -659,6 +719,35 @@ fn color_image(frame: &Frame) -> egui::ColorImage {
 
 fn image_size(width: f32, frame: &Frame) -> egui::Vec2 {
     egui::vec2(width, width * frame.height as f32 / frame.width.max(1) as f32)
+}
+
+/// A point of an image (fractions of it) drawn in `area`.
+fn on_image_point(area: Rect, p: Pos2) -> Pos2 {
+    area.min + egui::vec2(p.x * area.width(), p.y * area.height())
+}
+
+/// The part of the line through `points` from `from` to `to` (fractions of
+/// its length), moved `beside` pixels to its side.
+fn along(points: &[Pos2], from: f32, to: f32, beside: f32) -> Vec<Pos2> {
+    let lengths: Vec<f32> = points.windows(2).map(|s| (s[1] - s[0]).length()).collect();
+    let total: f32 = lengths.iter().sum();
+    let (from, to) = (from.clamp(0.0, 1.0) * total, to.clamp(0.0, 1.0) * total);
+    let mut out = Vec::new();
+    let mut before = 0.0;
+    for (k, &len) in lengths.iter().enumerate() {
+        let (a, b) = (points[k], points[k + 1]);
+        let (start, end) = (from.max(before), to.min(before + len));
+        if len > 0.0 && start <= end {
+            let side = Vec2::new(-(b - a).y, (b - a).x) / len * beside;
+            let at = |d: f32| a + (b - a) * ((d - before) / len) + side;
+            if out.is_empty() {
+                out.push(at(start));
+            }
+            out.push(at(end));
+        }
+        before += len;
+    }
+    out
 }
 
 /// A zone's rectangle on an image drawn in `area`.
@@ -1361,6 +1450,36 @@ impl App {
                     }
                     draft.picking = None;
                 }
+            } else if can_draw && draft.traced() {
+                // A curved bar's path: a click adds a point at its end, a drag moves one, a right-click removes one.
+                let near = |draft: &Draft, p: Pos2| draft.path.iter().position(|q| (on_image_point(area, *q) - p).length() <= HANDLE + 2.0);
+                if let Some(p) = hover.filter(|_| draft.point.is_none()) {
+                    ui.ctx().set_cursor_icon(if near(draft, p).is_some() { egui::CursorIcon::Grab } else { egui::CursorIcon::Crosshair });
+                }
+                if response.drag_started() {
+                    draft.point = ui.input(|i| i.pointer.press_origin()).or(response.interact_pointer_pos()).and_then(|o| near(draft, o));
+                }
+                if let Some(k) = draft.point {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                    if let Some(p) = response.interact_pointer_pos().filter(|_| response.dragged()) {
+                        draft.path[k] = to_fraction(p);
+                        draft.drawn_on = Some(file.to_owned());
+                    }
+                }
+                if response.drag_stopped() {
+                    draft.point = None;
+                }
+                if let Some(p) = response.interact_pointer_pos() {
+                    if response.clicked() && near(draft, p).is_none() {
+                        draft.path.push(to_fraction(p));
+                        draft.drawn_on = Some(file.to_owned());
+                    } else if response.secondary_clicked() {
+                        if let Some(k) = near(draft, p) {
+                            draft.path.remove(k);
+                            draft.drawn_on = Some(file.to_owned());
+                        }
+                    }
+                }
             } else if can_draw {
                 let grab_at = |draft: &Draft, p: Pos2| match draft.rect() {
                     Some(rect) => Grab::at(on_image(area, rect), p),
@@ -1409,8 +1528,8 @@ impl App {
                     draft.grab = None;
                 }
             }
-            // A click on another indicator's zone, or one of this indicator, opens it.
-            if response.clicked() && draft.picking.is_none() {
+            // A click on another indicator's zone, or one of this indicator, opens it (not while clicking a path).
+            if response.clicked() && draft.picking.is_none() && !(can_draw && draft.traced()) {
                 if let Some(p) = response.interact_pointer_pos() {
                     let hit = inputs
                         .zones
@@ -1444,17 +1563,44 @@ impl App {
                     (false, false) => Stroke::new(1.0, MUTED.gamma_multiply(0.7)),
                 };
                 ui.painter().rect_stroke(r, 2.0, stroke, StrokeKind::Outside);
+                if indicators::has_path(zone) {
+                    let points = zone.path.iter().map(|p| on_image_point(area, Pos2::new(p[0], p[1]))).collect();
+                    ui.painter().add(egui::Shape::line(points, stroke));
+                }
                 if hovered {
                     let (text, color) = reading_here(zone, &inputs.zones, frame);
                     tag(ui, r.left_top() - Vec2::new(0.0, 4.0), egui::Align2::LEFT_BOTTOM, format!("{} · {text} · click to edit", zone.indicator), color);
                 }
             }
+            // A path being clicked: its line as thick as it reads, its points (its first one ringed).
+            if draft.traced() && st.show != Show::Nothing {
+                let points: Vec<Pos2> = draft.path.iter().map(|p| on_image_point(area, *p)).collect();
+                if points.len() >= 2 {
+                    let width = (draft.thickness * area.height()).max(1.0);
+                    ui.painter().add(egui::Shape::line(points.clone(), Stroke::new(width, ACCENT.gamma_multiply(0.3))));
+                    ui.painter().add(egui::Shape::line(points.clone(), Stroke::new(1.0, ACCENT)));
+                }
+                for (k, p) in points.iter().enumerate() {
+                    ui.painter().circle_filled(*p, 3.5, ACCENT);
+                    if k == 0 {
+                        ui.painter().circle_stroke(*p, 6.0, Stroke::new(1.5, ACCENT));
+                    }
+                }
+                if let (Some(first), Some(last)) = (points.first(), points.last().filter(|_| points.len() >= 2)) {
+                    tag(ui, *first + Vec2::new(0.0, 8.0), egui::Align2::CENTER_TOP, "0%".to_owned(), ACCENT_TEXT);
+                    tag(ui, *last + Vec2::new(0.0, 8.0), egui::Align2::CENTER_TOP, "100%".to_owned(), ACCENT_TEXT);
+                }
+            }
             if let Some(rect) = draft.rect().filter(|_| st.show != Show::Nothing) {
                 let r = on_image(area, rect);
-                ui.painter().rect_stroke(r, 1.0, Stroke::new(2.0, ACCENT), StrokeKind::Outside);
-                // Handles at the corners.
-                for corner in [r.left_top(), r.right_top(), r.left_bottom(), r.right_bottom()] {
-                    ui.painter().rect_filled(Rect::from_center_size(corner, Vec2::splat(5.0)), 1.0, ACCENT);
+                if draft.traced() {
+                    ui.painter().rect_stroke(r, 1.0, Stroke::new(1.0, ACCENT.gamma_multiply(0.5)), StrokeKind::Outside);
+                } else {
+                    ui.painter().rect_stroke(r, 1.0, Stroke::new(2.0, ACCENT), StrokeKind::Outside);
+                    // Handles at the corners.
+                    for corner in [r.left_top(), r.right_top(), r.left_bottom(), r.right_bottom()] {
+                        ui.painter().rect_filled(Rect::from_center_size(corner, Vec2::splat(5.0)), 1.0, ACCENT);
+                    }
                 }
                 if let Some(zone) = &tested {
                     let (text, color) = reading_here(zone, &inputs.zones, frame);
@@ -1469,7 +1615,14 @@ impl App {
                         }
                     }
                     // The bar as found: its full part green, its empty part red, along the indicator.
-                    if zone.kind == IndicatorKind::Gauge && (zone.empty_color.is_some() || indicators::has_look(zone)) {
+                    if zone.kind == IndicatorKind::Gauge && indicators::has_path(zone) && (zone.empty_color.is_some() || indicators::has_look(zone)) {
+                        // Along the path, beside it.
+                        let ((a, b), (c, d)) = indicators::bar_extent(zone, frame);
+                        let points: Vec<Pos2> = zone.path.iter().map(|p| on_image_point(area, Pos2::new(p[0], p[1]))).collect();
+                        let beside = (zone.thickness * area.height()).max(1.0) / 2.0 + 3.0;
+                        ui.painter().add(egui::Shape::line(along(&points, a, b, beside), Stroke::new(3.0, OK)));
+                        ui.painter().add(egui::Shape::line(along(&points, c, d, beside), Stroke::new(3.0, DANGER)));
+                    } else if zone.kind == IndicatorKind::Gauge && (zone.empty_color.is_some() || indicators::has_look(zone)) {
                         let ((a, b), (c, d)) = indicators::bar_extent(zone, frame);
                         let horizontal = matches!(zone.direction, Direction::Right | Direction::Left);
                         let segment = |from: f32, to: f32| {
@@ -1520,6 +1673,10 @@ impl App {
         }
 
         let hint = match (draft.picking, draft.rect()) {
+            (None, _) if can_draw && draft.traced() => {
+                "Click along the middle of the bar, from the end it fills from (0%) to its full end (100%); drag a point to move it, \
+                 right-click one to remove it; arrow keys nudge it all."
+            }
             (Some(Pick::Full), _) => "Click the bar's full part on the image (Esc: stop).",
             (Some(Pick::Empty), _) => "Click the bar's empty part on the image (Esc: stop).",
             (Some(Pick::Tier(_)), _) => "Click the bar's part in this tier's color on the image (Esc: stop).",
@@ -1530,6 +1687,40 @@ impl App {
             (None, Some(_)) => "Drag its edges to resize it, its inside to move it; arrow keys nudge it (Shift: 10 px). Esc leaves it.",
         };
         ui.label(muted(hint).size(12.0));
+        // A gauge's zone: a rectangle, or a path along a curved bar.
+        if can_draw && draft.kind == IndicatorKind::Gauge {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new("Shape").strong());
+                let rectangle = ui.selectable_label(!draft.traced(), "▭ Rectangle").on_hover_text("For a straight bar");
+                let path = ui.selectable_label(draft.traced(), "〰 Path").on_hover_text(
+                    "For a curved bar (an arc, a ring): click points along its middle, from the end it fills from to its full end. \
+                     Only the pixels along the path are read, not the scenery around it.",
+                );
+                if rectangle.clicked() && draft.traced() {
+                    draft.tracing = false;
+                    draft.drawn_on = Some(file.to_owned());
+                }
+                if path.clicked() && !draft.traced() {
+                    draft.tracing = true;
+                    draft.drawn_on = Some(file.to_owned());
+                }
+                if draft.traced() {
+                    let height = frame.height.max(1) as f32;
+                    let mut px = (draft.thickness * height).round();
+                    if ui.add(egui::Slider::new(&mut px, 1.0..=20.0).step_by(1.0).text("thickness (px)")).on_hover_text("The bar's thickness on the captures").changed() {
+                        draft.thickness = px / height;
+                        draft.drawn_on = Some(file.to_owned());
+                    }
+                    if draft.path.len() >= 2 && ui.small_button("⇄ Reverse").on_hover_text("It fills from the other end").clicked() {
+                        draft.path.reverse();
+                        draft.drawn_on = Some(file.to_owned());
+                    }
+                    if !draft.path.is_empty() && ui.small_button("Clear").on_hover_text("Click the path again").clicked() {
+                        draft.path.clear();
+                    }
+                }
+            });
+        }
 
         // The indicator's settings, shared by its zones.
         if can_draw {
@@ -1607,13 +1798,18 @@ impl App {
             }
             if draft.kind == IndicatorKind::Gauge && draft.by_look {
                 let rect = draft.rect();
-                let fits = |draft: &Draft| rect.is_some_and(|r| draft.look.as_ref().is_some_and(|l| l.fits(r, draft.direction)));
+                let fits = |draft: &Draft| draft.look.as_ref().is_some_and(|l| l.fits(draft));
                 let moved = rect.is_some() && draft.look.is_some() && !fits(draft);
                 let seen = draft.look.as_ref().filter(|_| fits(draft)).map_or(0.0, |l| indicators::empty_seen(&Zone { empty_look: l.empty.clone(), ..Zone::default() }));
                 // 1. The rectangle.
                 step(ui, 1, rect.is_some(), |ui| {
-                    ui.label("Draw the rectangle exactly on the bar's track, from its empty end to its full end, and set which way it fills. \
-                              Leave out its icon (a heart before the bar) and its frame.");
+                    if draft.traced() {
+                        ui.label("Click the path along the middle of the bar's track, from its empty end to its full end, its thickness \
+                                  that of the track. Leave out its icon and its frame.");
+                    } else {
+                        ui.label("Draw the rectangle exactly on the bar's track, from its empty end to its full end, and set which way it fills. \
+                                  Leave out its icon (a heart before the bar) and its frame.");
+                    }
                 });
                 // 2. The bar full.
                 step(ui, 2, fits(draft), |ui| {
@@ -1621,15 +1817,15 @@ impl App {
                     ui.label(RichText::new("full").strong());
                     ui.label("(left column), then");
                     if ui.add_enabled(rect.is_some(), egui::Button::new("Use it as the full bar")).clicked() {
-                        if let Some(rect) = rect {
-                            // Empty parts already seen stay when the rectangle did not change.
+                        if let Some(shape) = draft.shape() {
+                            // Empty parts already seen stay when the zone did not change.
                             let empty = draft.look.as_ref().filter(|_| fits(draft)).map(|l| l.empty.clone()).unwrap_or_default();
-                            let full = indicators::look(frame, rect, draft.direction);
-                            draft.look = Some(Look { rect, horizontal: horizontal(draft.direction), full, empty });
+                            let full = indicators::look(&shape, frame);
+                            draft.look = Some(Look { zone: shape, full, empty });
                         }
                     }
                     if moved {
-                        ui.label(RichText::new("The rectangle moved or turned since: do it again.").color(WARN));
+                        ui.label(RichText::new("The zone moved or turned since: do it again.").color(WARN));
                     }
                 });
                 // 3. The bar empty.
@@ -1640,15 +1836,12 @@ impl App {
                     let help = "The part of the bar past its end on this capture is how it looks empty. Add captures at \
                                 different levels until all of it is seen.";
                     if ui.add_enabled(fits(draft), egui::Button::new("Add its empty part")).on_hover_text(help).clicked() {
-                        if let (Some(rect), Some(look)) = (rect, draft.look.as_mut()) {
+                        if let (Some(shape), Some(look)) = (draft.shape(), draft.look.as_mut()) {
                             let zone = Zone {
-                                kind: IndicatorKind::Gauge,
-                                rect,
-                                direction: draft.direction,
                                 tolerance: draft.tolerance,
                                 full_look: look.full.clone(),
                                 empty_look: look.empty.clone(),
-                                ..Zone::default()
+                                ..shape
                             };
                             look.empty = indicators::add_empty_look(&zone, frame);
                         }
