@@ -2057,7 +2057,7 @@ dependencies = [
 
 [[package]]
 name = "gameviber"
-version = "0.1.0-alpha.4"
+version = "0.1.0-alpha.5"
 dependencies = [
  "anyhow",
  "aya",
@@ -2114,7 +2114,7 @@ dependencies = [
 
 [[package]]
 name = "gameviber-overlay"
-version = "0.1.0-alpha.4"
+version = "0.1.0-alpha.5"
 dependencies = [
  "ash",
  "epaint",
