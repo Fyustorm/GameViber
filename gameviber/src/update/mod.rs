@@ -66,6 +66,7 @@ pub enum PackageKind {
     Rpm,
     Arch,
     /// Windows' installer, run when GameViber restarts.
+    #[allow(dead_code, reason = "only Windows installs with it")]
     Installer,
 }
 
