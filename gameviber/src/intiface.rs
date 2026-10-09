@@ -64,6 +64,8 @@ pub struct ToyOutput {
     pub stroke: StrokeSettings,
     /// A stroker being calibrated plays this step instead, started that many seconds ago.
     pub calibration: Option<(Calibration, f64)>,
+    /// When the engine made it: a motion has gone on since.
+    pub made: std::time::Instant,
 }
 
 /// Stroker index -> where it was sent (0..1, see `Planner::position`).
@@ -257,7 +259,11 @@ async fn run(
                         if let Some(kind) = stroker(&device) {
                             let stroke = output.map(|o| o.stroke).unwrap_or_default();
                             let calibration = output.and_then(|o| o.calibration);
-                            let drive = output.map(|o| o.drive.clone()).unwrap_or_default();
+                            let mut drive = output.map(|o| o.drive.clone()).unwrap_or_default();
+                            // Where the motion is now, not when the engine looked.
+                            if let (Some(motion), Some(o)) = (drive.motion.as_mut(), output) {
+                                motion.at += o.made.elapsed().as_secs_f64() * motion.rate;
+                            }
                             let planner = planners.entry(index).or_default();
                             let motion = match calibration {
                                 Some((test, elapsed)) => planner.calibrate(time, test, elapsed, &stroke),

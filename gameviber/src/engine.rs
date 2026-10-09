@@ -54,6 +54,8 @@ const STROKE_TEST_LENGTH: Duration = Duration::from_secs(4);
 const THRUST_KEEP: f64 = 0.3;
 /// Ids of the funscripts tried start here: above the mode's, so they play over its motions.
 const TRY_ID: u64 = 1 << 62;
+/// A funscript tried starts this late (s): strokers get to its first point meanwhile.
+const TRY_LEAD_IN: f64 = 1.0;
 /// How often a lost gamepad is looked for again (proxy source).
 const SOURCE_RETRY: Duration = Duration::from_secs(2);
 /// What `Command::SaveRecent` saves: the last seconds of play.
@@ -1556,7 +1558,7 @@ impl Engine {
         }
         // A funscript tried plays on every toy, once.
         let tried = self.trying.as_mut().and_then(|(_, motion, start)| {
-            motion.at = time - *start;
+            motion.at = time - *start - TRY_LEAD_IN;
             (motion.at < motion.track.duration()).then(|| motion.clone())
         });
         if tried.is_none() {
@@ -1597,7 +1599,7 @@ impl Engine {
                 .max_by_key(|m| m.id)
                 .map(|m| MotionDrive { depth: m.depth.min(cap), ..m.clone() });
             let drive = Drive { level, length, thrust, motion };
-            toy_outputs.insert(toy.index, ToyOutput { drive, stroke: shape.stroke, calibration });
+            toy_outputs.insert(toy.index, ToyOutput { drive, stroke: shape.stroke, calibration, made: now });
             toy_levels.insert(toy.name.clone(), level);
         }
         if let Some(i) = &self.intiface {

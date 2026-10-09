@@ -49,12 +49,19 @@ to check a mode without watching the toy. A mode can also say what the strokes
 should be, add single strokes for its big moments (`stroke()` and `thrust()`), and
 play funscripts on an event: add `.funscript` files to it in Creator › **Funscripts**
 (▶ Try plays one on every toy; rename them there), or write one in its editor (**✏ New**,
-**✏ Edit**): click to add points, drag them, right-click to remove them, insert strokes at
-the cursor, select a part on the timeline to try it, delete or cut it out, or make a
+**✏ Edit**): a click puts the cursor (or adds a point, with **Click adds points**), drag a
+box to pick points (Shift adds to them) and drag them to move them together, right-click
+removes one, insert strokes at the cursor, select a part on the timeline to try it, delete or cut it out, or make a
 new funscript of it. As in usual funscript editors, the keyboard does most of it: 0 to 9
 set a point at the cursor (0%, 100%), ← → move the cursor a step (Shift: ten), ↑ ↓ go
-to the next or previous point, Delete removes, Space tries. With **Grid** on, times snap
-to its step (the cursor, points added or moved, the selection) and ← → move one step. Its script plays them with
+to the next or previous point, Delete removes the points picked, Ctrl+A picks them all,
+Space tries. With **Grid** on, times snap
+to its step (the cursor, points added or moved, the selection) and ← → move one step.
+Each segment is colored for how fast it moves against what your strokers can do (the
+strictest of those connected, as set or calibrated on the Toys page): gray still, blue
+too slow (the toy may jerk), green to orange fine, red too fast (shortened when played);
+a ring marks a turn too soon after the previous one (skipped). The pointer shows a
+segment's speed in units per second. Its script plays them with
 `play(funscript("name"))` (see the mode specification §8.5). They travel with the
 mode when it is shared. **↕ Stroke** and the **Feel** buttons try it. Panic, a lost gamepad and silence
 stop it where it is. The global cap slows and shortens its strokes.

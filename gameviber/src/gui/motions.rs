@@ -1,18 +1,22 @@
 //! The Creator's Funscripts tab: motions for strokers in the active mode's
 //! package, which its script plays on an event (`funscript("name")`, docs/spec-modes.md
 //! §8.5): adding them, seeing them, trying them on the toys, renaming and removing
-//! them, and a simple editor to write one or make one of a part of another.
+//! them, and a simple editor to write one or make one of a part of another. Each
+//! segment is colored for how fast it moves, against what the strokers connected
+//! can do.
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::{mpsc, Arc};
 
-use eframe::egui::{self, Margin, RichText, Sense, Stroke, Vec2};
+use eframe::egui::{self, Color32, Margin, RichText, Sense, Stroke, Vec2};
 
 use super::theme::*;
 use super::App;
 use crate::engine::{Command, Shared};
 use crate::funscript::{self, Track};
 use crate::game::Game;
+use crate::stroke::{MotionLimits, StrokeSettings};
 
 /// Points drawn of a funscript's curve, at most.
 const CURVE_POINTS: usize = 400;
@@ -38,6 +42,9 @@ pub struct State {
     editor: Option<Editor>,
 }
 
+/// Points being dragged: as they were, and where the pointer took them from (time, position).
+type Drag = (Vec<(f64, f64)>, f64, f64);
+
 /// A funscript being written: its points, what is shown and selected.
 struct Editor {
     /// The mode whose funscript it is: another one active closes it.
@@ -52,10 +59,17 @@ struct Editor {
     /// The seconds shown: from, how many.
     view: (f64, f64),
     cursor: f64,
+    /// The part of the timeline selected: from, to (s).
     selection: Option<(f64, f64)>,
-    dragging: Option<usize>,
-    /// Where a selection being dragged started.
+    /// The points selected, by index.
+    picked: BTreeSet<usize>,
+    drag: Option<Drag>,
+    /// A box being drawn to select points: where it started, where the pointer is.
+    boxing: Option<(egui::Pos2, egui::Pos2)>,
+    /// Where a part of the timeline being dragged started.
     selecting: Option<f64>,
+    /// A click on the curve adds a point there (else it only moves the cursor).
+    click_adds: bool,
     /// Strokes to insert: how many, a half-stroke's seconds, low and high positions (%).
     strokes: (usize, f64, f64, f64),
     /// How far ← and → move the cursor, in milliseconds (×10 with Shift), without the grid.
@@ -86,8 +100,11 @@ impl Editor {
             view: (0.0, length),
             cursor: 0.0,
             selection: None,
-            dragging: None,
+            picked: BTreeSet::new(),
+            drag: None,
+            boxing: None,
             selecting: None,
+            click_adds: false,
             strokes: (4, 0.4, 10.0, 90.0),
             step: 100.0,
             snap: false,
@@ -107,9 +124,11 @@ impl Editor {
         self.dirty = true;
     }
 
+    /// Replaces the points (the indices of those selected no longer hold).
     fn set(&mut self, points: Vec<(f64, f64)>) {
         self.change();
         self.points = points;
+        self.picked.clear();
     }
 
     fn fit(&mut self) {
@@ -164,6 +183,7 @@ impl Editor {
                     None => {
                         let i = self.points.partition_point(|p| p.0 < self.cursor);
                         self.points.insert(i, (self.cursor, position));
+                        self.picked.clear();
                     }
                 }
             }
@@ -188,8 +208,19 @@ impl Editor {
                 self.cursor = p.0;
             }
         }
+        if pressed(Key::Escape, Modifiers::NONE) {
+            self.picked.clear();
+            self.selection = None;
+        }
+        if pressed(Key::A, Modifiers::COMMAND) {
+            self.picked = (0..self.points.len()).collect();
+        }
         if pressed(Key::Delete, Modifiers::NONE) || pressed(Key::Backspace, Modifiers::NONE) {
             match (self.selection, self.at_cursor()) {
+                _ if !self.picked.is_empty() => {
+                    let points = self.points.iter().enumerate().filter(|(i, _)| !self.picked.contains(i)).map(|(_, p)| *p).collect();
+                    self.set(points);
+                }
                 (Some((from, to)), _) => {
                     let points = funscript::remove(&self.points, from, to, false);
                     self.set(points);
@@ -197,6 +228,7 @@ impl Editor {
                 (None, Some(i)) => {
                     self.change();
                     self.points.remove(i);
+                    self.picked.clear();
                 }
                 (None, None) => {}
             }
@@ -260,6 +292,7 @@ impl App {
         if !s.intiface.toys.iter().any(|t| t.stroker) {
             ui.label(muted("No stroker connected: trying one plays it on your toys as the speed it moves at.").size(12.5));
         }
+        let (limits, _) = limits(s);
         for (name, track) in &s.funscripts {
             let trying = s.trying.as_ref().filter(|(n, _)| n == name).map(|(_, at)| *at);
             card(PANEL).inner_margin(Margin::symmetric(14, 10)).show(ui, |ui| {
@@ -269,7 +302,7 @@ impl App {
                 } else {
                     self.funscript_row(ui, &s.mode.id, name, track, trying);
                 }
-                curve(ui, track, trying);
+                curve(ui, track, trying, &limits);
             });
             ui.add_space(6.0);
         }
@@ -399,6 +432,8 @@ impl App {
                 try_now |= ui.add_enabled(e.part().is_some(), egui::Button::new(label)).on_hover_text("Plays it once on every toy (Space)").clicked();
             }
             ui.separator();
+            ui.checkbox(&mut e.click_adds, "Click adds points").on_hover_text("Else a click only moves the cursor: 0 to 9 add points there");
+            ui.separator();
             ui.checkbox(&mut e.snap, "Grid").on_hover_text("Times snap to it: the cursor, points added or moved, the selection");
             if e.snap {
                 ui.add(egui::DragValue::new(&mut e.grid).range(5.0..=10000.0).speed(1.0).suffix(" ms"))
@@ -409,6 +444,14 @@ impl App {
             }
             ui.separator();
             ui.label(muted(format!("cursor {:.3} s · {} points · {:.2} s", e.cursor, e.points.len(), e.points.last().map_or(0.0, |p| p.0))));
+            if !e.picked.is_empty() {
+                ui.separator();
+                ui.label(RichText::new(format!("{} picked", e.picked.len())).strong());
+                if ui.small_button("Delete").on_hover_text("Delete").clicked() {
+                    let points = e.points.iter().enumerate().filter(|(i, _)| !e.picked.contains(i)).map(|(_, p)| *p).collect();
+                    e.set(points);
+                }
+            }
         });
         if try_now {
             match (trying, e.part()) {
@@ -421,13 +464,15 @@ impl App {
             }
         }
         ui.add_space(4.0);
-        canvas(ui, &mut e, trying);
+        let (limits, toys) = limits(s);
+        canvas(ui, &mut e, trying, &limits);
+        speed_legend(ui, &limits, &toys);
         ui.label(
-            muted("Click: add a point · drag a point: move it · right-click a point: remove it · drag on the timeline: select · Ctrl+wheel: zoom · Shift+wheel: scroll")
+            muted("Click: the cursor, or pick a point · drag: pick the points in a box · drag picked points: move them · Shift: add to the points picked · right-click a point: remove it · drag on the timeline: select a part · Ctrl+wheel: zoom · Shift+wheel: scroll")
                 .size(11.5),
         );
         ui.label(
-            muted("0 to 9: a point at the cursor, 0% to 100% · ← →: move the cursor a step (Shift: 10) · ↑ ↓: next, previous point · Delete: the point at the cursor, or the selection's · Space: try, stop · Ctrl+Z: undo")
+            muted("0 to 9: a point at the cursor, 0% to 100% · ← →: move the cursor a step (Shift: 10) · ↑ ↓: next, previous point · Delete: the points picked, else the part's, else the one at the cursor · Ctrl+A: pick all · Esc: pick none · Space: try, stop · Ctrl+Z: undo")
                 .size(11.5),
         );
         ui.add_space(8.0);
@@ -573,11 +618,31 @@ fn undo(e: &mut Editor) {
     if let Some(points) = e.undo.pop() {
         e.points = points;
         e.dirty = true;
+        e.picked.clear();
     }
 }
 
+/// The points `picked` (indices) moved from where they were in `before` by `dt`
+/// and `dp`: positions within 0..1, times at 0 or later and in the same order
+/// with the points around them.
+fn move_points(before: &[(f64, f64)], picked: &BTreeSet<usize>, dt: f64, dp: f64) -> Vec<(f64, f64)> {
+    let (mut low, mut high) = (f64::NEG_INFINITY, f64::INFINITY);
+    for &i in picked {
+        let t = before[i].0;
+        low = low.max(-t);
+        if i > 0 && !picked.contains(&(i - 1)) {
+            low = low.max(before[i - 1].0 + 0.001 - t);
+        }
+        if let Some(next) = before.get(i + 1).filter(|_| !picked.contains(&(i + 1))) {
+            high = high.min(next.0 - 0.001 - t);
+        }
+    }
+    let dt = if low <= high { dt.clamp(low, high) } else { 0.0 };
+    before.iter().enumerate().map(|(i, &(t, p))| if picked.contains(&i) { (t + dt, (p + dp).clamp(0.0, 1.0)) } else { (t, p) }).collect()
+}
+
 /// The curve to edit, over the timeline to select on.
-fn canvas(ui: &mut egui::Ui, e: &mut Editor, trying: Option<f64>) {
+fn canvas(ui: &mut egui::Ui, e: &mut Editor, trying: Option<f64>, limits: &MotionLimits) {
     let width = ui.available_width();
     let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 220.0), Sense::click_and_drag());
     let (strip, strip_response) = ui.allocate_exact_size(Vec2::new(width, 22.0), Sense::click_and_drag());
@@ -610,42 +675,85 @@ fn canvas(ui: &mut egui::Ui, e: &mut Editor, trying: Option<f64>) {
         (first..last).filter(|_| dots).map(|i| (i, egui::pos2(x(points[i].0), y(points[i].1)).distance(pos))).filter(|(_, d)| *d <= PICK).min_by(|a, b| a.1.total_cmp(&b.1)).map(|(i, _)| i)
     };
 
-    // Points: add, move, remove.
+    // Points: pick, move, remove (and add, if a click does); Shift adds to the points picked.
+    let raw_t = |px: f32| (from + ((px - rect.left()) / rect.width()) as f64 * length).max(0.0);
+    let shift = ui.input(|i| i.modifiers.shift);
     if let Some(pos) = response.interact_pointer_pos() {
         if response.drag_started() {
-            if let Some(i) = near(pos, &e.points) {
-                e.change();
-                e.dragging = Some(i);
-            }
-        }
-        if let Some(i) = e.dragging {
-            let low = if i == 0 { 0.0 } else { e.points[i - 1].0 + 0.001 };
-            let high = e.points.get(i + 1).map_or(f64::INFINITY, |p| p.0 - 0.001);
-            e.points[i] = (t_at(pos.x).clamp(low, high.max(low)), p_at(pos.y));
-        }
-        if response.clicked() {
-            if near(pos, &e.points).is_none() {
-                let t = t_at(pos.x);
-                e.change();
-                match e.points.iter().position(|p| p.0 == t) {
-                    Some(i) => e.points[i].1 = p_at(pos.y),
-                    None => {
-                        let i = e.points.partition_point(|p| p.0 < t);
-                        e.points.insert(i, (t, p_at(pos.y)));
+            match near(pos, &e.points) {
+                Some(i) => {
+                    if !e.picked.contains(&i) {
+                        if !shift {
+                            e.picked.clear();
+                        }
+                        e.picked.insert(i);
                     }
+                    e.change();
+                    e.drag = Some((e.points.clone(), raw_t(pos.x), p_at(pos.y)));
+                }
+                None => {
+                    if !shift {
+                        e.picked.clear();
+                    }
+                    e.boxing = Some((pos, pos));
                 }
             }
-            e.cursor = t_at(pos.x);
+        }
+        if let Some((before, t0, p0)) = &e.drag {
+            // The point grabbed first snaps to the grid; the others follow it.
+            let grabbed = e.picked.iter().map(|&i| before[i].0).fold(f64::INFINITY, f64::min);
+            let dt = snapped(grabbed + raw_t(pos.x) - t0, grid) - grabbed;
+            e.points = move_points(before, &e.picked, dt, p_at(pos.y) - p0);
+        }
+        if let Some((_, now)) = &mut e.boxing {
+            *now = pos;
+        }
+        if response.clicked() {
+            match near(pos, &e.points) {
+                Some(i) => {
+                    if !shift {
+                        e.picked.clear();
+                    }
+                    if !e.picked.remove(&i) {
+                        e.picked.insert(i);
+                    }
+                    e.cursor = e.points[i].0;
+                }
+                None => {
+                    let t = t_at(pos.x);
+                    if e.click_adds {
+                        e.change();
+                        match e.points.iter().position(|p| p.0 == t) {
+                            Some(i) => e.points[i].1 = p_at(pos.y),
+                            None => {
+                                let i = e.points.partition_point(|p| p.0 < t);
+                                e.points.insert(i, (t, p_at(pos.y)));
+                                e.picked.clear();
+                            }
+                        }
+                    } else if !shift {
+                        e.picked.clear();
+                    }
+                    e.cursor = t;
+                }
+            }
         }
         if response.secondary_clicked() {
             if let Some(i) = near(pos, &e.points) {
                 e.change();
                 e.points.remove(i);
+                e.picked.clear();
             }
         }
     }
     if response.drag_stopped() {
-        e.dragging = None;
+        e.drag = None;
+        if let Some((a, b)) = e.boxing.take() {
+            let (t0, t1) = (raw_t(a.x.min(b.x)), raw_t(a.x.max(b.x)));
+            let (p0, p1) = (p_at(a.y.max(b.y)), p_at(a.y.min(b.y)));
+            let inside = e.points.iter().enumerate().filter(|(_, p)| (t0..=t1).contains(&p.0) && (p0..=p1).contains(&p.1)).map(|(i, _)| i);
+            e.picked.extend(inside);
+        }
     }
 
     // The timeline: the cursor, the selection.
@@ -693,17 +801,51 @@ fn canvas(ui: &mut egui::Ui, e: &mut Editor, trying: Option<f64>) {
         let area = egui::Rect::from_x_y_ranges(x(a).max(rect.left())..=x(b).min(rect.right()), rect.top()..=strip.bottom());
         painter.rect_filled(area, 0, ACCENT.gamma_multiply(0.15));
     }
-    let shown: Vec<egui::Pos2> = e.points[first.saturating_sub(1)..(last + 1).min(e.points.len())]
-        .iter()
-        .map(|&(t, p)| egui::pos2(x(t), y(p)))
-        .collect();
     let clip = painter.with_clip_rect(rect);
-    clip.add(egui::Shape::line(shown, Stroke::new(1.5, ACCENT)));
+    for pair in e.points[first.saturating_sub(1)..(last + 1).min(e.points.len())].windows(2) {
+        let ((t0, p0), (t1, p1)) = (pair[0], pair[1]);
+        let color = speed_color(speed(pair[0], pair[1]), limits);
+        clip.line_segment([egui::pos2(x(t0), y(p0)), egui::pos2(x(t1), y(p1))], Stroke::new(2.0, color));
+    }
     if dots {
         let hovered = response.hover_pos().and_then(|pos| near(pos, &e.points));
+        let early = early_turns(&e.points, limits.min_turn);
         for i in first..last {
-            let color = if Some(i) == hovered || Some(i) == e.dragging { TEXT } else { ACCENT };
-            clip.circle_filled(egui::pos2(x(e.points[i].0), y(e.points[i].1)), 3.5, color);
+            let at = egui::pos2(x(e.points[i].0), y(e.points[i].1));
+            if e.picked.contains(&i) {
+                clip.circle_filled(at, 5.0, TEXT);
+                clip.circle_stroke(at, 5.0, Stroke::new(1.5, ACCENT));
+            } else {
+                clip.circle_filled(at, 3.5, if Some(i) == hovered { TEXT } else { ACCENT });
+            }
+            if early.contains(&i) {
+                clip.circle_stroke(at, 7.0, Stroke::new(1.5, WARN));
+            }
+        }
+    }
+    if let Some((a, b)) = e.boxing {
+        let area = egui::Rect::from_two_pos(a, b);
+        clip.rect_filled(area, 0, ACCENT.gamma_multiply(0.1));
+        clip.rect_stroke(area, 0, Stroke::new(1.0, ACCENT), egui::StrokeKind::Inside);
+    }
+    // The segment under the pointer: how fast it moves.
+    if let Some(pos) = response.hover_pos() {
+        let t = from + ((pos.x - rect.left()) / rect.width()) as f64 * length;
+        let i = e.points.partition_point(|p| p.0 <= t);
+        if i > 0 && i < e.points.len() {
+            let (a, b) = (e.points[i - 1], e.points[i]);
+            let v = speed(a, b);
+            let verdict = match () {
+                _ if v < 1e-6 => "still",
+                _ if v < limits.slowest => "too slow: the toy may jerk",
+                _ if v > limits.fastest => "too fast: shortened to what the toy can do",
+                _ => "the toy can follow",
+            };
+            let text = format!("{:.2} → {:.2} s · {:.0} units/s · {verdict}", a.0, b.0, v * 100.0);
+            let galley = painter.layout_no_wrap(text, egui::FontId::proportional(11.5), speed_color(v, limits));
+            let at = rect.left_top() + Vec2::new(8.0, 6.0);
+            painter.rect_filled(egui::Rect::from_min_size(at - Vec2::splat(3.0), galley.size() + Vec2::splat(6.0)), 4, PANEL);
+            painter.galley(at, galley, TEXT);
         }
     }
     let line = |t: f64, color| clip.line_segment([egui::pos2(x(t), rect.top()), egui::pos2(x(t), rect.bottom())], Stroke::new(1.5, color));
@@ -716,8 +858,88 @@ fn canvas(ui: &mut egui::Ui, e: &mut Editor, trying: Option<f64>) {
     }
 }
 
-/// Its positions over time (bottom: 0), where the try is at.
-fn curve(ui: &mut egui::Ui, track: &Track, at: Option<f64>) {
+/// What motions are checked against: the strictest of the strokers connected (their
+/// settings on the Toys page), else the default settings; and whose they are.
+fn limits(s: &Shared) -> (MotionLimits, String) {
+    let strokers: Vec<&str> = s.intiface.toys.iter().filter(|t| t.stroker).map(|t| t.name.as_str()).collect();
+    let limits = strokers
+        .iter()
+        .map(|name| s.settings.toys.get(*name).copied().unwrap_or_default().stroke.motion_limits())
+        .reduce(MotionLimits::strictest);
+    match limits {
+        Some(limits) => (limits, strokers.join(", ")),
+        None => (StrokeSettings::default().motion_limits(), "a stroker with the default settings (none connected)".into()),
+    }
+}
+
+/// How fast a segment moves: positions (0..1) per second.
+fn speed((t0, p0): (f64, f64), (t1, p1): (f64, f64)) -> f64 {
+    (p1 - p0).abs() / (t1 - t0).max(1e-6)
+}
+
+/// A segment's color for how fast it moves: still: gray, too slow: blue, then green
+/// to orange as it nears the toy's fastest, red beyond.
+fn speed_color(speed: f64, limits: &MotionLimits) -> Color32 {
+    if speed < 1e-6 {
+        IDLE
+    } else if speed < limits.slowest {
+        GAME
+    } else if speed > limits.fastest {
+        DANGER
+    } else {
+        let t = ((speed - limits.slowest) / (limits.fastest - limits.slowest).max(1e-9)) as f32;
+        let mix = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * t).round() as u8;
+        Color32::from_rgb(mix(OK.r(), WARN.r()), mix(OK.g(), WARN.g()), mix(OK.b(), WARN.b()))
+    }
+}
+
+/// Points where the motion turns sooner after its last turn than the toy can: the
+/// planner skips them.
+fn early_turns(points: &[(f64, f64)], min_turn: f64) -> std::collections::HashSet<usize> {
+    let mut early = std::collections::HashSet::new();
+    let mut last_turn = f64::NEG_INFINITY;
+    // Holds keep the direction they come after.
+    let mut direction = 0.0;
+    for i in 1..points.len().saturating_sub(1) {
+        let before = points[i].1 - points[i - 1].1;
+        if before.abs() > 1e-9 {
+            direction = before.signum();
+        }
+        let after = points[i + 1].1 - points[i].1;
+        if direction != 0.0 && after.abs() > 1e-9 && after.signum() != direction {
+            if points[i].0 - last_turn < min_turn {
+                early.insert(i);
+            } else {
+                last_turn = points[i].0;
+            }
+        }
+    }
+    early
+}
+
+/// What the colors say, and what they are checked against.
+fn speed_legend(ui: &mut egui::Ui, limits: &MotionLimits, toys: &str) {
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 10.0;
+        for (color, label) in [(IDLE, "still"), (GAME, "too slow"), (OK, "fine"), (WARN, "near its fastest"), (DANGER, "too fast")] {
+            ui.label(RichText::new(format!("━ {label}")).size(11.5).color(color));
+        }
+        ui.label(RichText::new("◯ turns too soon (skipped)").size(11.5).color(WARN));
+        ui.label(
+            muted(format!(
+                "for {toys}: {:.0} to {:.0} units/s, turns {:.2} s apart",
+                limits.slowest * 100.0,
+                limits.fastest * 100.0,
+                limits.min_turn
+            ))
+            .size(11.5),
+        )
+        .on_hover_text("Set or calibrated on the Toys page; a motion played with less depth moves slower");
+    });
+}
+
+/// Its positions over time (bottom: 0), colored for how fast they move, where the try is at.
+fn curve(ui: &mut egui::Ui, track: &Track, at: Option<f64>, limits: &MotionLimits) {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 56.0), Sense::hover());
     let painter = ui.painter();
     painter.rect_filled(rect, 6, RAISED);
@@ -726,9 +948,13 @@ fn curve(ui: &mut egui::Ui, track: &Track, at: Option<f64>) {
     let y = |p: f64| rect.bottom() - 4.0 - (rect.height() - 8.0) * p as f32;
     let points = track.points();
     let step = points.len().div_ceil(CURVE_POINTS).max(1);
-    let line: Vec<egui::Pos2> = points.iter().step_by(step).chain(points.last()).map(|&(t, p)| egui::pos2(x(t), y(p))).collect();
-    painter.add(egui::Shape::line(line, Stroke::new(1.5, ACCENT)));
-    if let Some(at) = at {
+    let shown: Vec<(f64, f64)> = points.iter().step_by(step).chain(points.last()).copied().collect();
+    for pair in shown.windows(2) {
+        let color = speed_color(speed(pair[0], pair[1]), limits);
+        painter.line_segment([egui::pos2(x(pair[0].0), y(pair[0].1)), egui::pos2(x(pair[1].0), y(pair[1].1))], Stroke::new(1.5, color));
+    }
+    // Not during the try's lead-in.
+    if let Some(at) = at.filter(|at| *at >= 0.0) {
         painter.line_segment([egui::pos2(x(at), rect.top()), egui::pos2(x(at), rect.bottom())], Stroke::new(1.5, TEXT));
     }
 }
@@ -745,5 +971,30 @@ mod tests {
         // 120 steps a minute: lines at 0.5 s.
         assert_eq!(snapped(0.74, Some(0.5)), 0.5);
         assert_eq!(snapped(0.3 + 0.1 + 0.2, Some(0.1)), 0.6, "no floating point noise");
+    }
+
+    #[test]
+    fn points_picked_move_together_in_order() {
+        let points = [(0.0, 0.0), (1.0, 0.5), (2.0, 0.6), (3.0, 1.0)];
+        let picked: BTreeSet<usize> = [1, 2].into();
+        assert_eq!(move_points(&points, &picked, 0.5, 0.2), vec![(0.0, 0.0), (1.5, 0.7), (2.5, 0.8), (3.0, 1.0)]);
+        // Not past the points around them, positions within 0..1.
+        let moved = move_points(&points, &picked, 5.0, 0.6);
+        assert!((moved[2].0 - 2.999).abs() < 1e-9 && moved[1].1 == 1.0 && moved[2].1 == 1.0, "{moved:?}");
+        let moved = move_points(&points, &[0].into(), -1.0, 0.0);
+        assert_eq!(moved[0], (0.0, 0.0));
+    }
+
+    #[test]
+    fn segments_are_judged_against_the_toy() {
+        let limits = MotionLimits { slowest: 0.25, fastest: 2.0, min_turn: 0.25 };
+        assert_eq!(speed_color(speed((0.0, 0.5), (1.0, 0.5)), &limits), IDLE);
+        assert_eq!(speed_color(speed((0.0, 0.0), (1.0, 0.1)), &limits), GAME);
+        assert_eq!(speed_color(speed((0.0, 0.0), (0.25, 1.0)), &limits), DANGER);
+        assert_eq!(speed_color(0.25, &limits), OK);
+        assert_eq!(speed_color(2.0, &limits), WARN);
+        // Turns at 1, 1.1 (too soon), and 1.5 after a hold, which keeps the direction it comes after.
+        let points = [(0.0, 0.0), (1.0, 1.0), (1.1, 0.5), (1.3, 0.9), (1.5, 0.9), (2.0, 0.0)];
+        assert_eq!(early_turns(&points, 0.25), [2].into());
     }
 }
