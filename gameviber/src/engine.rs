@@ -96,6 +96,8 @@ pub enum Command {
     Rearm,
     SetCap(f64),
     SetRouting { channel: String, toys: Vec<String> },
+    /// The channel setting a stroker's stroke length (None: its intensity does).
+    SetStrokeLength { toy: String, channel: Option<String> },
     /// Buttons held together for the panic stop (at least two).
     SetPanicCombo(Vec<String>),
     /// Buttons held together to mark a moment that felt wrong (at least two).
@@ -290,6 +292,8 @@ pub struct Shared {
     /// Sticks (-1..1) and triggers (0..1).
     pub axes: BTreeMap<&'static str, f64>,
     pub toy_levels: BTreeMap<String, f64>,
+    /// Stroker name -> where it was sent (0..1).
+    pub toy_positions: BTreeMap<String, f64>,
     /// The stroker being calibrated, its step, and the seconds since it started.
     pub calibration: Option<(String, Calibration, f64)>,
     /// Games currently showing the in-game overlay.
@@ -794,6 +798,13 @@ impl Engine {
             }
             Command::SetRouting { channel, toys } => {
                 self.settings.routing.insert(channel, toys);
+                self.settings.save();
+            }
+            Command::SetStrokeLength { toy, channel } => {
+                match channel {
+                    Some(channel) => self.settings.stroke_length.insert(toy, channel),
+                    None => self.settings.stroke_length.remove(&toy),
+                };
                 self.settings.save();
             }
             Command::SetToySettings { toy, settings } => {
@@ -1470,7 +1481,8 @@ impl Engine {
                 .as_ref()
                 .filter(|(name, ..)| !self.panic && *name == toy.name)
                 .map(|(_, test, start)| (*test, now.duration_since(*start).as_secs_f64()));
-            toy_outputs.insert(toy.index, ToyOutput { level, stroke: shape.stroke, calibration });
+            let length = self.settings.stroke_length.get(&toy.name).and_then(|c| channels.get(c)).map(|v| v.min(cap));
+            toy_outputs.insert(toy.index, ToyOutput { level, stroke: shape.stroke, length, calibration });
             toy_levels.insert(toy.name.clone(), level);
         }
         if let Some(i) = &self.intiface {
@@ -1486,6 +1498,8 @@ impl Engine {
             self.overlay.update(&state);
         }
 
+        let positions = self.intiface.as_ref().map(|i| i.positions()).unwrap_or_default();
+        let toy_positions = toys.toys.iter().filter_map(|t| positions.get(&t.index).map(|p| (t.name.clone(), *p))).collect();
         let mut shared = self.shared.lock().unwrap();
         shared.time = time;
         shared.panic = self.panic;
@@ -1502,6 +1516,7 @@ impl Engine {
         shared.held = self.pad.held().iter().copied().collect();
         shared.axes = self.pad.axes().clone();
         shared.toy_levels = toy_levels;
+        shared.toy_positions = toy_positions;
         shared.calibration = self.calibration.as_ref().map(|(name, test, start)| (name.clone(), *test, now.duration_since(*start).as_secs_f64()));
         shared.recording = self.recorder.as_ref().map(|r| r.elapsed(time));
         shared.replay = self.replay.as_ref().map(|r| ReplayView { path: r.path.clone(), position: r.position(time) });

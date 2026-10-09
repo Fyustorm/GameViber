@@ -107,6 +107,19 @@ pub fn meter(ui: &mut egui::Ui, width: f32, level: f64, color: Color32) {
     }
 }
 
+/// Where a stroker is sent (0..1, bottom on the left), over its whole length, its
+/// range lit.
+pub fn position_meter(ui: &mut egui::Ui, width: f32, position: f64, (bottom, top): (f64, f64)) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 12.0), Sense::hover());
+    let painter = ui.painter();
+    let track = egui::Rect::from_center_size(rect.center(), Vec2::new(rect.width(), 6.0));
+    painter.rect_filled(track, CornerRadius::same(3), LINE);
+    let x = |v: f64| rect.left() + rect.width() * v.clamp(0.0, 1.0) as f32;
+    let range = egui::Rect::from_x_y_ranges(x(bottom)..=x(top), track.y_range());
+    painter.rect_filled(range, CornerRadius::same(3), RAISED);
+    painter.circle_filled(egui::pos2(x(position), rect.center().y), 6.0, ACCENT);
+}
+
 /// Gamepad control lit by `level` (0..1): a button, or a trigger's travel.
 pub fn pad_chip(ui: &mut egui::Ui, label: &str, level: f64) {
     let galley = ui.painter().layout_no_wrap(label.to_owned(), egui::FontId::proportional(11.5), TEXT);

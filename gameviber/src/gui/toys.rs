@@ -79,7 +79,7 @@ impl App {
                     return;
                 }
                 let channels = s.mode.info.as_ref().map(|i| i.channels.clone()).unwrap_or_else(|| vec!["main".into()]);
-                let height = if s.intiface.toys.iter().any(|t| t.stroker) { 470.0 } else { 270.0 };
+                let height = if s.intiface.toys.iter().any(|t| t.stroker) { 530.0 } else { 270.0 };
                 tile_grid(ui, s.intiface.toys.len(), 360.0, height, |ui, i, size| {
                     let toy = &s.intiface.toys[i];
                     card(PANEL).show(ui, |ui| {
@@ -232,6 +232,14 @@ impl App {
             meter(ui, (ui.available_width() - 50.0).max(40.0), level, ACCENT);
             ui.label(RichText::new(format!("{:.0}%", level * 100.0)).monospace().size(12.0));
         });
+        if let Some(position) = s.toy_positions.get(name) {
+            ui.horizontal(|ui| {
+                ui.add_sized(Vec2::new(60.0, 18.0), egui::Label::new(muted("Position")));
+                position_meter(ui, (ui.available_width() - 50.0).max(40.0), *position, range(s, name));
+            })
+            .response
+            .on_hover_text("Where it was sent: it may lag a little behind");
+        }
         ui.horizontal(|ui| {
             ui.add_sized(Vec2::new(60.0, 18.0), egui::Label::new(muted("Plays")));
             for channel in channels {
@@ -251,6 +259,22 @@ impl App {
                 }
             }
         });
+        if toy.stroker && channels.len() > 1 {
+            ui.horizontal(|ui| {
+                ui.add_sized(Vec2::new(60.0, 18.0), egui::Label::new(muted("Length")));
+                let current = s.settings.stroke_length.get(name);
+                if ui.selectable_label(current.is_none(), "Its feeling").on_hover_text("The channels it plays set its strokes").clicked() {
+                    self.send(Command::SetStrokeLength { toy: name.to_owned(), channel: None });
+                }
+                for channel in channels {
+                    let on = current == Some(channel);
+                    let hint = format!("{channel} sets how long its strokes are; the channels it plays set their speed");
+                    if ui.selectable_label(on, channel).on_hover_text(hint).clicked() {
+                        self.send(Command::SetStrokeLength { toy: name.to_owned(), channel: Some(channel.clone()) });
+                    }
+                }
+            });
+        }
         ui.separator();
         let settings = s.settings.toys.get(name).copied().unwrap_or_default();
         if let Some(settings) = toy_settings(ui, name, settings) {
@@ -521,6 +545,24 @@ impl App {
         if ui.add(primary("Done")).clicked() {
             self.close_calibration();
         }
+    }
+}
+
+/// A stroker's range.
+pub(super) fn range(s: &Shared, toy: &str) -> (f64, f64) {
+    let stroke = s.settings.toys.get(toy).copied().unwrap_or_default().stroke;
+    (stroke.bottom, stroke.top)
+}
+
+/// Where the strokers are sent, one line each (nothing without a stroker).
+pub(super) fn strokers(ui: &mut egui::Ui, s: &Shared) {
+    for (toy, position) in &s.toy_positions {
+        ui.horizontal(|ui| {
+            ui.add_sized(Vec2::new(120.0, 18.0), egui::Label::new(muted(format!("↕ {toy}"))).truncate());
+            position_meter(ui, (ui.available_width() - 8.0).clamp(60.0, 360.0), *position, range(s, toy));
+        })
+        .response
+        .on_hover_text("Where this stroker was sent: it may lag a little behind");
     }
 }
 

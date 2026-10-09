@@ -525,7 +525,9 @@ stop_all()                    -- resets the base level to 0 and cancels pulses a
 - v1: a channel drives all the actuators (vibration, rotation, oscillation) of the toys
   mapped to it. For the script, it is always an intensity between 0 and 1. A stroker
   (a toy moving to positions) plays it as strokes, faster and longer as it rises
-  (§12): a mode does not need to know it.
+  (§12): a mode does not need to know it. The player can also give a stroker's stroke
+  length to another channel (the channels it plays then set its speed): a mode with a
+  channel that reads well as a length (`depth`, a gauge) can say so in its `help`.
 - Strokers follow the intensity a few hundred milliseconds late, at the next change of
   direction (a strong rise turns them sooner), and cannot render waveforms faster than
   their strokes: give them the envelope, not the pulses.

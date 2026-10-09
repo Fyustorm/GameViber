@@ -61,9 +61,14 @@ pub struct ToyOutput {
     pub level: f64,
     /// How a stroker renders it.
     pub stroke: StrokeSettings,
+    /// A stroker's stroke length (0..1), when another channel sets it.
+    pub length: Option<f64>,
     /// A stroker being calibrated plays this step instead, started that many seconds ago.
     pub calibration: Option<(Calibration, f64)>,
 }
+
+/// Stroker index -> where it was sent (0..1, see `Planner::position`).
+pub type ToyPositions = BTreeMap<u32, f64>;
 
 /// Toy index -> what it is asked for.
 pub type ToyOutputs = BTreeMap<u32, ToyOutput>;
@@ -83,6 +88,7 @@ pub enum Control {
 pub struct Intiface {
     outputs: watch::Sender<ToyOutputs>,
     status: watch::Receiver<IntifaceStatus>,
+    positions: watch::Receiver<ToyPositions>,
     client: watch::Receiver<Option<Arc<ButtplugClient>>>,
     control: mpsc::UnboundedSender<Control>,
     task: tokio::task::JoinHandle<()>,
@@ -92,10 +98,11 @@ impl Intiface {
     pub fn spawn(url: String) -> Self {
         let (outputs, outputs_rx) = watch::channel(ToyOutputs::new());
         let (status_tx, status) = watch::channel(IntifaceStatus::default());
+        let (positions_tx, positions) = watch::channel(ToyPositions::new());
         let (client_tx, client) = watch::channel(None);
         let (control, control_rx) = mpsc::unbounded_channel();
-        let task = tokio::spawn(run(url, outputs_rx, status_tx, client_tx, control_rx));
-        Self { outputs, status, client, control, task }
+        let task = tokio::spawn(run(url, outputs_rx, status_tx, positions_tx, client_tx, control_rx));
+        Self { outputs, status, positions, client, control, task }
     }
 
     pub fn control(&self, control: Control) {
@@ -112,6 +119,11 @@ impl Intiface {
 
     pub fn status(&self) -> IntifaceStatus {
         self.status.borrow().clone()
+    }
+
+    /// Where the strokers were sent, for the GUI.
+    pub fn positions(&self) -> ToyPositions {
+        self.positions.borrow().clone()
     }
 
     /// Stops every toy, then the task.
@@ -181,6 +193,7 @@ async fn run(
     url: String,
     outputs: watch::Receiver<ToyOutputs>,
     status: watch::Sender<IntifaceStatus>,
+    positions: watch::Sender<ToyPositions>,
     client_slot: watch::Sender<Option<Arc<ButtplugClient>>>,
     mut control: mpsc::UnboundedReceiver<Control>,
 ) {
@@ -245,10 +258,11 @@ async fn run(
                         if let Some(kind) = stroker(&device) {
                             let stroke = output.map(|o| o.stroke).unwrap_or_default();
                             let calibration = output.and_then(|o| o.calibration);
+                            let length = output.and_then(|o| o.length);
                             let planner = planners.entry(index).or_default();
                             let motion = match calibration {
                                 Some((test, elapsed)) => planner.calibrate(time, test, elapsed, &stroke),
-                                None => planner.tick(time, value, &stroke),
+                                None => planner.tick(time, value, length, &stroke),
                             };
                             let moving = calibration.is_some() || value >= crate::config::ToySettings::SILENT;
                             apply_stroker(&device, kind, planner, time, motion, moving, &mut sent).await;
@@ -263,6 +277,12 @@ async fn run(
                             sent.insert(index, value);
                         }
                     }
+                    let now: ToyPositions = planners.iter().map(|(index, p)| (*index, p.position(time))).collect();
+                    positions.send_if_modified(|current| {
+                        let changed = *current != now;
+                        *current = now;
+                        changed
+                    });
                     continue;
                 }
                 event = events.next() => match event {
@@ -311,6 +331,7 @@ async fn run(
             status.send_replace(current.clone());
         };
         client_slot.send_replace(None);
+        positions.send_replace(ToyPositions::new());
         match end {
             End::Lost => {
                 status.send_replace(IntifaceStatus { error: Some("disconnected".into()), ..Default::default() });

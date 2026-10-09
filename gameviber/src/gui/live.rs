@@ -179,6 +179,9 @@ fn output_card(ui: &mut egui::Ui, app: &mut App, s: &Shared) {
                 meter(ui, (ui.available_width() - 50.0).max(40.0), *level, ACCENT);
                 ui.label(RichText::new(format!("{:.0}%", level * 100.0)).size(12.0));
             });
+            if let Some(position) = s.toy_positions.get(toy) {
+                row(ui, "", |ui| position_meter(ui, (ui.available_width() - 50.0).max(40.0), *position, super::toys::range(s, toy)));
+            }
         }
         ui.add_space(4.0);
         ui.horizontal(|ui| {

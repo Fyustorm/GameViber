@@ -78,6 +78,9 @@ pub struct Settings {
     pub global_cap: f64,
     /// Channel -> toy names. A missing "main" entry means every toy.
     pub routing: BTreeMap<String, Vec<String>>,
+    /// Stroker name -> the channel setting its stroke length (the channels it plays
+    /// then set its speed).
+    pub stroke_length: BTreeMap<String, String>,
     /// Gamepad buttons held together for the panic stop (at least two).
     pub panic_combo: Vec<String>,
     /// Gamepad buttons held together to mark a moment that felt wrong (at least two).
@@ -199,6 +202,7 @@ impl Default for Settings {
             active_mode: DEFAULT_MODE.into(),
             global_cap: 1.0,
             routing: BTreeMap::new(),
+            stroke_length: BTreeMap::new(),
             panic_combo: crate::gamepad::DEFAULT_PANIC_COMBO.map(str::to_owned).to_vec(),
             mark_combo: crate::gamepad::DEFAULT_MARK_COMBO.map(str::to_owned).to_vec(),
             capture_combo: crate::gamepad::DEFAULT_CAPTURE_COMBO.map(str::to_owned).to_vec(),

@@ -476,6 +476,7 @@ impl App {
             ui.set_width(ui.available_width());
             ui.label(RichText::new("Without the game").strong().size(15.0));
             self.simulator(ui);
+            super::toys::strokers(ui, s);
         });
         ui.add_space(10.0);
         ui.label(muted(
@@ -887,6 +888,7 @@ fn left_column(
     }
     image_view(ui, ctx, p, session, fill);
     transport(ui, p, cap, session);
+    super::toys::strokers(ui, s);
     add
 }
 

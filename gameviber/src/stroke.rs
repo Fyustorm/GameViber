@@ -103,14 +103,17 @@ impl StrokeSettings {
     }
 
     /// Positions the strokes go between, and their speed (full lengths per second),
-    /// for a 0..1 intensity.
-    fn strokes(&self, level: f64) -> (f64, f64, f64) {
+    /// for a 0..1 intensity, and a 0..1 length when another channel sets it (the
+    /// intensity then sets the speed).
+    fn strokes(&self, level: f64, length: Option<f64>) -> (f64, f64, f64) {
         let level = level.clamp(0.0, 1.0);
         let (fast, slow) = (1.0 / self.fastest, 1.0 / self.slowest);
-        let (amplitude, speed) = match self.style {
-            StrokeStyle::Speed => (1.0, slow + (fast - slow) * level),
-            StrokeStyle::Depth => (MIN_AMPLITUDE + (1.0 - MIN_AMPLITUDE) * level, (slow + fast) / 2.0),
-            StrokeStyle::Both => (MIN_AMPLITUDE + (1.0 - MIN_AMPLITUDE) * level, slow + (fast - slow) * level),
+        let longer = |x: f64| MIN_AMPLITUDE + (1.0 - MIN_AMPLITUDE) * x.clamp(0.0, 1.0);
+        let (amplitude, speed) = match (length.filter(|l| !l.is_nan()), self.style) {
+            (Some(length), _) => (longer(length), slow + (fast - slow) * level),
+            (None, StrokeStyle::Speed) => (1.0, slow + (fast - slow) * level),
+            (None, StrokeStyle::Depth) => (longer(level), (slow + fast) / 2.0),
+            (None, StrokeStyle::Both) => (longer(level), slow + (fast - slow) * level),
         };
         let center = (self.bottom + self.top) / 2.0;
         let half = (self.top - self.bottom) * amplitude / 2.0;
@@ -265,13 +268,14 @@ impl Default for Planner {
 }
 
 impl Planner {
-    /// What to send at `time` (seconds, monotonic) for the toy's 0..1 intensity, if anything.
-    pub fn tick(&mut self, time: f64, level: f64, settings: &StrokeSettings) -> Option<Motion> {
+    /// What to send at `time` (seconds, monotonic) for the toy's 0..1 intensity and
+    /// the length another channel sets, if any.
+    pub fn tick(&mut self, time: f64, level: f64, length: Option<f64>, settings: &StrokeSettings) -> Option<Motion> {
         let settings = settings.sanitized();
         if level.is_nan() || level < SILENT {
             return self.stop(time);
         }
-        let (low, high, speed) = settings.strokes(level);
+        let (low, high, speed) = settings.strokes(level, length);
         let motion = self.plan(time, (low, high), speed, settings.min_turn, level - self.level >= RETARGET);
         if motion.is_some() {
             self.level = level;
@@ -411,7 +415,7 @@ mod tests {
         let mut sent = Vec::new();
         let mut time = 0.0;
         while time < seconds {
-            if let Some(motion) = planner.tick(time, levels(time), settings) {
+            if let Some(motion) = planner.tick(time, levels(time), None, settings) {
                 sent.push((time, toy.at(time), motion));
                 toy.apply(time, motion);
             }
@@ -478,6 +482,29 @@ mod tests {
     }
 
     #[test]
+    fn another_channel_sets_the_length() {
+        let settings = StrokeSettings { style: StrokeStyle::Depth, ..Default::default() };
+        let half_stroke = |length: f64| {
+            let mut planner = Planner::default();
+            planner.at = (0.5, 0.5);
+            let mut sent = Vec::new();
+            for i in 0..400 {
+                let time = i as f64 * PERIOD;
+                if let Some(Motion::Move { position, ms }) = planner.tick(time, 0.2, Some(length), &settings) {
+                    sent.push((position, ms));
+                }
+            }
+            let last = sent.len() - 1;
+            ((sent[last].0 - sent[last - 1].0).abs(), sent[last].1)
+        };
+        let (short, short_ms) = half_stroke(0.0);
+        let (long, long_ms) = half_stroke(1.0);
+        assert!((short - MIN_AMPLITUDE).abs() < 1e-9 && (long - 1.0).abs() < 1e-9, "{short} {long}");
+        // The intensity sets the speed, whatever the style.
+        assert!(((short / short_ms as f64) - (long / long_ms as f64)).abs() < 1e-4);
+    }
+
+    #[test]
     fn silence_stops_a_moving_toy_and_stays_quiet() {
         let settings = StrokeSettings::default();
         let sent = run(&settings, |t| if t < 3.0 { 0.5 } else { 0.0 }, 6.0, 0.5);
@@ -502,10 +529,10 @@ mod tests {
         let mut planner = Planner::default();
         // Known at the bottom, then sent up and stopped halfway.
         planner.at = (0.0, 0.0);
-        let Some(Motion::Move { ms, .. }) = planner.tick(0.0, 1.0, &settings) else { panic!() };
+        let Some(Motion::Move { ms, .. }) = planner.tick(0.0, 1.0, None, &settings) else { panic!() };
         assert_eq!(ms, 200);
-        assert_eq!(planner.tick(0.1, 0.0, &settings), Some(Motion::Stop));
-        let Some(Motion::Move { position, ms }) = planner.tick(1.0, 1.0, &settings) else { panic!() };
+        assert_eq!(planner.tick(0.1, 0.0, None, &settings), Some(Motion::Stop));
+        let Some(Motion::Move { position, ms }) = planner.tick(1.0, 1.0, None, &settings) else { panic!() };
         // Somewhere between 0 and 0.5: timed for the far end of that.
         assert_eq!(position, 0.0);
         assert!(ms as f64 >= 500.0 / APPROACH_SPEED - 1.0, "{ms}");

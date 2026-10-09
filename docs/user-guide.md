@@ -42,7 +42,10 @@ button when it stops following; GameViber keeps a margin. Or set them on its car
 - **Slowest**: lower it if slow strokes jerk.
 - **Turns**: the shortest time between two changes of direction.
 
-**↕ Stroke** and the **Feel** buttons try it. Panic, a lost gamepad and silence
+When the mode sends several feelings, **Length** on its card can give its stroke
+length to one of them: the feelings it plays then set only their speed. Where it
+is sent shows on its card, on Live, in the simulator and in the session player,
+to check a mode without watching the toy. **↕ Stroke** and the **Feel** buttons try it. Panic, a lost gamepad and silence
 stop it where it is. The global cap slows and shortens its strokes.
 
 ## A mode for your game
