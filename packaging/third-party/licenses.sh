@@ -55,7 +55,7 @@ HEAD
     printf 'License 2.0: its source code is at https://gitlab.com/libeigen/eigen.\n\n'
     cat "$here/onnxruntime-ThirdPartyNotices.txt"
     printf '\n================================================================================\n'
-    printf 'SDL_GameControllerDB (https://github.com/mdqinc/SDL_GameControllerDB): its Linux mappings\n'
+    printf 'SDL_GameControllerDB (https://github.com/mdqinc/SDL_GameControllerDB): its Linux and Windows mappings\n'
     printf -- '--------------------------------------------------------------------------------\n'
     cat "$root/gameviber/gamepads/LICENSE"
 } > "$out"

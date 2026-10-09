@@ -1,7 +1,12 @@
 //! Systems without a source backend yet: only the simulator and replays drive modes.
 
-use super::{ActiveSource, EventSender, SourceOptions};
+use super::{ActiveSource, EventSender, HideOption, Method, SourceOptions};
 use crate::config::SourceChoice;
+
+pub const METHODS: &[Method] = &[];
+pub const HIDE: HideOption = HideOption { label: "", hover: "" };
+pub const MAPPINGS: &str = "";
+pub const MAPPING_PLATFORM: &str = "";
 
 pub struct Sources;
 

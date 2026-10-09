@@ -11,7 +11,7 @@ use crate::config::SourceChoice;
 use crate::engine::{Command, Shared, SourceHealth};
 use super::pad_setup::{Labels, PadSetup};
 use crate::gamepad::mapping::Origin;
-use crate::source::{PadInfo, PadLayout};
+use crate::source::{Method, PadInfo, PadLayout};
 
 impl App {
     pub(super) fn gamepad_ui(&mut self, ui: &mut egui::Ui, s: &Shared) {
@@ -70,11 +70,14 @@ impl App {
                         ui.set_width(ui.available_width());
                         ui.label(RichText::new("The rumble cannot be captured").strong().color(DANGER_TEXT));
                         ui.label(RichText::new(e).monospace().size(12.0));
+                        let other = if crate::source::METHODS.len() > 1 { " Still nothing? Try the other method below." } else { "" };
                         ui.label(muted(if s.settings.source == SourceChoice::Proxy {
-                            "Toys are stopped until it comes back: GameViber reconnects as soon as the gamepad is \
-                             plugged in or wakes up. Still nothing? Try the other method below."
+                            format!(
+                                "Toys are stopped until it comes back: GameViber reconnects as soon as the gamepad is \
+                                 plugged in or wakes up.{other}"
+                            )
                         } else {
-                            "Check the gamepad is plugged in, or try the other method below."
+                            "Check the gamepad is plugged in, or try the other method below.".to_owned()
                         }));
                     });
                 }
@@ -90,11 +93,15 @@ impl App {
                 card(RAISED).inner_margin(Margin::same(12)).show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     ui.label(RichText::new("Rumble not detected?").strong());
-                    ui.label(muted(
+                    ui.label(muted(if crate::source::METHODS.len() > 1 {
                         "Start a game and get hit: the Rumble capture card should say \"receiving\". Nothing after a \
                          few hits? Switch to the other method, then restart the game. With the standard method, \
-                         start GameViber before the game.",
-                    ));
+                         start GameViber before the game."
+                    } else {
+                        "Start a game and get hit: the Rumble capture card should say \"receiving\". Nothing after a \
+                         few hits? Start GameViber before the game, and check the game uses the virtual controller \
+                         (hiding the real one helps)."
+                    }));
                 });
                 ui.add_space(8.0);
                 egui::CollapsingHeader::new("Technical details").show(ui, |ui| {
@@ -178,26 +185,9 @@ pub(super) fn rumble_check(ui: &mut egui::Ui, s: &Shared) {
 pub(super) fn capture_methods(ui: &mut egui::Ui, s: &Shared) -> Option<Command> {
     let (source, hide) = (s.settings.source, s.settings.hide);
     let mut command = None;
-    let methods = [
-        (
-            SourceChoice::Proxy,
-            "Standard",
-            "Recommended",
-            "GameViber shows games a virtual copy of your gamepad and listens to what they send it.",
-            &["Works with nearly every game", "No root access needed", "Your gamepad can still vibrate too"][..],
-            &["Start GameViber before the game", "Games may see two controllers: hide the real one below"][..],
-        ),
-        (
-            SourceChoice::Ebpf,
-            "Kernel probe",
-            "🔒 Root",
-            "Games keep using your real gamepad; GameViber quietly listens in the background.",
-            &["No second controller in games", "Can be turned on while a game is running", "Helps when a game ignores the virtual gamepad"][..],
-            &["Needs root access: Linux asks for your password once per session", "Needs a recent Linux kernel"][..],
-        ),
-    ];
+    let methods = crate::source::METHODS;
     tile_grid(ui, methods.len(), 300.0, 240.0, |ui, i, size| {
-        let (choice, name, badge, summary, pros, cons) = methods[i];
+        let Method { choice, name, badge, summary, pros, cons } = methods[i];
         let selected = source == choice;
         let frame = card(if selected { SELECTED_BG } else { PANEL })
             .stroke(egui::Stroke::new(if selected { 2.0 } else { 1.0 }, if selected { ACCENT } else { LINE }));
@@ -222,8 +212,7 @@ pub(super) fn capture_methods(ui: &mut egui::Ui, s: &Shared) -> Option<Command> 
             }
             if choice == SourceChoice::Proxy && selected {
                 let mut new_hide = hide;
-                ui.checkbox(&mut new_hide, "Hide the real gamepad from games 🔒 root")
-                    .on_hover_text("Games only see the virtual copy. Needs root access: Linux asks for your password");
+                ui.checkbox(&mut new_hide, crate::source::HIDE.label).on_hover_text(crate::source::HIDE.hover);
                 if new_hide != hide {
                     command = Some(Command::SetSource { source, hide: new_hide });
                 }

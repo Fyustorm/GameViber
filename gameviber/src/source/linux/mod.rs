@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use evdev::{Device, EventSummary, FFEffectCode};
 
-use super::{ActiveSource, EventSender, SourceKind, SourceOptions};
+use super::{ActiveSource, EventSender, HideOption, Method, SourceKind, SourceOptions};
 use crate::config::SourceChoice;
 use crate::gamepad::{codes, AxisRanges};
 use crate::platform::linux::helper::client::Helper;
@@ -20,6 +20,35 @@ use crate::platform::linux::is_root;
 use crate::rumble::{EffectKind, Envelope, Effect};
 use ebpf::EbpfSource;
 use proxy::{Hide, ProxySource};
+
+/// SDL_GameControllerDB's Linux mappings (`gamepad::mapping`).
+pub const MAPPINGS: &str = include_str!("../../../gamepads/gamecontrollerdb.txt");
+/// Written at the end of the mapping lines GameViber saves.
+pub const MAPPING_PLATFORM: &str = "Linux";
+
+pub const METHODS: &[Method] = &[
+    Method {
+        choice: SourceChoice::Proxy,
+        name: "Standard",
+        badge: "Recommended",
+        summary: "GameViber shows games a virtual copy of your gamepad and listens to what they send it.",
+        pros: &["Works with nearly every game", "No root access needed", "Your gamepad can still vibrate too"],
+        cons: &["Start GameViber before the game", "Games may see two controllers: hide the real one below"],
+    },
+    Method {
+        choice: SourceChoice::Ebpf,
+        name: "Kernel probe",
+        badge: "🔒 Root",
+        summary: "Games keep using your real gamepad; GameViber quietly listens in the background.",
+        pros: &["No second controller in games", "Can be turned on while a game is running", "Helps when a game ignores the virtual gamepad"],
+        cons: &["Needs root access: Linux asks for your password once per session", "Needs a recent Linux kernel"],
+    },
+];
+
+pub const HIDE: HideOption = HideOption {
+    label: "Hide the real gamepad from games 🔒 root",
+    hover: "Games only see the virtual copy. Needs root access: Linux asks for your password",
+};
 
 /// Starts the sources; owns the privileged helper they share.
 pub struct Sources {

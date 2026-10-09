@@ -1,23 +1,47 @@
 //! Event sources: they observe what the game sends to the gamepad and turn
 //! it into `SourceEvent`s, identical whatever the interception method and the
-//! OS. The methods themselves are OS backends (`linux`: proxy and eBPF), started
-//! through `Sources`.
+//! OS. The methods themselves are OS backends (`linux`: proxy and eBPF;
+//! `windows`: proxy), started through `Sources`, which also say how the
+//! Gamepad page describes them (`METHODS`, `HIDE`) and which gamepad mappings
+//! of SDL_GameControllerDB are theirs (`MAPPINGS`).
 
 #[cfg(target_os = "linux")]
 pub mod linux;
 #[cfg(target_os = "linux")]
-pub use linux::Sources;
-#[cfg(not(target_os = "linux"))]
+pub use linux::{Sources, HIDE, MAPPINGS, MAPPING_PLATFORM, METHODS};
+#[cfg(target_os = "windows")]
+mod windows;
+#[cfg(target_os = "windows")]
+pub use self::windows::{Sources, HIDE, MAPPINGS, MAPPING_PLATFORM, METHODS};
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 mod unsupported;
-#[cfg(not(target_os = "linux"))]
-pub use unsupported::Sources;
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+pub use unsupported::{Sources, HIDE, MAPPINGS, MAPPING_PLATFORM, METHODS};
 
 use std::path::PathBuf;
 
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::gamepad::mapping::{Mapping, Origin, RawState};
+use crate::config::SourceChoice;
+use crate::gamepad::mapping::{Mapping, Origin, PadOutput, RawState};
+use crate::gamepad::{button_code, codes as c, BUTTONS};
 use crate::rumble::Effect;
+
+/// A capture method as the Gamepad page shows it.
+pub struct Method {
+    pub choice: SourceChoice,
+    pub name: &'static str,
+    pub badge: &'static str,
+    pub summary: &'static str,
+    pub pros: &'static [&'static str],
+    pub cons: &'static [&'static str],
+}
+
+/// The proxy's option hiding the real gamepad from games: its label and hover text.
+pub struct HideOption {
+    pub label: &'static str,
+    pub hover: &'static str,
+}
 
 #[derive(Debug, Clone)]
 pub enum SourceKind {
@@ -109,4 +133,22 @@ pub trait ActiveSource {
         None
     }
     fn shutdown(self: Box<Self>);
+}
+
+/// What GameViber hears of a gamepad in the Xbox layout going from `was` to `now`.
+pub fn changes(was: &PadOutput, now: &PadOutput) -> Vec<SourceKind> {
+    let mut kinds = Vec::new();
+    for name in BUTTONS {
+        let Some(code) = button_code(name) else { continue };
+        let pressed = now.held.contains(name);
+        if was.held.contains(name) != pressed {
+            kinds.push(SourceKind::Button { code, pressed });
+        }
+    }
+    for (name, code) in [("LX", c::ABS_X), ("LY", c::ABS_Y), ("RX", c::ABS_RX), ("RY", c::ABS_RY), ("LT", c::ABS_Z), ("RT", c::ABS_RZ)] {
+        if was.axes[name] != now.axes[name] {
+            kinds.push(SourceKind::Axis { code, value: now.axes[name] });
+        }
+    }
+    kinds
 }

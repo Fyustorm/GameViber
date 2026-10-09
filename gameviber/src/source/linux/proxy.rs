@@ -26,11 +26,11 @@ use evdev::{
 
 use super::{axis_ranges, driver, effect_from_evdev, find_gamepad, has_rumble, translate_input};
 use crate::gamepad::mapping::{self, Layout, Mapping, Origin, PadOutput, RawState};
-use crate::gamepad::{button_code, codes as c, AxisRanges, BUTTONS};
+use crate::gamepad::{codes as c, AxisRanges};
 use crate::platform::linux::helper::client::{Helper, Phase};
 use crate::platform::linux::helper::Request;
 use crate::platform::linux::hider::DeviceHider;
-use crate::source::{ActiveSource, EventSender, PadInfo, PadLayout, SourceEvent, SourceHealth, SourceKind};
+use crate::source::{changes, ActiveSource, EventSender, PadInfo, PadLayout, SourceEvent, SourceHealth, SourceKind};
 
 const FF_CODES: [FFEffectCode; 6] = [
     FFEffectCode::FF_RUMBLE,
@@ -544,24 +544,6 @@ fn xbox_360_events(was: &PadOutput, now: &PadOutput) -> Vec<InputEvent> {
         }
     }
     events
-}
-
-/// What GameViber hears of a mapped gamepad going from `was` to `now`.
-fn changes(was: &PadOutput, now: &PadOutput) -> Vec<SourceKind> {
-    let mut kinds = Vec::new();
-    for name in BUTTONS {
-        let Some(code) = button_code(name) else { continue };
-        let pressed = now.held.contains(name);
-        if was.held.contains(name) != pressed {
-            kinds.push(SourceKind::Button { code, pressed });
-        }
-    }
-    for (name, code) in [("LX", c::ABS_X), ("LY", c::ABS_Y), ("RX", c::ABS_RX), ("RY", c::ABS_RY), ("LT", c::ABS_Z), ("RT", c::ABS_RZ)] {
-        if was.axes[name] != now.axes[name] {
-            kinds.push(SourceKind::Axis { code, value: now.axes[name] });
-        }
-    }
-    kinds
 }
 
 fn set_nonblocking(fd: i32) -> io::Result<()> {

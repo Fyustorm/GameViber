@@ -1,7 +1,7 @@
 //! Gamepad mappings: which of a gamepad's buttons, axes and hats is which Xbox
 //! button or axis, for the gamepads whose driver does not say (DInput mode,
 //! generic HID). In SDL's format, so that a line of SDL_GameControllerDB (whose
-//! Linux mappings are embedded, `gamepads/`), or one another program built on
+//! mappings for this system are embedded, `gamepads/`), or one another program built on
 //! SDL wrote, works here too; the player's own lines, made on the Gamepad page,
 //! go in `gamecontrollerdb.txt` of the config directory.
 //!
@@ -16,12 +16,12 @@ use anyhow::Context;
 
 use super::{codes as c, AXES};
 
-/// SDL_GameControllerDB's Linux mappings.
-const BUNDLED: &str = include_str!("../../gamepads/gamecontrollerdb.txt");
+/// SDL_GameControllerDB's mappings for this system.
+const BUNDLED: &str = crate::source::MAPPINGS;
 /// The player's mappings, in the config directory.
 const USER_FILE: &str = "gamecontrollerdb.txt";
 /// Written at the end of the lines GameViber saves.
-const PLATFORM: &str = "Linux";
+const PLATFORM: &str = crate::source::MAPPING_PLATFORM;
 
 /// SDL's names of the buttons and axes, with ours (`BUTTONS`, `AXES`).
 const TARGETS: [(&str, &str, bool); 26] = [

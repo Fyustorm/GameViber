@@ -1,8 +1,9 @@
 //! Windows: the user's application data directories, the local time, the
 //! console's stop events, the system's file dialogs over GameViber's window,
-//! the registry (Steam's running game, GameViber's links).
+//! the registry (Steam's running game, GameViber's links), HidHide.
 
 mod files;
+pub mod hidhide;
 pub mod pipe;
 pub mod registry;
 
@@ -68,9 +69,13 @@ impl StopSignals {
     }
 }
 
-/// No subcommand runs instead of the app yet.
+/// `gameviber hidhide ...`: changes HidHide's lists as administrator instead of running the app.
 pub fn privileged_subcommand() -> Option<anyhow::Result<()>> {
-    None
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    (args.first().map(String::as_str) == Some(hidhide::SUBCOMMAND)).then(|| {
+        crate::logging::init(false);
+        hidhide::subcommand(&args[1..])
+    })
 }
 
 /// GameViber's window (an `HWND`), which dialogs open over; 0 without one.
