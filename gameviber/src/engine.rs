@@ -31,7 +31,8 @@ use crate::shortcuts::{Action, Shortcuts};
 use crate::screen::{self, Frame, ImagePhases, ScreenLevels, ScreenView};
 use crate::rumble::RumbleState;
 use crate::session::{self, Change, Recorder, RecordingInfo, Senses};
-use crate::stroke::Calibration;
+use crate::mode::outputs::StrokeIntent;
+use crate::stroke::{Calibration, Drive, Thrust};
 pub use crate::source::SourceHealth;
 use crate::source::{ActiveSource, EventSender, PadInfo, SourceEvent, SourceKind, SourceOptions, Sources};
 /// Play with a mode in one go that counts as a session of it (community stats).
@@ -47,6 +48,9 @@ pub const TEST_LEVEL: f64 = 0.5;
 const TEST_LENGTH: Duration = Duration::from_millis(800);
 /// A stroker tested from an unknown position first gets there gently, then strokes.
 const STROKE_TEST_LENGTH: Duration = Duration::from_secs(4);
+/// How long a single stroke (`thrust()`) stays in what strokers are asked, for the
+/// output task to see it (it plays each one once).
+const THRUST_KEEP: f64 = 0.3;
 /// How often a lost gamepad is looked for again (proxy source).
 const SOURCE_RETRY: Duration = Duration::from_secs(2);
 /// What `Command::SaveRecent` saves: the last seconds of play.
@@ -435,6 +439,10 @@ struct Engine {
     test: Option<(String, f64, Instant)>,
     /// Stroker being calibrated, its step and when it started.
     calibration: Option<(String, Calibration, Instant)>,
+    /// Single strokes the mode asked lately, by channel, with when (`THRUST_KEEP`).
+    thrusts: Vec<(String, Thrust, f64)>,
+    /// Id of the last one.
+    last_thrust: u64,
     overlay: overlay::Server,
     /// Overlay messages and when they were raised.
     overlay_events: Vec<(String, f64)>,
@@ -543,6 +551,8 @@ async fn run_async(
         buttons_seen: false,
         test: None,
         calibration: None,
+        thrusts: Vec::new(),
+        last_thrust: 0,
         recorder: None,
         recent: Recorder::rolling(0.0, RECENT_SECS),
         mark_save: None,
@@ -1043,6 +1053,7 @@ impl Engine {
             log::warn!("PANIC STOP ({from}): all toys stopped, mode suspended until re-armed");
             self.panic = true;
             self.calibration = None;
+            self.thrusts.clear();
         }
     }
 
@@ -1420,6 +1431,7 @@ impl Engine {
         self.last_toys = toys.toys.clone();
 
         let mut channels = BTreeMap::new();
+        let mut strokes: BTreeMap<String, StrokeIntent> = BTreeMap::new();
         let mut plots = Vec::new();
         let mut hud = Vec::new();
         let events = std::mem::take(&mut self.events);
@@ -1433,6 +1445,12 @@ impl Engine {
                     match rt.step(dt, levels, &self.pad, input_idle, &events) {
                         Ok(out) => {
                             channels = out.channels;
+                            strokes = out.strokes;
+                            for (channel, t) in out.thrusts {
+                                self.last_thrust += 1;
+                                let thrust = Thrust { id: self.last_thrust, length: t.length, seconds: t.seconds };
+                                self.thrusts.push((channel, thrust, time));
+                            }
                             plots = out.plots;
                             hud = out.hud;
                             self.overlay_events.extend(out.hud_events.into_iter().map(|e| (e, time)));
@@ -1450,7 +1468,10 @@ impl Engine {
         // A recording the toys play takes the mode's place (the panic stop still holds them).
         if let Some(replay) = self.replay.as_ref().filter(|_| !self.panic) {
             channels = replay.channels(time);
+            strokes.clear();
+            self.thrusts.clear();
         }
+        self.thrusts.retain(|(.., at)| time - at < THRUST_KEEP);
         // Safety layer: panic / suspension output 0 (channels stay empty), lost gamepad 0,
         // per-toy shaping, then the global cap. The mode keeps running so that its state
         // follows the game.
@@ -1481,8 +1502,17 @@ impl Engine {
                 .as_ref()
                 .filter(|(name, ..)| !self.panic && *name == toy.name)
                 .map(|(_, test, start)| (*test, now.duration_since(*start).as_secs_f64()));
-            let length = self.settings.stroke_length.get(&toy.name).and_then(|c| channels.get(c)).map(|v| v.min(cap));
-            toy_outputs.insert(toy.index, ToyOutput { level, stroke: shape.stroke, length, calibration });
+            // Strokers: the length the mode asks (its fastest strokes' if several), else the
+            // channel the player gave it, and the last single stroke asked.
+            let routed = |c: &String| self.routed(c, &toy.name);
+            let asked = strokes.iter().filter(|(c, _)| routed(c)).map(|(_, s)| *s).max_by(|a, b| a.speed.total_cmp(&b.speed));
+            let length = asked
+                .map(|s| s.length)
+                .or_else(|| self.settings.stroke_length.get(&toy.name).and_then(|c| channels.get(c)).copied())
+                .map(|v| v.min(cap));
+            let thrust = self.thrusts.iter().rev().find(|(c, ..)| routed(c)).map(|(_, t, _)| Thrust { length: t.length.min(cap), ..*t });
+            let drive = Drive { level, length, thrust };
+            toy_outputs.insert(toy.index, ToyOutput { drive, stroke: shape.stroke, calibration });
             toy_levels.insert(toy.name.clone(), level);
         }
         if let Some(i) = &self.intiface {

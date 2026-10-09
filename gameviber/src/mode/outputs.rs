@@ -1,5 +1,7 @@
 //! Output channels written by modes: a latched base level, temporary pulses
-//! and keyframed patterns. A channel's value is the max of all three.
+//! and keyframed patterns. A channel's value is the max of all three, and of
+//! the speed of its strokes: strokes (`stroke()`, held) and single ones
+//! (`thrust()`, also a pulse) are for strokers, other toys play their intensity.
 
 use std::collections::BTreeMap;
 
@@ -7,6 +9,23 @@ pub const ALL_CHANNELS: &str = "*";
 /// Pulses and patterns going on at once, on all channels (docs/spec-modes.md §10).
 const MAX_PULSES: usize = 64;
 const MAX_PATTERNS: usize = 16;
+
+/// Strokes asked with `stroke()`, held until changed.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StrokeIntent {
+    /// 0..1, from the toy's slowest to its fastest.
+    pub speed: f64,
+    /// 0..1, from its shortest strokes to its whole range.
+    pub length: f64,
+}
+
+/// One stroke asked with `thrust()`, there and back.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ThrustIntent {
+    /// 0..1, as `StrokeIntent::length`.
+    pub length: f64,
+    pub seconds: f64,
+}
 
 #[derive(Debug, Clone)]
 struct Pulse {
@@ -67,12 +86,23 @@ pub struct Outputs {
     pulses: Vec<Pulse>,
     patterns: Vec<PatternPlay>,
     next_id: u64,
+    strokes: BTreeMap<String, StrokeIntent>,
+    /// Asked since the last `take_thrusts`.
+    thrusts: Vec<(String, ThrustIntent)>,
 }
 
 impl Outputs {
     pub fn new(channels: Vec<String>) -> Self {
         let base = channels.iter().map(|c| (c.clone(), 0.0)).collect();
-        Self { channels, base, pulses: Vec::new(), patterns: Vec::new(), next_id: 1 }
+        Self {
+            channels,
+            base,
+            pulses: Vec::new(),
+            patterns: Vec::new(),
+            next_id: 1,
+            strokes: BTreeMap::new(),
+            thrusts: Vec::new(),
+        }
     }
 
     /// Resolves a channel argument ("*" = every channel) or fails with a script-facing message.
@@ -128,6 +158,40 @@ impl Outputs {
         Ok(id)
     }
 
+    /// Strokes held on the channel until changed; None goes back to its intensity.
+    pub fn stroke(&mut self, channel: &str, stroke: Option<StrokeIntent>) -> Result<(), String> {
+        for c in self.targets(channel)? {
+            match stroke {
+                Some(s) => {
+                    let s = StrokeIntent { speed: s.speed.clamp(0.0, 1.0), length: s.length.clamp(0.0, 1.0) };
+                    self.strokes.insert(c, s)
+                }
+                None => self.strokes.remove(&c),
+            };
+        }
+        Ok(())
+    }
+
+    /// One stroke at once; other toys feel it as a pulse of its length.
+    pub fn thrust(&mut self, channel: &str, length: f64, seconds: f64, now: f64) -> Result<(), String> {
+        let thrust = ThrustIntent { length: length.clamp(0.0, 1.0), seconds: seconds.max(0.0) };
+        self.pulse(channel, thrust.length, thrust.seconds, now)?;
+        for c in self.targets(channel)? {
+            self.thrusts.push((c, thrust));
+        }
+        Ok(())
+    }
+
+    /// Strokes held, by channel.
+    pub fn strokes(&self) -> BTreeMap<String, StrokeIntent> {
+        self.strokes.clone()
+    }
+
+    /// Single strokes asked since the last call.
+    pub fn take_thrusts(&mut self) -> Vec<(String, ThrustIntent)> {
+        std::mem::take(&mut self.thrusts)
+    }
+
     pub fn stop_pattern(&mut self, id: u64) {
         self.patterns.retain(|p| p.id != id);
     }
@@ -136,12 +200,18 @@ impl Outputs {
         self.base.values_mut().for_each(|v| *v = 0.0);
         self.pulses.clear();
         self.patterns.clear();
+        self.strokes.clear();
+        self.thrusts.clear();
     }
 
     /// Final value per channel at `now`; drops finished pulses and patterns.
     pub fn evaluate(&mut self, now: f64) -> BTreeMap<String, f64> {
         self.pulses.retain(|p| p.until > now);
         let mut values = self.base.clone();
+        for (c, s) in &self.strokes {
+            let v = values.entry(c.clone()).or_default();
+            *v = v.max(s.speed);
+        }
         for p in &self.pulses {
             let v = values.entry(p.channel.clone()).or_default();
             *v = v.max(p.level);
@@ -210,8 +280,33 @@ mod tests {
         let mut o = outputs();
         o.set("main", 0.5).unwrap();
         o.pulse("aux", 1.0, 10.0, 0.0).unwrap();
+        o.stroke("main", Some(StrokeIntent { speed: 0.7, length: 1.0 })).unwrap();
+        o.thrust("aux", 1.0, 0.5, 0.0).unwrap();
         o.stop_all();
         let v = o.evaluate(1.0);
         assert_eq!((v["main"], v["aux"]), (0.0, 0.0));
+        assert!(o.strokes().is_empty() && o.take_thrusts().is_empty());
+    }
+
+    #[test]
+    fn strokes_are_held_and_felt_as_their_speed() {
+        let mut o = outputs();
+        o.set("main", 0.2).unwrap();
+        o.stroke("*", Some(StrokeIntent { speed: 1.5, length: 0.4 })).unwrap();
+        assert_eq!(o.evaluate(5.0)["aux"], 1.0);
+        assert_eq!(o.strokes()["main"], StrokeIntent { speed: 1.0, length: 0.4 });
+        o.stroke("main", None).unwrap();
+        assert_eq!(o.evaluate(5.0)["main"], 0.2);
+        assert!(o.stroke("nope", None).is_err());
+    }
+
+    #[test]
+    fn a_thrust_is_taken_once_and_felt_as_a_pulse() {
+        let mut o = outputs();
+        o.thrust("main", 0.8, 0.4, 1.0).unwrap();
+        assert_eq!(o.evaluate(1.2)["main"], 0.8);
+        assert_eq!(o.evaluate(1.5)["main"], 0.0);
+        assert_eq!(o.take_thrusts(), vec![("main".to_owned(), ThrustIntent { length: 0.8, seconds: 0.4 })]);
+        assert!(o.take_thrusts().is_empty());
     }
 }

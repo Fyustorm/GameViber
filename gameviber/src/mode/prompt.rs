@@ -34,8 +34,9 @@ const SPEC_LEFT_OUT: [&str; 7] = [
     "## 14. ",
 ];
 /// Left out of quick requests too: the raw sound and image, the inputs set
-/// up for the mode and the advanced inputs (`Depth::Quick`).
-const SPEC_ADVANCED: [&str; 3] = ["### 6.4 ", "### 6.5 ", "### 7.1 "];
+/// up for the mode, the advanced inputs and the strokers' own outputs
+/// (`Depth::Quick`).
+const SPEC_ADVANCED: [&str; 4] = ["### 6.4 ", "### 6.5 ", "### 7.1 ", "### 8.5 "];
 
 /// How much of GameViber a request shows the assistant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

@@ -182,6 +182,33 @@ fn pulses_patterns_and_channels() {
 }
 
 #[test]
+fn strokes_and_thrusts_for_strokers() {
+    let mut rt = load(&wrap(
+        "local n = 0\n\
+         function tick(dt, input)\n\
+           n = n + 1\n\
+           if n == 1 then stroke(0.6, 0.3); stroke(0.9, nil, 'aux') end\n\
+           if n == 2 then thrust(0.8, 0.5, 'aux') end\n\
+           if n == 3 then stroke(nil) end\n\
+         end",
+    ));
+    let out = step(&mut rt, rumble(0.0, 0.0));
+    // Felt as their speed by every toy; the length defaults to the whole range.
+    assert_eq!((out.channels["main"], out.channels["aux"]), (0.6, 0.9));
+    assert_eq!(out.strokes["main"], outputs::StrokeIntent { speed: 0.6, length: 0.3 });
+    assert_eq!(out.strokes["aux"].length, 1.0);
+    assert!(out.thrusts.is_empty());
+    let out = step(&mut rt, rumble(0.0, 0.0));
+    assert_eq!(out.thrusts, vec![("aux".to_owned(), outputs::ThrustIntent { length: 0.8, seconds: 0.5 })]);
+    let out = step(&mut rt, rumble(0.0, 0.0));
+    assert!(out.thrusts.is_empty());
+    assert!(!out.strokes.contains_key("main") && out.channels["main"] == 0.0);
+    assert!(rt.step(DT, rumble(0.0, 0.0), &PadState::default(), 1e9, &[]).is_ok());
+    let mut bad = load(&wrap("function tick() stroke(0.5, 1, 'nope') end"));
+    assert!(bad.step(DT, rumble(0.0, 0.0), &PadState::default(), 1e9, &[]).unwrap_err().contains("unknown channel"));
+}
+
+#[test]
 fn timers_after_every_and_cancel() {
     let src = wrap(
         "count, once = 0, 0

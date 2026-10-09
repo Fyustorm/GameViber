@@ -23,7 +23,7 @@ const KEYWORDS: &[&str] = &[
 const CONSTANTS: &[&str] = &["true", "false", "nil"];
 /// Globals of the mode API (docs/spec-modes.md) and of the Luau sandbox.
 const GLOBALS: &[&str] = &[
-    "mode", "number", "bool", "choice", "button_param", "set", "pulse", "play", "stop_all", "pattern", "hud",
+    "mode", "number", "bool", "choice", "button_param", "set", "pulse", "play", "stop_all", "pattern", "stroke", "thrust", "hud",
     "hud_event", "plot", "log", "print", "after", "every", "clamp", "lerp", "map", "random", "P", "input", "persist",
     "math", "string", "table", "bit32", "utf8", "tostring", "tonumber", "pairs", "ipairs", "type", "typeof",
     "select", "error", "assert", "pcall", "setmetatable", "getmetatable", "rawget", "rawset", "unpack",

@@ -21,7 +21,7 @@ use crate::audio::{AudioHit, AudioLevels, Embedding};
 use crate::gamepad::{ButtonEvent, PadState, AXES, BUTTONS};
 use crate::screen::ScreenLevels;
 use phases::{Ignored, PhaseChange, PhaseDecl, PhaseTracker, Sense};
-use outputs::Outputs;
+use outputs::{Outputs, StrokeIntent, ThrustIntent};
 use rumble_events::{RumbleEvent, RumbleLevels, RumbleTracker, DEFAULT_RELEASE, DEFAULT_THRESHOLD};
 
 pub const API_VERSION: u32 = 1;
@@ -191,6 +191,10 @@ pub struct TickOutput {
     pub hud: Vec<HudGauge>,
     /// Overlay messages raised with `hud_event()` during this tick.
     pub hud_events: Vec<String>,
+    /// Strokes held, by channel (`stroke()`).
+    pub strokes: BTreeMap<String, StrokeIntent>,
+    /// Single strokes asked during this tick (`thrust()`), by channel.
+    pub thrusts: Vec<(String, ThrustIntent)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -810,8 +814,10 @@ impl ModeRuntime {
         let plots = std::mem::take(&mut ctx.plots);
         let hud_events = std::mem::take(&mut ctx.hud_events);
         let hud = ctx.hud.clone();
-        let channels = ctx.outputs().map_err(lua_err)?.evaluate(time);
-        Ok(TickOutput { channels, plots, hud, hud_events })
+        let outputs = ctx.outputs().map_err(lua_err)?;
+        let channels = outputs.evaluate(time);
+        let (strokes, thrusts) = (outputs.strokes(), outputs.take_thrusts());
+        Ok(TickOutput { channels, plots, hud, hud_events, strokes, thrusts })
     }
 
     /// What the current phase keeps from the mode.

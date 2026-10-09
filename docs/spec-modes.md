@@ -562,6 +562,36 @@ hud_event(text)             -- short message ("Parry!", "Combo x5") that fades o
 - Use them for what the player wants to see while playing (the main gauge, detected
   parries or combos); keep `plot()` for tuning curves.
 
+### 8.5 Strokers
+
+Strokers (toys moving to positions) play every channel without help: the intensity
+becomes strokes, faster and longer as it rises (§8.2). A mode that knows what the
+strokes should be can say it:
+
+```lua
+stroke(speed, length [, channel])   -- held until the next call; stroke(nil [, channel]) stops it
+thrust(length, seconds [, channel]) -- one stroke there and back, at once
+```
+
+- `speed` is 0..1, from the toy's slowest to its fastest strokes; `length` is 0..1, from
+  its shortest strokes (a quarter of its range) to its whole range; it defaults to 1.
+  Both stay within what the player set for the toy and the global cap.
+- `stroke()` sets the speed and length of the channel's strokes. Without it, the
+  channel's intensity sets both. With it, the channel's value (§8.2) is at least `speed`:
+  other toys feel the strokes as an intensity, so a mode written for strokers works
+  with vibrators too.
+- `thrust()` cuts the current stroke short for one stroke of that length lasting
+  `seconds` (there and back), never faster than the toy can go, then the strokes go
+  on. Other toys feel it as `pulse(length, seconds)`. A thrust is the accent: a hit,
+  a parry, a finisher; use it like a pulse, not every tick.
+- A stroker plays the strokes of the channels it plays (of the fastest if several
+  have some). It follows them at its next change of direction, a few hundred
+  milliseconds late: strokes carry the mood (a slow stroke in exploration, a fast one
+  in battle), thrusts the moments.
+- A channel at 0 stops the toy, `stroke()` or not. `stop_all()` clears the strokes.
+- Recorded sessions keep the channels' values only: replayed, strokes play as their
+  speed.
+
 ## 9. Utilities
 
 | Function | Purpose |
@@ -636,8 +666,7 @@ resolution is therefore 20 ms.
 
 - **Chaining**: `input.upstream` would expose the output of the previous mode.
 - **Per-game mode**: detecting the game process and mapping it to a mode.
-- **Strokes written by the mode** (strokers already play the intensity, §8.2):
-  `stroke(speed, range)`, funscripts played on an event.
+- **Funscripts** played on an event, for strokers (§8.5).
 - **Multiple gamepads**: `ev.pad` and `input.pads[i]`.
 - **Block editor** generating Luau.
 - **The game's image without the overlay**: through the desktop's screen capture, for

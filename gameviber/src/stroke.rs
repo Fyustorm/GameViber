@@ -108,16 +108,23 @@ impl StrokeSettings {
     fn strokes(&self, level: f64, length: Option<f64>) -> (f64, f64, f64) {
         let level = level.clamp(0.0, 1.0);
         let (fast, slow) = (1.0 / self.fastest, 1.0 / self.slowest);
-        let longer = |x: f64| MIN_AMPLITUDE + (1.0 - MIN_AMPLITUDE) * x.clamp(0.0, 1.0);
-        let (amplitude, speed) = match (length.filter(|l| !l.is_nan()), self.style) {
-            (Some(length), _) => (longer(length), slow + (fast - slow) * level),
+        let (length, speed) = match (length.filter(|l| !l.is_nan()), self.style) {
+            (Some(length), _) => (length, slow + (fast - slow) * level),
             (None, StrokeStyle::Speed) => (1.0, slow + (fast - slow) * level),
-            (None, StrokeStyle::Depth) => (longer(level), (slow + fast) / 2.0),
-            (None, StrokeStyle::Both) => (longer(level), slow + (fast - slow) * level),
+            (None, StrokeStyle::Depth) => (level, (slow + fast) / 2.0),
+            (None, StrokeStyle::Both) => (level, slow + (fast - slow) * level),
         };
+        let (low, high) = self.window(length);
+        (low, high, speed)
+    }
+
+    /// Positions strokes of a 0..1 length go between: from the shortest ones to
+    /// the whole range, in its middle.
+    fn window(&self, length: f64) -> (f64, f64) {
+        let amplitude = MIN_AMPLITUDE + (1.0 - MIN_AMPLITUDE) * length.clamp(0.0, 1.0);
         let center = (self.bottom + self.top) / 2.0;
         let half = (self.top - self.bottom) * amplitude / 2.0;
-        (center - half, center + half, speed)
+        (center - half, center + half)
     }
 }
 
@@ -213,6 +220,36 @@ impl Ramp {
     }
 }
 
+/// What a stroker is asked for on a send period.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Drive {
+    /// Intensity, 0..1: the speed of its strokes, and their length unless `length` says.
+    pub level: f64,
+    /// Length of its strokes, 0..1, when a channel or the mode sets it.
+    pub length: Option<f64>,
+    /// The last single stroke asked (`thrust()`), played once.
+    pub thrust: Option<Thrust>,
+}
+
+/// One stroke there and back, at once.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Thrust {
+    /// Tells this one from the previous ones.
+    pub id: u64,
+    /// 0..1, as `Drive::length`.
+    pub length: f64,
+    /// For the whole stroke (never faster than the toy's fastest).
+    pub seconds: f64,
+}
+
+/// A thrust being played: its window, its speed and the half-strokes left.
+#[derive(Debug, Clone, Copy)]
+struct ThrustPlay {
+    window: (f64, f64),
+    speed: f64,
+    left: u8,
+}
+
 /// What to send to a stroker.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Motion {
@@ -258,22 +295,46 @@ pub struct Planner {
     level: f64,
     /// The last move went up.
     up: bool,
+    thrust: Option<ThrustPlay>,
+    /// Id of the last thrust played.
+    last_thrust: u64,
 }
 
 impl Default for Planner {
     /// The toy may be anywhere.
     fn default() -> Self {
-        Self { at: (0.0, 1.0), moving: None, last_move: f64::NEG_INFINITY, level: 0.0, up: false }
+        Self { at: (0.0, 1.0), moving: None, last_move: f64::NEG_INFINITY, level: 0.0, up: false, thrust: None, last_thrust: 0 }
     }
 }
 
 impl Planner {
-    /// What to send at `time` (seconds, monotonic) for the toy's 0..1 intensity and
-    /// the length another channel sets, if any.
-    pub fn tick(&mut self, time: f64, level: f64, length: Option<f64>, settings: &StrokeSettings) -> Option<Motion> {
+    /// What to send at `time` (seconds, monotonic) for what the toy is asked, if anything.
+    pub fn tick(&mut self, time: f64, drive: &Drive, settings: &StrokeSettings) -> Option<Motion> {
         let settings = settings.sanitized();
+        let Drive { level, length, thrust } = *drive;
         if level.is_nan() || level < SILENT {
+            self.thrust = None;
             return self.stop(time);
+        }
+        if let Some(thrust) = thrust.filter(|t| t.id != self.last_thrust) {
+            self.last_thrust = thrust.id;
+            let window = settings.window(thrust.length);
+            let speed = ((window.1 - window.0) / (thrust.seconds / 2.0).max(1e-3)).min(1.0 / settings.fastest);
+            self.thrust = (window.1 - window.0 >= EPSILON).then_some(ThrustPlay { window, speed, left: 2 });
+        }
+        if let Some(play) = self.thrust {
+            if play.left > 0 {
+                // The first half-stroke cuts the current one short.
+                let motion = self.plan(time, play.window, play.speed, settings.min_turn, play.left == 2);
+                if motion.is_some() {
+                    self.thrust = Some(ThrustPlay { left: play.left - 1, ..play });
+                }
+                return motion;
+            }
+            if self.moving.is_some_and(|m| time < m.end) {
+                return None;
+            }
+            self.thrust = None;
         }
         let (low, high, speed) = settings.strokes(level, length);
         let motion = self.plan(time, (low, high), speed, settings.min_turn, level - self.level >= RETARGET);
@@ -415,7 +476,7 @@ mod tests {
         let mut sent = Vec::new();
         let mut time = 0.0;
         while time < seconds {
-            if let Some(motion) = planner.tick(time, levels(time), None, settings) {
+            if let Some(motion) = planner.tick(time, &Drive { level: levels(time), ..Default::default() }, settings) {
                 sent.push((time, toy.at(time), motion));
                 toy.apply(time, motion);
             }
@@ -490,7 +551,7 @@ mod tests {
             let mut sent = Vec::new();
             for i in 0..400 {
                 let time = i as f64 * PERIOD;
-                if let Some(Motion::Move { position, ms }) = planner.tick(time, 0.2, Some(length), &settings) {
+                if let Some(Motion::Move { position, ms }) = planner.tick(time, &Drive { level: 0.2, length: Some(length), thrust: None }, &settings) {
                     sent.push((position, ms));
                 }
             }
@@ -502,6 +563,42 @@ mod tests {
         assert!((short - MIN_AMPLITUDE).abs() < 1e-9 && (long - 1.0).abs() < 1e-9, "{short} {long}");
         // The intensity sets the speed, whatever the style.
         assert!(((short / short_ms as f64) - (long / long_ms as f64)).abs() < 1e-4);
+    }
+
+    #[test]
+    fn a_thrust_plays_once_at_once_then_strokes_go_on() {
+        let settings = StrokeSettings { min_turn: 0.1, ..Default::default() };
+        let mut planner = Planner::default();
+        planner.at = (0.5, 0.5);
+        let mut toy = Toy { position: 0.5, moving: None };
+        let thrust = Thrust { id: 1, length: 1.0, seconds: 0.4 };
+        let mut sent = Vec::new();
+        for i in 0..200 {
+            let time = i as f64 * PERIOD;
+            // Slow strokes; the thrust is asked at 3 s, then stays in what the toy is asked.
+            let drive = Drive { level: 0.05, length: None, thrust: (time >= 3.0).then_some(thrust) };
+            if let Some(motion) = planner.tick(time, &drive, &settings) {
+                sent.push((time, toy.at(time), motion));
+                toy.apply(time, motion);
+            }
+        }
+        let after: Vec<_> = sent.iter().filter(|(t, ..)| *t >= 3.0).collect();
+        let (first, second) = (after[0], after[1]);
+        assert!(first.0 < 3.0 + settings.min_turn + PERIOD, "{first:?}");
+        // Over the whole range, as fast as the toy goes (0.2 s asked, 0.6 s its fastest).
+        let (low, high) = settings.window(1.0);
+        for &&(_, from, motion) in [first, second].iter() {
+            let Motion::Move { position, ms } = motion else { panic!("{motion:?}") };
+            assert!(position == low || position == high, "{position}");
+            assert!((position - from).abs() / (ms as f64 / 1000.0) <= 1.0 / settings.fastest + 1e-6);
+        }
+        let Motion::Move { ms, .. } = second.2 else { panic!() };
+        assert_eq!(ms, 600);
+        // Then slow, short strokes again: the thrust is not played twice.
+        let Motion::Move { position, .. } = after[2].2 else { panic!() };
+        let (low, high) = settings.window(0.05);
+        assert!(position == low || position == high, "{after:?}");
+        assert!(after[3..].iter().all(|(.., m)| matches!(m, Motion::Move { position, .. } if *position == low || *position == high)));
     }
 
     #[test]
@@ -529,10 +626,10 @@ mod tests {
         let mut planner = Planner::default();
         // Known at the bottom, then sent up and stopped halfway.
         planner.at = (0.0, 0.0);
-        let Some(Motion::Move { ms, .. }) = planner.tick(0.0, 1.0, None, &settings) else { panic!() };
+        let Some(Motion::Move { ms, .. }) = planner.tick(0.0, &Drive { level: 1.0, ..Default::default() }, &settings) else { panic!() };
         assert_eq!(ms, 200);
-        assert_eq!(planner.tick(0.1, 0.0, None, &settings), Some(Motion::Stop));
-        let Some(Motion::Move { position, ms }) = planner.tick(1.0, 1.0, None, &settings) else { panic!() };
+        assert_eq!(planner.tick(0.1, &Drive::default(), &settings), Some(Motion::Stop));
+        let Some(Motion::Move { position, ms }) = planner.tick(1.0, &Drive { level: 1.0, ..Default::default() }, &settings) else { panic!() };
         // Somewhere between 0 and 0.5: timed for the far end of that.
         assert_eq!(position, 0.0);
         assert!(ms as f64 >= 500.0 / APPROACH_SPEED - 1.0, "{ms}");

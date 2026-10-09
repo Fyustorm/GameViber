@@ -5,6 +5,7 @@ use std::rc::Rc;
 
 use mlua::{Function, Lua, Table, Value, Variadic};
 
+use super::outputs::StrokeIntent;
 use super::{display, Ctx, HudGauge, ParamDef, ParamKind, ParamValue, Question, Timer};
 use crate::gamepad::BUTTONS;
 
@@ -117,6 +118,29 @@ pub(super) fn register(lua: &Lua, ctx: &Rc<RefCell<Ctx>>) -> mlua::Result<()> {
                 let mut ctx = ctx.borrow_mut();
                 let now = ctx.time;
                 ctx.outputs()?.pulse(&channel, level, seconds, now).map_err(runtime_err)
+            })?,
+        )?;
+    }
+    {
+        let ctx = ctx.clone();
+        g.set(
+            "stroke",
+            lua.create_function(move |_, (speed, length, channel): (Option<f64>, Option<f64>, Option<String>)| {
+                let channel = channel.unwrap_or_else(|| DEFAULT_CHANNEL.into());
+                let stroke = speed.map(|speed| StrokeIntent { speed, length: length.unwrap_or(1.0) });
+                ctx.borrow_mut().outputs()?.stroke(&channel, stroke).map_err(runtime_err)
+            })?,
+        )?;
+    }
+    {
+        let ctx = ctx.clone();
+        g.set(
+            "thrust",
+            lua.create_function(move |_, (length, seconds, channel): (f64, f64, Option<String>)| {
+                let channel = channel.unwrap_or_else(|| DEFAULT_CHANNEL.into());
+                let mut ctx = ctx.borrow_mut();
+                let now = ctx.time;
+                ctx.outputs()?.thrust(&channel, length, seconds, now).map_err(runtime_err)
             })?,
         )?;
     }

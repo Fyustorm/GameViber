@@ -17,7 +17,7 @@ use buttplug_core::message::OutputType;
 use futures::StreamExt;
 use tokio::sync::{mpsc, watch};
 
-use crate::stroke::{Calibration, Motion, Planner, StrokeSettings};
+use crate::stroke::{Calibration, Drive, Motion, Planner, StrokeSettings};
 
 const RETRY_DELAY: Duration = Duration::from_secs(5);
 /// At most 20 commands per second and per toy.
@@ -57,12 +57,11 @@ pub struct IntifaceStatus {
 /// What one toy is asked for.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ToyOutput {
-    /// Intensity, 0..1.
-    pub level: f64,
+    /// Intensity (`Drive::level`, 0..1), and for a stroker the length and single
+    /// strokes asked.
+    pub drive: Drive,
     /// How a stroker renders it.
     pub stroke: StrokeSettings,
-    /// A stroker's stroke length (0..1), when another channel sets it.
-    pub length: Option<f64>,
     /// A stroker being calibrated plays this step instead, started that many seconds ago.
     pub calibration: Option<(Calibration, f64)>,
 }
@@ -254,15 +253,15 @@ async fn run(
                     let time = started.elapsed().as_secs_f64();
                     for (index, device) in client.devices() {
                         let output = wanted.get(&index).copied();
-                        let value = output.map_or(0.0, |o| o.level).clamp(0.0, 1.0);
+                        let value = output.map_or(0.0, |o| o.drive.level).clamp(0.0, 1.0);
                         if let Some(kind) = stroker(&device) {
                             let stroke = output.map(|o| o.stroke).unwrap_or_default();
                             let calibration = output.and_then(|o| o.calibration);
-                            let length = output.and_then(|o| o.length);
+                            let drive = output.map(|o| o.drive).unwrap_or_default();
                             let planner = planners.entry(index).or_default();
                             let motion = match calibration {
                                 Some((test, elapsed)) => planner.calibrate(time, test, elapsed, &stroke),
-                                None => planner.tick(time, value, length, &stroke),
+                                None => planner.tick(time, &drive, &stroke),
                             };
                             let moving = calibration.is_some() || value >= crate::config::ToySettings::SILENT;
                             apply_stroker(&device, kind, planner, time, motion, moving, &mut sent).await;
