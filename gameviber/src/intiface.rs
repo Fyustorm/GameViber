@@ -17,7 +17,7 @@ use buttplug_core::message::OutputType;
 use futures::StreamExt;
 use tokio::sync::{mpsc, watch};
 
-use crate::stroke::{Motion, Planner, StrokeSettings};
+use crate::stroke::{Calibration, Motion, Planner, StrokeSettings};
 
 const RETRY_DELAY: Duration = Duration::from_secs(5);
 /// At most 20 commands per second and per toy.
@@ -61,6 +61,8 @@ pub struct ToyOutput {
     pub level: f64,
     /// How a stroker renders it.
     pub stroke: StrokeSettings,
+    /// A stroker being calibrated plays this step instead, started that many seconds ago.
+    pub calibration: Option<(Calibration, f64)>,
 }
 
 /// Toy index -> what it is asked for.
@@ -242,8 +244,14 @@ async fn run(
                         let value = output.map_or(0.0, |o| o.level).clamp(0.0, 1.0);
                         if let Some(kind) = stroker(&device) {
                             let stroke = output.map(|o| o.stroke).unwrap_or_default();
+                            let calibration = output.and_then(|o| o.calibration);
                             let planner = planners.entry(index).or_default();
-                            apply_stroker(&device, kind, planner, time, value, &stroke, &mut sent).await;
+                            let motion = match calibration {
+                                Some((test, elapsed)) => planner.calibrate(time, test, elapsed, &stroke),
+                                None => planner.tick(time, value, &stroke),
+                            };
+                            let moving = calibration.is_some() || value >= crate::config::ToySettings::SILENT;
+                            apply_stroker(&device, kind, planner, time, motion, moving, &mut sent).await;
                             continue;
                         }
                         let changed = match sent.get(&index).copied() {
@@ -387,18 +395,17 @@ fn stroker(device: &ButtplugClientDevice) -> Option<Stroker> {
     }
 }
 
-/// Sends a stroker the planner's moves (`sent`: the last position sent to a
-/// `Stroker::Position` toy).
+/// Sends a stroker the planner's move, if any; a `Stroker::Position` toy follows
+/// the planner while `moving` (`sent`: the last position sent to it).
 async fn apply_stroker(
     device: &ButtplugClientDevice,
     kind: Stroker,
-    planner: &mut Planner,
+    planner: &Planner,
     time: f64,
-    value: f64,
-    stroke: &StrokeSettings,
+    motion: Option<Motion>,
+    moving: bool,
     sent: &mut BTreeMap<u32, f64>,
 ) {
-    let motion = planner.tick(time, value, stroke);
     let cmd = match (kind, motion) {
         (_, Some(Motion::Stop)) => {
             sent.remove(&device.index());
@@ -412,7 +419,7 @@ async fn apply_stroker(
         }
         (Stroker::WithDuration, None) => return,
         (Stroker::Position, _) => {
-            if value < crate::config::ToySettings::SILENT {
+            if !moving {
                 return;
             }
             let position = planner.position(time);

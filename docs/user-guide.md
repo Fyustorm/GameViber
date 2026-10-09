@@ -31,7 +31,10 @@ Strokers (The Handy, Kiiroo Keon, OSR2...) play every mode: GameViber turns the
 intensity a mode asks for into strokes, faster and longer as it rises (**Stronger**
 on the toy's card: speed, length or both). A stroker does not tell where it is,
 so GameViber never asks one for more than it can do, and moves it slowly when it
-cannot know where it is (first move, after a stop). Set on its card:
+cannot know where it is (first move, after a stop). **🎯 Calibrate** on its card
+finds what it can do with you: the toy goes where you put its range, then strokes
+faster, turns more often and strokes slower, step by step, until you press the
+button when it stops following; GameViber keeps a margin. Or set them on its card:
 
 - **Lowest** / **Highest**: the part of its length it goes over.
 - **Fastest**: the time of its fastest move over its whole length. Raise it if the

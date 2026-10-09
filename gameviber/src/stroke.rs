@@ -8,6 +8,10 @@
 //! can do, it is where it was sent at the end of every half-stroke. Otherwise
 //! (first move, a move interrupted) where it may be is kept as an interval, and
 //! the next move is timed for the farthest point of it.
+//!
+//! What a toy can do is found with the player (`Calibration`): it goes where the
+//! player puts its range, then strokes faster, turns more often and strokes
+//! slower in steps, until the player says it stopped following.
 
 use serde::{Deserialize, Serialize};
 
@@ -23,6 +27,11 @@ const APPROACH_SPEED: f64 = 0.5;
 const RETARGET: f64 = 0.25;
 /// Closer positions are the same.
 const EPSILON: f64 = 1e-3;
+/// Shortest step of a calibration ramp, in seconds: a few strokes to watch.
+const RAMP_STEP: f64 = 3.0;
+/// Time players take to see the toy stop following and press the button, in
+/// seconds: the result is the step tried that long before.
+const REACTION: f64 = 1.0;
 
 /// What the intensity changes in the strokes.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -109,6 +118,98 @@ impl StrokeSettings {
     }
 }
 
+/// What a calibration step makes a stroker do.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Calibration {
+    /// Stay still (between steps: the mode does not drive the toy).
+    Pause,
+    /// Go to this position gently and stay there.
+    Hold(f64),
+    Ramp(Ramp),
+}
+
+/// Strokes tried one step after the other, until the player says the toy stopped
+/// following, for one of its `StrokeSettings`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ramp {
+    /// Strokes over the range, faster and faster: `fastest`.
+    Fastest,
+    /// Short strokes, turning more and more often: `min_turn`.
+    Turns,
+    /// Strokes over the range, slower and slower: `slowest`.
+    Slowest,
+}
+
+impl Ramp {
+    #[cfg(test)]
+    const ALL: [Ramp; 3] = [Ramp::Fastest, Ramp::Turns, Ramp::Slowest];
+
+    /// First value tried, factor from one step to the next, last value (seconds).
+    fn steps(self) -> (f64, f64, f64) {
+        match self {
+            Ramp::Fastest => (1.2, 0.88, *StrokeSettings::FASTEST_RANGE.start()),
+            Ramp::Turns => (0.6, 0.85, *StrokeSettings::TURN_RANGE.start()),
+            Ramp::Slowest => (2.0, 1.4, *StrokeSettings::SLOWEST_RANGE.end()),
+        }
+    }
+
+    /// How long a value is tried: a few strokes, or one slow half-stroke.
+    fn step_length(self, value: f64) -> f64 {
+        match self {
+            Ramp::Slowest => value.max(RAMP_STEP),
+            Ramp::Fastest | Ramp::Turns => RAMP_STEP,
+        }
+    }
+
+    /// Every value tried, with when it starts.
+    fn schedule(self) -> Vec<(f64, f64)> {
+        let (first, factor, last) = self.steps();
+        let past = |v: f64| if factor < 1.0 { v < last } else { v > last };
+        let mut schedule = Vec::new();
+        let (mut start, mut value) = (0.0, first);
+        loop {
+            schedule.push((start, value));
+            if value == last {
+                return schedule;
+            }
+            start += self.step_length(value);
+            value *= factor;
+            if past(value) {
+                value = last;
+            }
+        }
+    }
+
+    /// The value tried `elapsed` seconds after the start, None once the ramp is over.
+    pub fn value(self, elapsed: f64) -> Option<f64> {
+        if elapsed >= self.length() {
+            return None;
+        }
+        self.schedule().into_iter().take_while(|(start, _)| *start <= elapsed).last().map(|(_, v)| v)
+    }
+
+    /// Seconds from the first step to the end of the last.
+    pub fn length(self) -> f64 {
+        let schedule = self.schedule();
+        let (start, value) = schedule[schedule.len() - 1];
+        start + self.step_length(value)
+    }
+
+    /// The setting to keep when the player says the toy stopped following
+    /// `elapsed` seconds after the start (infinite: it followed every step): what
+    /// was tried a reaction time before, with a margin.
+    pub fn result(self, elapsed: f64) -> f64 {
+        let (_, _, last) = self.steps();
+        let tried = self.value((elapsed - REACTION).max(0.0)).unwrap_or(last);
+        let (value, range) = match self {
+            Ramp::Fastest => (tried * 1.15, StrokeSettings::FASTEST_RANGE),
+            Ramp::Turns => (tried * 1.15, StrokeSettings::TURN_RANGE),
+            Ramp::Slowest => (tried / 1.2, StrokeSettings::SLOWEST_RANGE),
+        };
+        value.clamp(*range.start(), *range.end())
+    }
+}
+
 /// What to send to a stroker.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Motion {
@@ -168,21 +269,69 @@ impl Planner {
     pub fn tick(&mut self, time: f64, level: f64, settings: &StrokeSettings) -> Option<Motion> {
         let settings = settings.sanitized();
         if level.is_nan() || level < SILENT {
-            let segment = self.moving.take()?;
-            self.at = segment.bounds(time);
-            return (time < segment.end).then_some(Motion::Stop);
+            return self.stop(time);
         }
-        if time - self.last_move < settings.min_turn {
+        let (low, high, speed) = settings.strokes(level);
+        let motion = self.plan(time, (low, high), speed, settings.min_turn, level - self.level >= RETARGET);
+        if motion.is_some() {
+            self.level = level;
+        }
+        motion
+    }
+
+    /// What to send at `time` for a calibration step, `elapsed` seconds after it
+    /// started. The settings being found are not obeyed, only the range and the
+    /// widest limits (`StrokeSettings`' ranges); turns use the fastest found.
+    pub fn calibrate(&mut self, time: f64, test: Calibration, elapsed: f64, settings: &StrokeSettings) -> Option<Motion> {
+        let settings = settings.sanitized();
+        let shortest_turn = *StrokeSettings::TURN_RANGE.start();
+        let fastest = 1.0 / *StrokeSettings::FASTEST_RANGE.start();
+        let (low, high) = (settings.bottom, settings.top);
+        let ramp = match test {
+            Calibration::Pause => return self.stop(time),
+            Calibration::Hold(position) => {
+                let position = position.clamp(0.0, 1.0);
+                let moved = self.moving.is_some_and(|m| (m.to - position).abs() >= EPSILON);
+                let speed = APPROACH_SPEED.min(1.0 / settings.fastest);
+                return self.plan(time, (position, position), speed, shortest_turn, moved);
+            }
+            Calibration::Ramp(ramp) => ramp,
+        };
+        let Some(value) = ramp.value(elapsed) else { return self.stop(time) };
+        match ramp {
+            Ramp::Fastest => self.plan(time, (low, high), (1.0 / value).min(fastest), shortest_turn, false),
+            Ramp::Slowest => self.plan(time, (low, high), 1.0 / value, shortest_turn, false),
+            Ramp::Turns => {
+                // As long as the toy can go in a turn's time, at most half the range.
+                let length = ((high - low) / 2.0).min(value / settings.fastest);
+                let center = (low + high) / 2.0;
+                let window = (center - length / 2.0, center + length / 2.0);
+                self.plan(time, window, length / value.max(shortest_turn), shortest_turn, false)
+            }
+        }
+    }
+
+    /// Stops a moving toy where it is.
+    fn stop(&mut self, time: f64) -> Option<Motion> {
+        let segment = self.moving.take()?;
+        self.at = segment.bounds(time);
+        (time < segment.end).then_some(Motion::Stop)
+    }
+
+    /// The next half-stroke between `low` and `high` at `speed` (full lengths per
+    /// second), once the current one is over or at once if `interrupt`, never
+    /// sooner than `min_turn` after the last one.
+    fn plan(&mut self, time: f64, (low, high): (f64, f64), speed: f64, min_turn: f64, interrupt: bool) -> Option<Motion> {
+        if time - self.last_move < min_turn {
             return None;
         }
         if let Some(segment) = self.moving {
-            if time < segment.end && level - self.level < RETARGET {
+            if time < segment.end && !interrupt {
                 return None;
             }
             self.at = segment.bounds(time);
             self.moving = None;
         }
-        let (low, high, speed) = settings.strokes(level);
         let (a, b) = self.at;
         let known = b - a < EPSILON;
         // Back the other way, unless the toy is already past that end.
@@ -193,11 +342,10 @@ impl Planner {
             return None;
         }
         let speed = if known { speed } else { speed.min(APPROACH_SPEED) };
-        let seconds = (distance / speed).max(settings.min_turn);
+        let seconds = (distance / speed).max(min_turn);
         let ms = (seconds * 1000.0).ceil();
         self.moving = Some(Segment { from: self.at, to, start: time, end: time + ms / 1000.0 });
         self.last_move = time;
-        self.level = level;
         self.up = to > here;
         Some(Motion::Move { position: to, ms: ms as u32 })
     }
@@ -361,6 +509,84 @@ mod tests {
         // Somewhere between 0 and 0.5: timed for the far end of that.
         assert_eq!(position, 0.0);
         assert!(ms as f64 >= 500.0 / APPROACH_SPEED - 1.0, "{ms}");
+    }
+
+    #[test]
+    fn ramps_step_to_their_limit_then_end() {
+        for ramp in Ramp::ALL {
+            let (first, _, last) = ramp.steps();
+            assert_eq!(ramp.value(0.0), Some(first));
+            assert_eq!(ramp.value(ramp.length() - 0.01), Some(last));
+            assert_eq!(ramp.value(ramp.length()), None);
+            let values: Vec<f64> = ramp.schedule().iter().map(|(_, v)| *v).collect();
+            assert!(values.windows(2).all(|w| (w[1] - w[0]).signum() == (last - first).signum()), "{ramp:?} {values:?}");
+            assert!(ramp.length() < 90.0, "{ramp:?} lasts {}", ramp.length());
+        }
+    }
+
+    #[test]
+    fn ramp_results_keep_a_margin_from_what_failed() {
+        // Pressed during the fourth step: the third was tried a reaction time before.
+        let third = Ramp::Fastest.schedule()[2];
+        let pressed = Ramp::Fastest.schedule()[3].0 + 0.5;
+        assert!((Ramp::Fastest.result(pressed) - third.1 * 1.15).abs() < 1e-9);
+        assert!(Ramp::Slowest.result(20.0) < Ramp::Slowest.value(20.0 - REACTION).unwrap());
+        // Followed everything: the limit, within the settings' range.
+        assert_eq!(Ramp::Turns.result(f64::INFINITY), 0.1 * 1.15);
+        assert!(StrokeSettings::SLOWEST_RANGE.contains(&Ramp::Slowest.result(f64::INFINITY)));
+    }
+
+    #[test]
+    fn calibration_ramps_play_what_they_say() {
+        let settings = StrokeSettings { bottom: 0.1, top: 0.9, fastest: 0.4, ..Default::default() };
+        for ramp in Ramp::ALL {
+            let mut planner = Planner::default();
+            planner.at = (0.1, 0.1);
+            let mut toy = Toy { position: 0.1, moving: None };
+            let mut time = 0.0;
+            let mut moves = Vec::new();
+            while time < ramp.length() + 1.0 {
+                if let Some(motion) = planner.calibrate(time, Calibration::Ramp(ramp), time, &settings) {
+                    moves.push((time, toy.at(time), motion));
+                    toy.apply(time, motion);
+                }
+                time += PERIOD;
+            }
+            for &(time, from, motion) in moves.iter().filter(|m| m.0 > 0.0) {
+                let Motion::Move { position, ms } = motion else { continue };
+                let tried = ramp.value(time).unwrap();
+                let seconds = ms as f64 / 1000.0;
+                assert!((0.1 - 1e-9..=0.9 + 1e-9).contains(&position), "{ramp:?} went to {position}");
+                assert!((position - from).abs() / seconds <= 1.0 / 0.2 + 1e-6, "{ramp:?} too fast at {time}");
+                match ramp {
+                    Ramp::Fastest | Ramp::Slowest => {
+                        assert!(((position - from).abs() / seconds - 1.0 / tried).abs() < 0.05, "{ramp:?} at {time}")
+                    }
+                    Ramp::Turns => {
+                        // Exactly the turn tried, longer when the window just shrank around the toy.
+                        assert!(seconds >= tried - 0.002, "{ramp:?} at {time}: {seconds} s");
+                        assert!((position - from).abs() / seconds <= 1.0 / 0.4 + 1e-6);
+                    }
+                }
+            }
+            let after: Vec<_> = moves.iter().filter(|m| m.0 >= ramp.length()).collect();
+            assert!(after.iter().all(|m| m.2 == Motion::Stop) && after.len() <= 1, "{ramp:?} after its end: {after:?}");
+        }
+    }
+
+    #[test]
+    fn hold_goes_where_the_slider_is() {
+        let settings = StrokeSettings::default();
+        let mut planner = Planner::default();
+        let Some(Motion::Move { position, ms }) = planner.calibrate(0.0, Calibration::Hold(0.3), 0.0, &settings) else { panic!() };
+        assert_eq!(position, 0.3);
+        // From anywhere: 0.7 at most, gently.
+        assert!(ms as f64 >= 700.0 / APPROACH_SPEED - 1.0);
+        assert_eq!(planner.calibrate(0.5, Calibration::Hold(0.3), 0.5, &settings), None);
+        // The slider moved: on its way at once.
+        let Some(Motion::Move { position, .. }) = planner.calibrate(0.6, Calibration::Hold(0.8), 0.6, &settings) else { panic!() };
+        assert_eq!(position, 0.8);
+        assert_eq!(planner.calibrate(60.0, Calibration::Hold(0.8), 60.0, &settings), None);
     }
 
     #[test]

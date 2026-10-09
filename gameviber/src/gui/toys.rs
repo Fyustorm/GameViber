@@ -1,6 +1,7 @@
 //! Toys page: the connection to Intiface Central, what it found, a test buzz,
 //! which output channel of the active mode each toy plays, and per-toy
-//! intensity settings (and what a stroker can do).
+//! intensity settings (and what a stroker can do, found step by step with the
+//! player: its calibration).
 
 use eframe::egui::{self, Margin, RichText, Vec2};
 
@@ -9,7 +10,7 @@ use super::{intiface_status, App};
 use crate::config::ToySettings;
 use crate::engine::{Command, Shared, TEST_LEVEL};
 use crate::intiface::{Control, Toy};
-use crate::stroke::{StrokeSettings, StrokeStyle};
+use crate::stroke::{Calibration, Ramp, StrokeSettings, StrokeStyle};
 
 pub const INTIFACE_DOWNLOAD: &str = "https://intiface.com/central/";
 
@@ -17,6 +18,41 @@ pub const INTIFACE_DOWNLOAD: &str = "https://intiface.com/central/";
 pub struct State {
     /// Intiface address being edited (None: show the saved one).
     url: Option<String>,
+    /// Stroker being calibrated: the page shows its steps instead of the toys.
+    calibration: Option<Wizard>,
+}
+
+struct Wizard {
+    toy: String,
+    step: Step,
+    /// What the step's ramp found, once the player answered or it ended.
+    found: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Step {
+    Range,
+    Ramp(Ramp),
+    Done,
+}
+
+impl Step {
+    const ALL: [Step; 5] = [Step::Range, Step::Ramp(Ramp::Fastest), Step::Ramp(Ramp::Turns), Step::Ramp(Ramp::Slowest), Step::Done];
+
+    fn label(self) -> &'static str {
+        match self {
+            Step::Range => "Range",
+            Step::Ramp(Ramp::Fastest) => "Fastest",
+            Step::Ramp(Ramp::Turns) => "Turns",
+            Step::Ramp(Ramp::Slowest) => "Slowest",
+            Step::Done => "Done",
+        }
+    }
+
+    fn next(self) -> Step {
+        let i = Step::ALL.iter().position(|s| *s == self).unwrap_or(0);
+        Step::ALL[(i + 1).min(Step::ALL.len() - 1)]
+    }
 }
 
 impl App {
@@ -24,6 +60,10 @@ impl App {
         let frame = egui::Frame::new().fill(BG).inner_margin(Margin::symmetric(24, 20));
         egui::CentralPanel::default().frame(frame).show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
+                if self.toys.calibration.is_some() {
+                    self.calibration_ui(ui, s);
+                    return;
+                }
                 heading(ui, "Your toys");
                 ui.label(muted(
                     "Found by Intiface Central. Turn a toy on while it scans to add it.",
@@ -39,7 +79,7 @@ impl App {
                     return;
                 }
                 let channels = s.mode.info.as_ref().map(|i| i.channels.clone()).unwrap_or_else(|| vec!["main".into()]);
-                let height = if s.intiface.toys.iter().any(|t| t.stroker) { 440.0 } else { 270.0 };
+                let height = if s.intiface.toys.iter().any(|t| t.stroker) { 470.0 } else { 270.0 };
                 tile_grid(ui, s.intiface.toys.len(), 360.0, height, |ui, i, size| {
                     let toy = &s.intiface.toys[i];
                     card(PANEL).show(ui, |ui| {
@@ -170,7 +210,7 @@ impl App {
         ui.label(muted("Intiface Central shows it on its main screen. The default is ws://127.0.0.1:12345.").size(12.0));
     }
 
-    fn toy_card(&self, ui: &mut egui::Ui, s: &Shared, toy: &Toy, channels: &[String]) {
+    fn toy_card(&mut self, ui: &mut egui::Ui, s: &Shared, toy: &Toy, channels: &[String]) {
         let name = toy.name.as_str();
         ui.horizontal(|ui| {
             ui.label(RichText::new(if toy.stroker { "↕" } else { "📳" }).size(20.0).color(ACCENT));
@@ -220,6 +260,10 @@ impl App {
             ui.separator();
             if let Some(stroke) = stroke_settings(ui, settings.stroke) {
                 self.send(Command::SetToySettings { toy: name.to_owned(), settings: ToySettings { stroke, ..settings } });
+            }
+            if ui.button("🎯 Calibrate").on_hover_text("Find what this toy can do, step by step, by watching it").clicked() {
+                self.send(Command::Calibrate(Some((name.to_owned(), Calibration::Pause))));
+                self.toys.calibration = Some(Wizard { toy: name.to_owned(), step: Step::Range, found: None });
             }
         }
         let hints = if toy.stroker {
@@ -278,6 +322,215 @@ fn labeled(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut egui::Ui) -> eg
         add(ui)
     })
     .inner
+}
+
+impl App {
+    /// Stops the calibration, if any: the toy plays the mode again.
+    pub(super) fn close_calibration(&mut self) {
+        if self.toys.calibration.take().is_some() {
+            self.send(Command::Calibrate(None));
+        }
+    }
+
+    /// The calibration's steps: the range, set with the toy going where the
+    /// sliders are, then ramps the player stops when the toy stops following.
+    fn calibration_ui(&mut self, ui: &mut egui::Ui, s: &Shared) {
+        let Some(wizard) = self.toys.calibration.as_ref() else { return };
+        let (name, step) = (wizard.toy.clone(), wizard.step);
+        ui.horizontal(|ui| {
+            if ui.button("‹ Toys").clicked() {
+                self.close_calibration();
+            }
+            heading(ui, &format!("Calibrate {name}"));
+        });
+        ui.label(muted(
+            "Watch the toy, without using it: each step finds what it can do. GameViber then keeps a margin \
+             and never asks for more.",
+        ));
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            for (i, s) in Step::ALL.into_iter().enumerate() {
+                let text = format!("{}. {}", i + 1, s.label());
+                ui.label(if s == step { RichText::new(text).strong().color(ACCENT) } else { muted(&text) });
+                if s != Step::Done {
+                    ui.label(muted("›"));
+                }
+            }
+        });
+        ui.add_space(8.0);
+        if !s.intiface.toys.iter().any(|t| t.name == name && t.stroker) {
+            ui.label(format!("{name} is not connected anymore."));
+            if ui.button("Close").clicked() {
+                self.close_calibration();
+            }
+            return;
+        }
+        let settings = s.settings.toys.get(&name).copied().unwrap_or_default();
+        card(PANEL).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            match step {
+                Step::Range => self.range_step(ui, &name, settings),
+                Step::Ramp(ramp) => self.ramp_step(ui, s, &name, ramp, settings),
+                Step::Done => self.calibration_done(ui, settings),
+            }
+        });
+    }
+
+    fn range_step(&mut self, ui: &mut egui::Ui, name: &str, settings: ToySettings) {
+        ui.label(RichText::new("How far it goes").strong());
+        ui.label(
+            "Move a slider: the toy slowly goes there. Set the lowest and the highest positions it should reach.",
+        );
+        ui.add_space(4.0);
+        let stroke = settings.stroke;
+        let (mut bottom, mut top) = (stroke.bottom * 100.0, stroke.top * 100.0);
+        ui.spacing_mut().slider_width = (ui.available_width() - 260.0).max(120.0);
+        let mut hold = None;
+        ui.horizontal(|ui| {
+            labeled(ui, "Lowest", |ui| ui.add(egui::Slider::new(&mut bottom, 0.0..=100.0).suffix("%").integer()));
+            if ui.button("Go there").clicked() {
+                hold = Some(stroke.bottom);
+            }
+        });
+        ui.horizontal(|ui| {
+            labeled(ui, "Highest", |ui| ui.add(egui::Slider::new(&mut top, 0.0..=100.0).suffix("%").integer()));
+            if ui.button("Go there").clicked() {
+                hold = Some(stroke.top);
+            }
+        });
+        let mut new = stroke;
+        if bottom != stroke.bottom * 100.0 {
+            new.bottom = bottom / 100.0;
+            new.top = new.top.max(new.bottom);
+            hold = Some(new.bottom);
+        } else if top != stroke.top * 100.0 {
+            new.top = top / 100.0;
+            new.bottom = new.bottom.min(new.top);
+            hold = Some(new.top);
+        }
+        if new != stroke {
+            self.send(Command::SetToySettings { toy: name.to_owned(), settings: ToySettings { stroke: new, ..settings } });
+        }
+        if let Some(position) = hold {
+            self.send(Command::Calibrate(Some((name.to_owned(), Calibration::Hold(position)))));
+        }
+        ui.add_space(8.0);
+        if ui.add(primary("Next ›")).clicked() {
+            self.next_step(name);
+        }
+    }
+
+    fn ramp_step(&mut self, ui: &mut egui::Ui, s: &Shared, name: &str, ramp: Ramp, settings: ToySettings) {
+        let (title, explanation, button) = match ramp {
+            Ramp::Fastest => (
+                "Its fastest strokes",
+                "The toy strokes faster and faster. Press the button as soon as it stops keeping up: \
+                 strokes getting shorter, stutters, a strained sound.",
+                "✋ It stopped keeping up",
+            ),
+            Ramp::Turns => (
+                "Its quickest turns",
+                "Short strokes, turning more and more often. Press the button as soon as turns get lost \
+                 or the toy shakes in place.",
+                "✋ Turns get lost",
+            ),
+            Ramp::Slowest => (
+                "Its slowest strokes",
+                "Strokes slower and slower. Press the button as soon as they stop being smooth: jerks, pauses.",
+                "✋ It jerks",
+            ),
+        };
+        ui.label(RichText::new(title).strong());
+        ui.label(explanation);
+        ui.add_space(8.0);
+        let running = s
+            .calibration
+            .as_ref()
+            .filter(|(toy, test, _)| toy == name && *test == Calibration::Ramp(ramp))
+            .map(|(.., elapsed)| *elapsed);
+        let found = self.toys.calibration.as_ref().and_then(|w| w.found);
+        match running {
+            Some(elapsed) => match ramp.value(elapsed) {
+                Some(value) => {
+                    ui.label(RichText::new(ramp_value(ramp, value)).size(18.0).strong());
+                    meter(ui, ui.available_width().min(400.0), elapsed / ramp.length(), ACCENT);
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.add(primary(button).min_size(Vec2::new(220.0, 36.0))).clicked() {
+                            self.ramp_found(name, ramp, ramp.result(elapsed), settings);
+                        }
+                        if ui.button("Stop").clicked() {
+                            self.send(Command::Calibrate(Some((name.to_owned(), Calibration::Pause))));
+                        }
+                    });
+                }
+                // It followed every step.
+                None => self.ramp_found(name, ramp, ramp.result(f64::INFINITY), settings),
+            },
+            None => {
+                if let Some(value) = found {
+                    ui.label(format!("Kept: {}, with a margin.", ramp_value(ramp, value)));
+                }
+                ui.horizontal(|ui| {
+                    let start = if found.is_some() { "▶ Again" } else { "▶ Start" };
+                    if ui.button(start).clicked() {
+                        self.send(Command::Calibrate(Some((name.to_owned(), Calibration::Ramp(ramp)))));
+                    }
+                    let next = if found.is_some() { "Next ›" } else { "Skip ›" };
+                    if ui.add(primary(next)).clicked() {
+                        self.next_step(name);
+                    }
+                });
+                ui.label(muted(format!("About {:.0} s at most.", ramp.length())).size(12.0));
+            }
+        }
+    }
+
+    /// Keeps what a ramp found and holds the toy still.
+    fn ramp_found(&mut self, name: &str, ramp: Ramp, value: f64, settings: ToySettings) {
+        let mut stroke = settings.stroke;
+        match ramp {
+            Ramp::Fastest => stroke.fastest = value,
+            Ramp::Turns => stroke.min_turn = value,
+            Ramp::Slowest => stroke.slowest = value.max(stroke.fastest),
+        }
+        self.send(Command::SetToySettings { toy: name.to_owned(), settings: ToySettings { stroke, ..settings } });
+        self.send(Command::Calibrate(Some((name.to_owned(), Calibration::Pause))));
+        if let Some(wizard) = self.toys.calibration.as_mut() {
+            wizard.found = Some(value);
+        }
+    }
+
+    fn next_step(&mut self, name: &str) {
+        self.send(Command::Calibrate(Some((name.to_owned(), Calibration::Pause))));
+        if let Some(wizard) = self.toys.calibration.as_mut() {
+            wizard.step = wizard.step.next();
+            wizard.found = None;
+        }
+    }
+
+    fn calibration_done(&mut self, ui: &mut egui::Ui, settings: ToySettings) {
+        let stroke = settings.stroke;
+        ui.label(RichText::new("Calibrated").strong());
+        ui.label(format!("Range: {:.0}% to {:.0}%", stroke.bottom * 100.0, stroke.top * 100.0));
+        ui.label(format!("Fastest: {}", ramp_value(Ramp::Fastest, stroke.fastest)));
+        ui.label(format!("Turns: {}", ramp_value(Ramp::Turns, stroke.min_turn)));
+        ui.label(format!("Slowest: {}", ramp_value(Ramp::Slowest, stroke.slowest)));
+        ui.label(muted("Change them on the toy's card at any time, or calibrate again."));
+        ui.add_space(8.0);
+        if ui.add(primary("Done")).clicked() {
+            self.close_calibration();
+        }
+    }
+}
+
+/// A ramp's value in words.
+fn ramp_value(ramp: Ramp, value: f64) -> String {
+    match ramp {
+        Ramp::Fastest => format!("whole length in {value:.2} s"),
+        Ramp::Turns => format!("a turn every {value:.2} s"),
+        Ramp::Slowest => format!("whole length in {value:.1} s"),
+    }
 }
 
 /// What a stroker can do and how far it goes: its range, its fastest and slowest

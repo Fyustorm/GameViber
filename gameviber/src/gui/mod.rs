@@ -290,6 +290,9 @@ impl eframe::App for App {
             Page::Creator => self.creator_ui(ui, &s),
             Page::Settings => self.settings_ui(ui, &s),
         }
+        if self.page != Page::Toys {
+            self.close_calibration();
+        }
         if self.tour.is_none() || self.community.consent_preview {
             self.stats_consent(ui.ctx(), &s);
         }

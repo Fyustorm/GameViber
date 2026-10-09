@@ -622,7 +622,8 @@ resolution is therefore 20 ms.
   gamepads by itself.
 - **Strokers**: GameViber does not know where a stroker is. Each one has a range, a
   fastest and a slowest move and a shortest time between two changes of direction,
-  adjustable on the Toys page; its strokes never go faster, nor turn more often, nor
+  adjustable on the Toys page or found by its calibration (ramps the player stops
+  when the toy stops following, the result kept with a margin); its strokes never go faster, nor turn more often, nor
   leave the range. A move from where the toy might be anywhere (the first one, after
   a stop) is timed for the farthest point, at a gentle speed. A channel value below
   0.01, the panic button and source loss stop it where it is.

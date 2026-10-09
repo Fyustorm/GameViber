@@ -31,6 +31,7 @@ use crate::shortcuts::{Action, Shortcuts};
 use crate::screen::{self, Frame, ImagePhases, ScreenLevels, ScreenView};
 use crate::rumble::RumbleState;
 use crate::session::{self, Change, Recorder, RecordingInfo, Senses};
+use crate::stroke::Calibration;
 pub use crate::source::SourceHealth;
 use crate::source::{ActiveSource, EventSender, PadInfo, SourceEvent, SourceKind, SourceOptions, Sources};
 /// Play with a mode in one go that counts as a session of it (community stats).
@@ -114,6 +115,8 @@ pub enum Command {
     /// Short vibration of one toy at a 0..1 intensity (shaped by its settings), to
     /// identify it or feel its settings.
     TestToy(String, f64),
+    /// A stroker plays a calibration step instead of the mode (None: back to the mode).
+    Calibrate(Option<(String, Calibration)>),
     /// First-launch setup done (or skipped).
     SetOnboarded(bool),
     SetOverlay(OverlaySettings),
@@ -287,6 +290,8 @@ pub struct Shared {
     /// Sticks (-1..1) and triggers (0..1).
     pub axes: BTreeMap<&'static str, f64>,
     pub toy_levels: BTreeMap<String, f64>,
+    /// The stroker being calibrated, its step, and the seconds since it started.
+    pub calibration: Option<(String, Calibration, f64)>,
     /// Games currently showing the in-game overlay.
     pub overlay_clients: Vec<Hello>,
     /// Another process holds the overlay socket: games show its panel, not ours.
@@ -424,6 +429,8 @@ struct Engine {
     replay: Option<Replay>,
     /// Toy being buzzed by `Command::TestToy`, at what intensity, until when.
     test: Option<(String, f64, Instant)>,
+    /// Stroker being calibrated, its step and when it started.
+    calibration: Option<(String, Calibration, Instant)>,
     overlay: overlay::Server,
     /// Overlay messages and when they were raised.
     overlay_events: Vec<(String, f64)>,
@@ -531,6 +538,7 @@ async fn run_async(
         last_rumble: None,
         buttons_seen: false,
         test: None,
+        calibration: None,
         recorder: None,
         recent: Recorder::rolling(0.0, RECENT_SECS),
         mark_save: None,
@@ -849,6 +857,7 @@ impl Engine {
                 let length = if stroker { STROKE_TEST_LENGTH } else { TEST_LENGTH };
                 self.test = Some((name, level.clamp(0.0, 1.0), Instant::now() + length));
             }
+            Command::Calibrate(calibration) => self.calibration = calibration.map(|(name, test)| (name, test, Instant::now())),
             Command::SetOverlay(overlay) => {
                 self.settings.overlay = overlay;
                 self.settings.save();
@@ -1022,6 +1031,7 @@ impl Engine {
         if !self.panic {
             log::warn!("PANIC STOP ({from}): all toys stopped, mode suspended until re-armed");
             self.panic = true;
+            self.calibration = None;
         }
     }
 
@@ -1455,7 +1465,12 @@ impl Engine {
             }
             let shape = self.settings.toys.get(&toy.name).copied().unwrap_or_default();
             let level = shape.shape(level).min(cap);
-            toy_outputs.insert(toy.index, ToyOutput { level, stroke: shape.stroke });
+            let calibration = self
+                .calibration
+                .as_ref()
+                .filter(|(name, ..)| !self.panic && *name == toy.name)
+                .map(|(_, test, start)| (*test, now.duration_since(*start).as_secs_f64()));
+            toy_outputs.insert(toy.index, ToyOutput { level, stroke: shape.stroke, calibration });
             toy_levels.insert(toy.name.clone(), level);
         }
         if let Some(i) = &self.intiface {
@@ -1487,6 +1502,7 @@ impl Engine {
         shared.held = self.pad.held().iter().copied().collect();
         shared.axes = self.pad.axes().clone();
         shared.toy_levels = toy_levels;
+        shared.calibration = self.calibration.as_ref().map(|(name, test, start)| (name.clone(), *test, now.duration_since(*start).as_secs_f64()));
         shared.recording = self.recorder.as_ref().map(|r| r.elapsed(time));
         shared.replay = self.replay.as_ref().map(|r| ReplayView { path: r.path.clone(), position: r.position(time) });
         shared.overlay_clients = self.overlay.clients();
