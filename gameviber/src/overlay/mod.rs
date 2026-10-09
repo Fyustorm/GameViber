@@ -2,19 +2,26 @@
 //! in `gameviber_common::overlay`), the copies of the game's image they share,
 //! and the installation of the overlay. How games reach GameViber and how the
 //! overlay gets into them are OS backends (`linux`: a Unix socket and a Vulkan
-//! layer / `LD_PRELOAD` library).
+//! layer / `LD_PRELOAD` library; `windows`: no overlay, GameViber captures the
+//! game's window itself and shows it here like a game's overlay).
 
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]
-pub use linux::{install, install_state, launcher_path, packaged, uninstall, update_installed};
+pub use linux::{install, install_state, launcher_path, packaged, uninstall, update_installed, NO_IMAGE_HINT, WINDOW_CAPTURE};
 #[cfg(target_os = "linux")]
 use linux::{FrameMemory, Socket};
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "windows")]
+mod windows;
+#[cfg(target_os = "windows")]
+pub use self::windows::{install, install_state, launcher_path, packaged, uninstall, update_installed, NO_IMAGE_HINT, WINDOW_CAPTURE};
+#[cfg(target_os = "windows")]
+use self::windows::{FrameMemory, Socket};
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 mod unsupported;
-#[cfg(not(target_os = "linux"))]
-pub use unsupported::{install, install_state, launcher_path, packaged, uninstall, update_installed};
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+pub use unsupported::{install, install_state, launcher_path, packaged, uninstall, update_installed, NO_IMAGE_HINT, WINDOW_CAPTURE};
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 use unsupported::{FrameMemory, Socket};
 
 use std::collections::HashMap;

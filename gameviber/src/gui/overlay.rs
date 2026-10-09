@@ -43,6 +43,10 @@ impl App {
                      gauges and what it detects (\"Parry!\"), and warnings such as a lost toy.",
                 ));
                 ui.add_space(8.0);
+                if overlay::WINDOW_CAPTURE {
+                    window_capture(ui, s);
+                    return;
+                }
                 self.overlay_install(ui, s);
                 ui.add_space(8.0);
                 if self.overlay.install.as_ref().is_some_and(|(_, archs)| overall(archs) != InstallState::NotInstalled) {
@@ -212,6 +216,38 @@ fn appearance(ui: &mut egui::Ui, current: &OverlaySettings) -> Option<OverlaySet
         ui.add(egui::Slider::new(&mut s.opacity, 0.0..=1.0).text("Background opacity").step_by(0.05).fixed_decimals(2));
     });
     (s != *current).then_some(s)
+}
+
+/// Without an overlay (Windows): the game's image comes from its window.
+fn window_capture(ui: &mut egui::Ui, s: &Shared) {
+    card(PANEL).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Overlay").strong());
+            dot(ui, IDLE);
+            ui.label("Not available on this system yet");
+        });
+        ui.label(muted(
+            "Modes still see the game's image: GameViber reads the window of the game in front, fullscreen or \
+             borderless (or any window of a game from Steam, Epic, GOG or Xbox), without getting into the game. \
+             A game in exclusive fullscreen may give a black image: switch it to borderless.",
+        ));
+    });
+    ui.add_space(8.0);
+    card(PANEL).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.label(RichText::new("Game read now").strong());
+        if s.overlay_clients.is_empty() {
+            ui.label(muted("None. Bring the game to the front."));
+        }
+        for client in &s.overlay_clients {
+            ui.horizontal(|ui| {
+                dot(ui, if client.frames { OK } else { IDLE });
+                ui.label(&client.exe);
+                ui.label(muted(format!("pid {}{}", client.pid, if client.frames { " · image read" } else { "" })).size(12.0));
+            });
+        }
+    });
 }
 
 fn connected_games(ui: &mut egui::Ui, s: &Shared) {

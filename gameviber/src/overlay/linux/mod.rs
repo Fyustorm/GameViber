@@ -15,6 +15,11 @@ use std::os::unix::net::{SocketAddr, UnixDatagram};
 use gameviber_common::overlay::{self, frames};
 
 /// The socket games' overlays talk to.
+/// The games' image comes from the overlay (not from their window).
+pub const WINDOW_CAPTURE: bool = false;
+/// What to do when no image comes.
+pub const NO_IMAGE_HINT: &str = "Start the game with the in-game overlay (Setup › In-game overlay).";
+
 pub struct Socket(UnixDatagram);
 
 impl Socket {

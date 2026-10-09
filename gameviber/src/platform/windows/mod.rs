@@ -14,7 +14,10 @@ use std::sync::atomic::{AtomicIsize, Ordering};
 
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use tokio::signal::windows::{ctrl_break, ctrl_c, ctrl_close, ctrl_shutdown, CtrlBreak, CtrlC, CtrlClose, CtrlShutdown};
+use windows::core::PWSTR;
+use windows::Win32::Foundation::CloseHandle;
 use windows::Win32::System::SystemInformation::GetLocalTime;
+use windows::Win32::System::Threading::{OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION};
 
 fn known_dir(var: &str, fallback: &[&str]) -> PathBuf {
     std::env::var_os(var).map(PathBuf::from).unwrap_or_else(|| {
@@ -103,4 +106,18 @@ pub fn window_closing() {
 /// running game's environment being out of reach); None when it runs none.
 pub fn steam_app_id(_pid: u32) -> Option<u32> {
     registry::read_u32(registry::Root::CurrentUser, r"Software\Valve\Steam", "RunningAppID").filter(|id| *id != 0)
+}
+
+/// The executable of a process (`C:\Games\Game.exe`); None for a process of another user.
+pub fn process_path(pid: u32) -> Option<String> {
+    // SAFETY: the handle is closed below; the buffer's size is passed.
+    unsafe {
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        let mut buffer = [0u16; 1024];
+        let mut size = buffer.len() as u32;
+        let result = QueryFullProcessImageNameW(process, PROCESS_NAME_WIN32, PWSTR(buffer.as_mut_ptr()), &mut size);
+        let _ = CloseHandle(process);
+        result.ok()?;
+        Some(String::from_utf16_lossy(&buffer[..size as usize]))
+    }
 }

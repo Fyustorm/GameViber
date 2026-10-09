@@ -25,9 +25,7 @@ use windows::Win32::Media::KernelStreaming::{KSDATAFORMAT_SUBTYPE_PCM, WAVE_FORM
 use windows::Win32::Media::Multimedia::{KSDATAFORMAT_SUBTYPE_IEEE_FLOAT, WAVE_FORMAT_IEEE_FLOAT};
 use windows::Win32::System::Com::StructuredStorage::{PROPVARIANT, PROPVARIANT_0, PROPVARIANT_0_0, PROPVARIANT_0_0_0};
 use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CoTaskMemFree, BLOB, CLSCTX_ALL, COINIT_MULTITHREADED};
-use windows::Win32::System::Threading::{
-    CreateEventW, OpenProcess, QueryFullProcessImageNameW, WaitForSingleObject, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
-};
+use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
 use windows::Win32::System::Variant::VT_BLOB;
 
 use super::{Stream, Target};
@@ -84,7 +82,7 @@ fn sessions() -> windows::core::Result<Vec<Stream>> {
                 if pid == 0 || pid == own || control.IsSystemSoundsSession().0 == 0 || control.GetState().is_ok_and(|st| st == AudioSessionStateExpired) {
                     continue;
                 }
-                let binary = process_name(pid).unwrap_or_default();
+                let binary = crate::platform::windows::process_path(pid).and_then(|p| p.rsplit('\\').next().map(str::to_owned)).unwrap_or_default();
                 let display = control.GetDisplayName().map(|name| take(name)).unwrap_or_default();
                 // Display names are often resource references ("@%SystemRoot%\...").
                 let app = if display.is_empty() || display.starts_with('@') { binary.trim_end_matches(".exe").to_owned() } else { display };
@@ -103,21 +101,6 @@ unsafe fn take(text: PWSTR) -> String {
     let string = text.to_string().unwrap_or_default();
     CoTaskMemFree(Some(text.0 as _));
     string
-}
-
-/// The executable's file name of a process ("Game.exe").
-fn process_name(pid: u32) -> Option<String> {
-    // SAFETY: the handle is closed below; the buffer's size is passed.
-    unsafe {
-        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
-        let mut buffer = [0u16; 1024];
-        let mut size = buffer.len() as u32;
-        let result = QueryFullProcessImageNameW(process, PROCESS_NAME_WIN32, PWSTR(buffer.as_mut_ptr()), &mut size);
-        let _ = CloseHandle(process);
-        result.ok()?;
-        let path = String::from_utf16_lossy(&buffer[..size as usize]);
-        path.rsplit('\\').next().map(str::to_owned)
-    }
 }
 
 /// A capture running on a thread of its own, whose samples arrive on a channel.

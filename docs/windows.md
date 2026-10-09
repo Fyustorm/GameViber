@@ -61,4 +61,4 @@ starts, the installer builds and installs.
 - [x] Base: platform, links, shortcuts, external inputs pipe, updates, CI, installer
 - [x] Sound
 - [x] Rumble
-- [ ] Image
+- [x] Image

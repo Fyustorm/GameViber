@@ -6,6 +6,9 @@ use std::path::PathBuf;
 
 use super::{Arch, InstallState};
 
+pub const WINDOW_CAPTURE: bool = false;
+pub const NO_IMAGE_HINT: &str = "The game's image cannot be read on this system yet.";
+
 pub struct Socket;
 
 impl Socket {

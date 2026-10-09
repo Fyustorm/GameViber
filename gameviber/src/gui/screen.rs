@@ -999,7 +999,7 @@ impl App {
                     let hint = if s.overlay_unavailable {
                         "Another GameViber holds the in-game overlay."
                     } else if s.overlay_clients.is_empty() {
-                        "Start the game with the in-game overlay (Setup › In-game overlay)."
+                        crate::overlay::NO_IMAGE_HINT
                     } else {
                         "Waiting for the game's image..."
                     };
