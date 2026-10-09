@@ -198,7 +198,15 @@ to set some up.
   shown only at times (the battle interface: a visibility indicator) or around
   a bar (health: a gauge). Modes read whether it is shown, or how full the bar
   is, ten times a second; an indicator shown in several places has a zone for
-  each. A bar of one color is
+  each. Whether a visibility indicator shows on a capture is guessed from the
+  phases (shown in the phase of the capture it was drawn on); when it shows in
+  several phases, or a phase mixes screens (cutscenes and menus), mark the
+  captures **👁 Shown** or **⊘ Not shown** (under the zone's threshold, or
+  right-click a capture): the threshold is then suggested from them. An
+  element whose inside changes (a minimap and its map) is told by what stays:
+  with three varied captures where it is shown or more (and some where it is
+  not), **Compare only what stays** learns which parts of the zone (its frame)
+  tell it, highlighted on the image. A bar of one color is
   read by its colors (pick its full and empty parts); a bar filled again over
   itself in another color once full (green, then yellow over the green) by
   its colors with a **tier** for each color (**+ Tier**), each an equal share

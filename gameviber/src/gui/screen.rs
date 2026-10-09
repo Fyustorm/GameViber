@@ -258,9 +258,16 @@ impl State {
                 if let Some(frame) = drawn {
                     zone.reference = indicators::reference(frame, rect);
                 }
+                zone.weights = match &d.weights {
+                    Some((at, weights)) if at.iter().zip(rect).all(|(a, b)| (a - b).abs() < 1e-5) => weights.clone(),
+                    _ => Vec::new(),
+                };
+                (zone.shown_on, zone.hidden_on) = (d.shown_on.clone(), d.hidden_on.clone());
             }
             IndicatorKind::Gauge => {
                 zone.reference.clear();
+                zone.weights.clear();
+                (zone.shown_on, zone.hidden_on) = (Vec::new(), Vec::new());
                 if d.full.is_empty() {
                     zone.color = match drawn {
                         Some(frame) => indicators::bar_color(frame, rect),
@@ -464,6 +471,12 @@ struct Draft {
     by_look: bool,
     /// ...taken on captures.
     look: Option<Look>,
+    /// A visibility zone's cells that tell whether it is shown (`Zone::weights`),
+    /// learned from captures for this rectangle: once it changes, they must be learned again.
+    weights: Option<([f32; 4], Vec<u8>)>,
+    /// The captures marked as showing it, and as not (`Zone::shown_on`, `hidden_on`).
+    shown_on: Vec<String>,
+    hidden_on: Vec<String>,
     /// The draft as it was opened, to tell whether it changed.
     opened: Option<Box<Draft>>,
 }
@@ -511,6 +524,9 @@ impl Default for Draft {
             read_when: Vec::new(),
             by_look: false,
             look: None,
+            weights: None,
+            shown_on: Vec::new(),
+            hidden_on: Vec::new(),
             opened: None,
         }
     }
@@ -535,6 +551,9 @@ impl Draft {
             || self.read_when != o.read_when
             || self.by_look != o.by_look
             || self.look != o.look
+            || self.weights != o.weights
+            || self.shown_on != o.shown_on
+            || self.hidden_on != o.hidden_on
             || self.threshold != o.threshold
             || self.start != o.start
             || self.end != o.end
@@ -579,10 +598,13 @@ impl Draft {
             full: zone.full_look.clone(),
             empty: zone.empty_look.clone(),
         });
+        self.weights = indicators::has_weights(zone).then(|| (zone.rect, zone.weights.clone()));
+        (self.shown_on, self.hidden_on) = (zone.shown_on.clone(), zone.hidden_on.clone());
         // The zone as it is saved is where its changes count from.
         if let Some(o) = &mut self.opened {
             (o.editing, o.start, o.end, o.threshold, o.drawn_on) = (self.editing, self.start, self.end, self.threshold, None);
-            (o.by_look, o.look) = (self.by_look, self.look.clone());
+            (o.by_look, o.look, o.weights) = (self.by_look, self.look.clone(), self.weights.clone());
+            (o.shown_on, o.hidden_on) = (self.shown_on.clone(), self.hidden_on.clone());
         }
     }
 
@@ -922,6 +944,8 @@ impl App {
         let shown: Vec<&package::Capture> =
             inputs.captures.iter().filter(|c| self.screen.filter.as_ref().is_none_or(|f| c.phase == *f)).collect();
         let targets = inputs.phase_names();
+        // A visibility zone being edited: whether it shows on each capture can be marked.
+        let marking = self.screen.draft.kind == IndicatorKind::Visibility && self.screen.draft.rect().is_some();
         let mut delete = None;
         let mut moved = None;
         let gap = 6.0;
@@ -937,14 +961,38 @@ impl App {
                         ui.set_width(width);
                         ui.spacing_mut().item_spacing.y = 2.0;
                         let response = thumbnail(ui, texture, image_size(width, frame), selected)
-                            .on_hover_text("Open it in the editor; right-click to file it under another phase or delete it");
+                            .on_hover_text(if marking {
+                                "Open it in the editor; right-click to mark whether the indicator shows on it, file it under another phase or delete it"
+                            } else {
+                                "Open it in the editor; right-click to file it under another phase or delete it"
+                            });
                         if marked.contains(&capture.file) {
                             tag(ui, response.rect.right_top() + Vec2::new(-3.0, 3.0), egui::Align2::RIGHT_TOP, "📍".to_owned(), ACCENT_TEXT);
+                        }
+                        let draft = &mut self.screen.draft;
+                        let (shown, hidden) = (draft.shown_on.contains(&capture.file), draft.hidden_on.contains(&capture.file));
+                        if marking && (shown || hidden) {
+                            let (text, color) = if shown { ("👁", OK) } else { ("⊘", DANGER) };
+                            tag(ui, response.rect.left_top() + Vec2::new(3.0, 3.0), egui::Align2::LEFT_TOP, text.to_owned(), color);
                         }
                         if response.clicked() {
                             self.screen.selected = Some(capture.file.clone());
                         }
                         response.context_menu(|ui| {
+                            if marking {
+                                let draft = &mut self.screen.draft;
+                                if ui.selectable_label(shown, "👁 Shown here").on_hover_text("The indicator edited is on this capture, in its zone").clicked() {
+                                    draft.hidden_on.retain(|f| *f != capture.file);
+                                    if shown { draft.shown_on.retain(|f| *f != capture.file) } else { draft.shown_on.push(capture.file.clone()) }
+                                    ui.close();
+                                }
+                                if ui.selectable_label(hidden, "⊘ Not shown here").on_hover_text("The indicator edited is not on this capture").clicked() {
+                                    draft.shown_on.retain(|f| *f != capture.file);
+                                    if hidden { draft.hidden_on.retain(|f| *f != capture.file) } else { draft.hidden_on.push(capture.file.clone()) }
+                                    ui.close();
+                                }
+                                ui.separator();
+                            }
                             for other in targets.iter().filter(|o| **o != capture.phase) {
                                 if ui.button(format!("Move to {other}")).clicked() {
                                     moved = Some((capture.file.clone(), other.clone()));
@@ -1412,6 +1460,14 @@ impl App {
                     let (text, color) = reading_here(zone, &inputs.zones, frame);
                     let label = if draft.name.is_empty() { text } else { format!("{} · {text}", draft.name) };
                     tag(ui, r.left_top() - Vec2::new(0.0, 6.0), egui::Align2::LEFT_BOTTOM, label, color);
+                    // The cells it is compared on, when it compares only what stays.
+                    if indicators::has_weights(zone) {
+                        let cell = Vec2::new(r.width() / indicators::REF_WIDTH as f32, r.height() / indicators::REF_HEIGHT as f32);
+                        for (k, &w) in zone.weights.iter().enumerate().filter(|(_, w)| **w > 0) {
+                            let at = r.left_top() + Vec2::new((k % indicators::REF_WIDTH) as f32 * cell.x, (k / indicators::REF_WIDTH) as f32 * cell.y);
+                            ui.painter().rect_filled(Rect::from_min_size(at, cell), 0.0, ACCENT.gamma_multiply(0.15 + 0.35 * w as f32 / 255.0));
+                        }
+                    }
                     // The bar as found: its full part green, its empty part red, along the indicator.
                     if zone.kind == IndicatorKind::Gauge && (zone.empty_color.is_some() || indicators::has_look(zone)) {
                         let ((a, b), (c, d)) = indicators::bar_extent(zone, frame);
@@ -1735,30 +1791,100 @@ impl App {
                     );
                 }
             }
-            // A threshold telling the zone's phase from the others, from all the captures.
             if let Some(zone) = tested.as_ref().filter(|z| z.kind == IndicatorKind::Visibility) {
-                if let Some(phase) = &zone.phase {
-                    let (mut shown_in, mut others) = (Vec::new(), Vec::new());
-                    for capture in inputs.captures.iter().filter(|c| !c.phase.is_empty()) {
-                        let Some((capture_frame, _)) = st.captures.get(&capture.file) else { continue };
-                        let m = indicators::measure(zone, capture_frame).unwrap_or(-1.0);
-                        if capture.phase == *phase { shown_in.push(m) } else { others.push(m) }
+                // Whether it shows on this capture, marked by the player.
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(muted("On this capture:").size(12.0));
+                    if zone.capture.as_deref() == Some(file) {
+                        ui.label(RichText::new("👁 shown (drawn here)").color(OK).size(12.0));
+                    } else {
+                        let (shown, hidden) = (draft.shown_on.iter().any(|f| f == file), draft.hidden_on.iter().any(|f| f == file));
+                        let mark = |ui: &mut egui::Ui, on: bool, text: &str, help: &str| ui.selectable_label(on, RichText::new(text).size(12.0)).on_hover_text(help).clicked();
+                        if mark(ui, shown, "👁 Shown", "It is on this capture, in this zone (click again to unmark)") {
+                            draft.hidden_on.retain(|f| f != file);
+                            if shown { draft.shown_on.retain(|f| f != file) } else { draft.shown_on.push(file.to_owned()) }
+                        }
+                        if mark(ui, hidden, "⊘ Not shown", "It is not on this capture (click again to unmark)") {
+                            draft.shown_on.retain(|f| f != file);
+                            if hidden { draft.hidden_on.retain(|f| f != file) } else { draft.hidden_on.push(file.to_owned()) }
+                        }
                     }
-                    ui.horizontal(|ui| match indicators::suggest_threshold(&shown_in, &others) {
-                        Some(t) if (t - draft.threshold).abs() > 0.01 => {
-                            if ui.button(format!("Use threshold {t:.2}")).on_hover_text(format!("Tells the {phase} captures from the others")).clicked() {
-                                draft.threshold = t;
-                            }
+                    if !zone.shown_on.is_empty() || !zone.hidden_on.is_empty() {
+                        ui.label(muted(format!("marked: {} shown, {} not", zone.shown_on.len() + zone.capture.is_some() as usize, zone.hidden_on.len())).size(12.0));
+                    }
+                });
+                // Where it is shown and where not: the captures marked so (the
+                // one it was drawn on shown); none marked, those of its phase and of the others.
+                let marked = !zone.shown_on.is_empty() || !zone.hidden_on.is_empty();
+                let shown_on = |c: &package::Capture| -> Option<bool> {
+                    if marked {
+                        if zone.capture.as_ref() == Some(&c.file) || zone.shown_on.contains(&c.file) {
+                            Some(true)
+                        } else {
+                            zone.hidden_on.contains(&c.file).then_some(false)
                         }
-                        Some(_) => {
-                            ui.label(RichText::new(format!("✔ tells {phase} from the other phases")).color(OK).size(12.0));
-                        }
-                        None if !shown_in.is_empty() && !others.is_empty() => {
-                            ui.label(RichText::new("No threshold tells the phases apart: draw it tighter, on fixed parts").color(WARN).size(12.0));
-                        }
-                        None => {}
-                    });
+                    } else {
+                        let phase = zone.phase.as_ref()?;
+                        (!c.phase.is_empty()).then(|| c.phase == *phase)
+                    }
+                };
+                let (mut shown_in, mut others) = (Vec::new(), Vec::new());
+                let (mut shown_frames, mut other_frames) = (Vec::new(), Vec::new());
+                for capture in &inputs.captures {
+                    let (Some(shown), Some((capture_frame, _))) = (shown_on(capture), st.captures.get(&capture.file)) else { continue };
+                    let m = indicators::measure(zone, capture_frame).unwrap_or(-1.0);
+                    if shown {
+                        shown_in.push(m);
+                        shown_frames.push(&**capture_frame);
+                    } else {
+                        others.push(m);
+                        other_frames.push(&**capture_frame);
+                    }
                 }
+                let (shown_text, hidden_text) = match (&zone.phase, marked) {
+                    (Some(phase), false) => (format!("the {phase} captures"), "those of the other phases".to_owned()),
+                    _ => ("the captures marked shown".to_owned(), "those marked not shown".to_owned()),
+                };
+                // Its cells that tell, for an element whose inside changes (a minimap).
+                ui.horizontal_wrapped(|ui| {
+                    let help = format!(
+                        "For an element whose inside changes (a minimap's map): compares only the parts of the zone that stay the \
+                         same on {shown_text} and differ on {hidden_text} (its frame). Needs {} captures where it is shown or more, \
+                         the more varied the better. When it shows in some phases and not others, or a phase mixes screens \
+                         (cutscenes and menus), mark the captures: 👁 Shown or ⊘ Not shown, above.",
+                        indicators::WEIGHT_CAPTURES
+                    );
+                    if indicators::has_weights(zone) {
+                        let share = indicators::weighted_share(zone) * 100.0;
+                        ui.label(RichText::new(format!("✔ compared on what stays ({share:.0}% of the zone)")).color(OK).size(12.0)).on_hover_text(&help);
+                        if ui.small_button("Learn again").on_hover_text(format!("From the captures as they are marked now\n\n{help}")).clicked() {
+                            draft.weights = indicators::learn_weights(zone, &shown_frames, &other_frames).map(|w| (zone.rect, w)).or(draft.weights.take());
+                        }
+                        if ui.small_button("Compare it all").on_hover_text("Compare the whole zone again").clicked() {
+                            draft.weights = None;
+                        }
+                    } else if shown_frames.len() < indicators::WEIGHT_CAPTURES {
+                        let text = format!("Its inside changes? Mark {} captures or more where it is shown to compare only what stays.", indicators::WEIGHT_CAPTURES);
+                        ui.label(muted(text).size(12.0)).on_hover_text(&help);
+                    } else if ui.button("Compare only what stays").on_hover_text(&help).clicked() {
+                        draft.weights = indicators::learn_weights(zone, &shown_frames, &other_frames).map(|w| (zone.rect, w));
+                    }
+                });
+                // A threshold telling where it is shown from where it is not.
+                ui.horizontal(|ui| match indicators::suggest_threshold(&shown_in, &others) {
+                    Some(t) if (t - draft.threshold).abs() > 0.01 => {
+                        if ui.button(format!("Use threshold {t:.2}")).on_hover_text(format!("Tells {shown_text} from {hidden_text}")).clicked() {
+                            draft.threshold = t;
+                        }
+                    }
+                    Some(_) => {
+                        ui.label(RichText::new(format!("✔ tells {shown_text} from {hidden_text}")).color(OK).size(12.0));
+                    }
+                    None if !shown_in.is_empty() && !others.is_empty() => {
+                        ui.label(RichText::new("No threshold tells them apart: draw it tighter, on fixed parts, or compare only what stays").color(WARN).size(12.0));
+                    }
+                    None => {}
+                });
             }
         }
 

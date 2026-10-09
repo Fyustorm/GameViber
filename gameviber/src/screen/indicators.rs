@@ -1,6 +1,8 @@
 //! Indicators of the game's screen set up for a mode (`package::Zone`), each
 //! read in one or more zones: whether an element is shown (its look compared
-//! with a reference taken when the zone was drawn) and how full a gauge's bar
+//! with a reference taken when the zone was drawn; for an element whose inside
+//! changes, a minimap, only on the parts of it that stay the same, learned
+//! from captures) and how full a gauge's bar
 //! is (the share of it in the bar's full color rather than its empty one;
 //! with both colors known, the bar is the longest run of them in the zone,
 //! wherever it is; a bar filled again over itself in other colors reads
@@ -19,6 +21,12 @@ pub const REF_WIDTH: usize = 32;
 pub const REF_HEIGHT: usize = 24;
 /// A shown element is hidden once its similarity drops this far below the threshold.
 const HYSTERESIS: f32 = 0.05;
+/// A cell matches the reference less the further its luma is from it, not at all from this far.
+const CELL_MATCH: f32 = 32.0;
+/// Cells mattering less than this (0..1) are left out of a zone's weights.
+const LEAST_WEIGHT: f32 = 0.2;
+/// Captures of the zone's phase needed to learn its weights.
+pub const WEIGHT_CAPTURES: usize = 3;
 /// Bar values are reported when they move this much.
 const BAR_STEP: f64 = 0.02;
 /// A bar is not on screen when less than this share of its drawn length is
@@ -102,6 +110,52 @@ fn correlation(a: &[f32], b: &[f32]) -> f32 {
     ab / (aa * bb).sqrt()
 }
 
+/// How far each cell of `grid` is from the reference's, 0 (the same) to 1 (`CELL_MATCH` or more).
+fn cell_distances<'a>(grid: &'a [f32], reference: &'a [u8]) -> impl Iterator<Item = f32> + 'a {
+    grid.iter().zip(reference).map(|(g, &r)| ((g - r as f32).abs() / CELL_MATCH).min(1.0))
+}
+
+/// Which cells of a visibility zone tell whether its element is shown
+/// (`Zone::weights`), from captures where it is (`shown`) and where it is
+/// not (`hidden`): those staying near the reference while it is shown (its
+/// frame, not a minimap's map turning inside) and away from it otherwise
+/// (not a background of its color). Medians, so that a few captures filed
+/// in the wrong phase do not count. None with too few captures, or when no
+/// cell tells.
+pub fn learn_weights(zone: &Zone, shown: &[&Frame], hidden: &[&Frame]) -> Option<Vec<u8>> {
+    if zone.reference.len() != REF_WIDTH * REF_HEIGHT || shown.len() < WEIGHT_CAPTURES {
+        return None;
+    }
+    let distances = |frames: &[&Frame]| -> Vec<Vec<f32>> {
+        frames.iter().map(|f| cell_distances(&gray(f, zone.rect), &zone.reference).collect()).collect()
+    };
+    let median = |all: &[Vec<f32>], cell: usize| {
+        let mut v: Vec<f32> = all.iter().map(|d| d[cell]).collect();
+        v.sort_by(f32::total_cmp);
+        v[v.len() / 2]
+    };
+    let (shown, hidden) = (distances(shown), distances(hidden));
+    let weights: Vec<u8> = (0..REF_WIDTH * REF_HEIGHT)
+        .map(|cell| {
+            // Without captures where it is hidden, any cell would differ there.
+            let away = if hidden.is_empty() { 1.0 } else { median(&hidden, cell) };
+            let w = (away - median(&shown, cell)).max(0.0);
+            if w < LEAST_WEIGHT { 0 } else { (w * 255.0).round() as u8 }
+        })
+        .collect();
+    weights.iter().any(|&w| w > 0).then_some(weights)
+}
+
+/// Whether the zone is compared on the cells its weights keep.
+pub fn has_weights(zone: &Zone) -> bool {
+    zone.weights.len() == REF_WIDTH * REF_HEIGHT
+}
+
+/// Share of a zone's cells its weights keep.
+pub fn weighted_share(zone: &Zone) -> f32 {
+    zone.weights.iter().filter(|&&w| w > 0).count() as f32 / (REF_WIDTH * REF_HEIGHT) as f32
+}
+
 /// The color of a bar's filled part: the average of its most colorful pixels.
 pub fn bar_color(frame: &Frame, rect: [f32; 4]) -> [u8; 3] {
     let (x0, y0, x1, y1) = bounds(frame, rect);
@@ -138,8 +192,9 @@ pub fn suggest_threshold(shown: &[f32], hidden: &[f32]) -> Option<f32> {
     (!shown.is_empty() && low > high).then(|| ((low + high) / 2.0).clamp(0.1, 0.95))
 }
 
-/// What a zone reads on `frame`: the similarity with its reference (-1..1)
-/// for a visibility indicator's zone, how full its bar is (0..1) for a gauge's; None when the bar is
+/// What a zone reads on `frame`: the similarity with its reference for a
+/// visibility indicator's zone (-1..1; with weights, 0..1: how near the cells
+/// they keep are, weighed), how full its bar is (0..1) for a gauge's; None when the bar is
 /// not on screen (too little of its colors in the zone, which needs its empty
 /// color to be told from an empty bar).
 pub fn measure(zone: &Zone, frame: &Frame) -> Option<f32> {
@@ -148,8 +203,17 @@ pub fn measure(zone: &Zone, frame: &Frame) -> Option<f32> {
             if zone.reference.len() != REF_WIDTH * REF_HEIGHT {
                 return Some(0.0);
             }
+            let grid = gray(frame, zone.rect);
+            if has_weights(zone) {
+                let (mut near, mut total) = (0.0, 0.0);
+                for (d, &w) in cell_distances(&grid, &zone.reference).zip(&zone.weights) {
+                    near += (1.0 - d) * w as f32;
+                    total += w as f32;
+                }
+                return Some(if total > 0.0 { near / total } else { 0.0 });
+            }
             let reference: Vec<f32> = zone.reference.iter().map(|&v| v as f32).collect();
-            Some(correlation(&gray(frame, zone.rect), &reference))
+            Some(correlation(&grid, &reference))
         }
         IndicatorKind::Gauge => bar_reading(zone, frame).map(|(fill, _)| fill),
     }
@@ -602,6 +666,59 @@ mod tests {
         assert_eq!(reader.update(&zones, &with_hud(true, 0)), vec![("battle_hud".to_owned(), IndicatorValue::Visibility(true))]);
         assert_eq!(reader.update(&zones, &with_hud(true, 10)), vec![], "no change, nothing reported");
         assert_eq!(reader.update(&zones, &with_hud(false, 10)), vec![("battle_hud".to_owned(), IndicatorValue::Visibility(false))]);
+    }
+
+    /// A minimap: a ring whose inside, the map, changes all the time, over
+    /// scenery that changes too.
+    fn minimap(shown: bool, seed: u32) -> Frame {
+        // Blocks of 4 px in colors changing with `seed`.
+        let noise = move |x: u32, y: u32, salt: u32| {
+            let mut h = (x / 4).wrapping_mul(73_856_093) ^ (y / 4).wrapping_mul(19_349_663) ^ seed.wrapping_mul(83_492_791) ^ salt;
+            h ^= h >> 13;
+            h = h.wrapping_mul(0x5bd1_e995);
+            h ^= h >> 15;
+            [(h & 0xff) as u8, ((h >> 8) & 0xff) as u8, ((h >> 16) & 0xff) as u8]
+        };
+        frame(move |x, y| {
+            let (dx, dy) = (x as f32 - 140.0, y as f32 - 70.0);
+            let r = (dx * dx + dy * dy).sqrt();
+            match shown {
+                true if r < 12.0 => noise(x, y, 1),
+                true if r < 14.5 => [200, 190, 160],
+                _ => noise(x, y, 2),
+            }
+        })
+    }
+
+    #[test]
+    fn elements_whose_inside_changes_are_told_by_what_stays() {
+        let rect = [124.0 / 160.0, 54.0 / 90.0, 32.0 / 160.0, 32.0 / 90.0];
+        let zone = Zone { indicator: "minimap".into(), rect, reference: reference(&minimap(true, 0), rect), ..Zone::default() };
+        let measures = |zone: &Zone, shown: bool, seeds: std::ops::Range<u32>| -> Vec<f32> {
+            seeds.map(|seed| measure(zone, &minimap(shown, seed)).unwrap()).collect()
+        };
+        // Compared everywhere, the map drowns the ring.
+        assert_eq!(suggest_threshold(&measures(&zone, true, 20..40), &measures(&zone, false, 20..40)), None);
+
+        let shown: Vec<Frame> = (1..6).map(|seed| minimap(true, seed)).collect();
+        let hidden: Vec<Frame> = (10..15).map(|seed| minimap(false, seed)).collect();
+        let (shown, hidden): (Vec<&Frame>, Vec<&Frame>) = (shown.iter().collect(), hidden.iter().collect());
+        assert_eq!(learn_weights(&zone, &shown[..2], &hidden), None, "too few captures");
+        let weights = learn_weights(&zone, &shown, &hidden).unwrap();
+        let learned = Zone { weights, ..zone.clone() };
+        assert!(has_weights(&learned));
+        // Only the ring is kept: a fraction of the zone.
+        let share = weighted_share(&learned);
+        assert!((0.1..0.4).contains(&share), "{share}");
+        let (on, off) = (measures(&learned, true, 20..60), measures(&learned, false, 20..60));
+        let threshold = suggest_threshold(&on, &off).expect("told apart once learned");
+        let lowest = on.iter().copied().fold(f32::INFINITY, f32::min);
+        let highest = off.iter().copied().fold(-1.0, f32::max);
+        assert!(lowest - highest > 0.3, "shown from {lowest}, hidden up to {highest}, threshold {threshold}");
+        // Even without captures where it is hidden.
+        let alone = Zone { weights: learn_weights(&zone, &shown, &[]).unwrap(), ..zone };
+        let (on, off) = (measures(&alone, true, 20..60), measures(&alone, false, 20..60));
+        assert!(suggest_threshold(&on, &off).is_some());
     }
 
     /// Low on health the bar blinks: its full part turns lighter, then back.

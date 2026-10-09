@@ -158,8 +158,21 @@ pub struct Zone {
     pub rect: [f32; 4],
     /// Visibility: grayscale look of the zone when it was drawn (`screen::indicators`).
     pub reference: Vec<u8>,
-    /// Visibility: similarity with the reference (-1..1) above which the element is shown.
+    /// Visibility: how much each cell of the reference tells whether the
+    /// element is shown (0..255), learned from captures: an element whose
+    /// inside changes (a minimap) is compared on its frame only. Empty: every
+    /// cell, compared by correlation.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub weights: Vec<u8>,
+    /// Visibility: similarity with the reference (-1..1; 0..1 with weights) above which the element is shown.
     pub threshold: f32,
+    /// Visibility: captures the player marked as showing the element in this
+    /// zone, and as not showing it, to learn its weights and threshold from;
+    /// none marked: the captures of its phase, and of the other phases.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub shown_on: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub hidden_on: Vec<String>,
     /// Gauge: the color of its filled part...
     pub color: [u8; 3],
     /// ...and of its empty part, when the player picked it. With it, the bar is
@@ -213,7 +226,10 @@ impl Default for Zone {
             kind: IndicatorKind::Visibility,
             rect: [0.0, 0.0, 0.1, 0.1],
             reference: Vec::new(),
+            weights: Vec::new(),
             threshold: 0.6,
+            shown_on: Vec::new(),
+            hidden_on: Vec::new(),
             color: [0, 0, 0],
             empty_color: None,
             more_colors: Vec::new(),
@@ -528,6 +544,10 @@ impl Inputs {
         if let Some(i) = self.captures.iter().position(|c| c.file == file) {
             self.captures.remove(i);
             delete_capture(&self.dir, file);
+            for zone in &mut self.zones {
+                zone.shown_on.retain(|f| f != file);
+                zone.hidden_on.retain(|f| f != file);
+            }
         }
     }
 
