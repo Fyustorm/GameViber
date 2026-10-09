@@ -39,7 +39,7 @@ accepted; nothing else of them is left.
 
 | Path | Contents |
 |---|---|
-| `gameviber/src/platform/` | what differs between operating systems for the rest of the code (paths, local time, stop signals, the GUI window system dialogs open over, file dialogs); `linux/`: XDG paths, the privileged helper (`helper/`, `gameviber helper`, started through pkexec), the device hider, the desktop's portals (`portal.rs`; file chooser: `files.rs`) |
+| `gameviber/src/platform/` | what differs between operating systems for the rest of the code (paths, local time, stop signals, the GUI window system dialogs open over, file dialogs); `linux/`: XDG paths, the privileged helper (`helper/`, `gameviber helper`, started through pkexec), the device hider, the desktop's portals (`portal.rs`; file chooser: `files.rs`), the desktop entry (`desktop.rs`) |
 | `gameviber/src/source/` | interception sources, OS backends started through `Sources`: `linux/proxy` (uinput virtual gamepad) and `linux/ebpf` |
 | `gameviber/src/audio/` | the game's sound: `capture` (what to listen to; `linux`: PipeWire `pw-record` / `pw-dump`), `features` (levels, hits), `clap` (sound phase model: mel spectrogram, encoder) |
 | `gameviber/src/models.rs` | phase models downloaded on demand (CLAP, CLIP): download, ONNX sessions, text embeddings |
@@ -52,6 +52,7 @@ accepted; nothing else of them is left.
 | `gameviber/src/community.rs` | the community server's client (`server/`, blocking calls made in threads): games, modes, installing (`Origin` in `community.json`: where a package comes from, its version and script as installed, to update it in place or beside a changed one), publishing and managing one's modes (`Account` in `community.toml`), play time of one's own modes to suggest publishing them (`usage.json`); stats shared with the player's consent (`Settings::share_stats`, asked at first launch): play time and sessions of the modes installed from the community (`PlayReport`, under `Settings::installation_id`), votes; `gui/community.rs`: the Community page, a game's community card, the library's banner, the Sharing tab's publishing |
 | `gameviber/src/sharing.rs` | a mode shared with its game: `.gameviber` files (zip: `gameviber.json` with the game and the mode's inputs, `mode.luau`, `variants/`, `captures/`), exported from a mode's Sharing tab, imported from the library or Community (joined to the same game: Steam app id or name); `gui/sharing.rs` |
 | `gameviber/src/shortcuts/` | keyboard shortcuts for the combos' actions; `linux`: the desktop's global shortcuts portal (needs a desktop entry for the app id, written on first use) |
+| `gameviber/src/links/` | `gameviber://` links (the website's "Open in GameViber": a mode by its id or share code) and the single instance: a second start hands its link to the running GameViber and quits (`linux`: a Unix socket in the runtime directory); the desktop entry declaring the scheme: `platform/linux/desktop.rs`, identical to `packaging/linux/`'s |
 | `gameviber/src/update/` | new versions from the GitHub releases, installed according to how GameViber was installed (the `distribution` file of `packaging/linux/`): package through pkexec, archive in place, only announced for stores and source builds; `gui/updates.rs`: banner and Settings card |
 | `gameviber/src/external/` | external inputs: values and events other programs send: local WebSocket (browsers refused) and, `linux`, a named pipe |
 | `gameviber/src/engine.rs` | engine thread: sources, audio, image, mode, safety layer, routing, output |
@@ -72,7 +73,7 @@ accepted; nothing else of them is left.
 | `packaging/third-party/` | `licenses.sh` writing `THIRD-PARTY-LICENSES.txt` for the packages: cargo-about (`about.toml`: accepted licenses), Luau, ONNX Runtime's notices |
 | `LICENSE`, `LICENSE-MIT` | GPL-3.0-or-later for GameViber; MIT for the built-in modes, the mode spec and the prompts; MIT or GPL-2.0-or-later for the eBPF probe and `gameviber-common` |
 | `.github/workflows/` | `ci.yml`: tests and the Windows check; `packages.yml`: packages built on Ubuntu 24.04 (glibc 2.39, the oldest the prebuilt ONNX Runtime links with), attached to a draft release on a `v*` tag |
-| `server/` | the community server (Java, Quarkus, SQLite; `server/README.md`): games, authors (pseudo and password), modes and their versions published as `.gameviber` files (checked like the app's import, `SharedPackage`), share codes for private modes, downloads, reports, the back-office at `/admin/`; one native binary on a VPS |
+| `server/` | the community server (Java, Quarkus, SQLite; `server/README.md`): games, authors (pseudo and password), modes and their versions published as `.gameviber` files (checked like the app's import, `SharedPackage`), share codes for private modes, downloads, reports, the back-office at `/admin/`; the website (`src/main/webui-public`, Vue, mobile first: presentation, download, the community's modes; `site/SitePages`: its pages' titles and link previews); one native binary on a VPS |
 | `prototype/` | original Python prototype (reference only) |
 | `tools/` | test helpers: fake gamepad, SDL rumble game, `check-windows.sh` (Platforms), `update-gamecontrollerdb.sh` |
 
@@ -148,7 +149,7 @@ no eBPF, an overlay of its own) is planned. Keep the way open:
 - **Where it goes**: things the whole app needs (paths, time, signals, the
   privileged helper) in `platform/`; a part's backend next to that part
   (`source/linux/`, `audio/capture/linux.rs`, `overlay/linux/`,
-  `shortcuts/linux.rs`, `external/linux.rs`, `update/linux.rs`,
+  `shortcuts/linux.rs`, `external/linux.rs`, `update/linux.rs`, `links/linux.rs`,
   `gameviber-overlay/src/linux/`).
   The part's `mod.rs` holds the neutral types and logic and re-exports the
   backend's items under the same names for every OS.

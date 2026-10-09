@@ -101,6 +101,12 @@ published, the same place gives its tester code (and a new one, the old one then
 stops working), lists it for everyone or makes it private again, publishes its
 next version with a word on what changed, or withdraws it.
 
+The community's modes are also on the website, <https://gameviber.fyustorm.ovh>:
+**Open in GameViber** on a mode's page opens it in GameViber, ready to install
+(your browser asks first). A share code reads as a link too:
+`https://gameviber.fyustorm.ovh/m/<code>`. Only one GameViber runs at a time:
+starting it again brings the running one to the front.
+
 A mode installed from the community offers its updates (on its page), unless you keep its version. If you changed it, the
 update installs beside your version, which stays as it is. After a few hours
 of play with a mode of your own that you did not change, GameViber suggests

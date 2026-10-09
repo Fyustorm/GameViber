@@ -1,7 +1,8 @@
 //! Linux: XDG directories (of the sudo caller when run through sudo), the
 //! privileged helper started through pkexec, and the device hider it uses,
-//! the desktop's portals and its file dialogs.
+//! the desktop's portals and its file dialogs, GameViber's desktop entry.
 
+pub mod desktop;
 mod files;
 pub mod helper;
 pub mod hider;

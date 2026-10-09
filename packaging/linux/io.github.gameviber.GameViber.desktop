@@ -2,6 +2,7 @@
 Type=Application
 Name=GameViber
 Comment=Game rumble, sound and image to toys
-Exec=gameviber
+Exec=gameviber %u
 Icon=input-gaming
 Categories=Game;
+MimeType=x-scheme-handler/gameviber;

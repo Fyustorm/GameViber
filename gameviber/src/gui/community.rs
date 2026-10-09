@@ -14,6 +14,7 @@ use crate::community::{self, Account, Client, GameView, ModeDetail, ModeSummary,
 use crate::config::ModeEntry;
 use crate::engine::{Command, Shared};
 use crate::game::Game;
+use crate::links::Link;
 
 /// Below this width the mode's page goes under the list.
 const TWO_COLUMNS_WIDTH: f32 = 900.0;
@@ -318,7 +319,7 @@ impl App {
             self.community.searched = text.clone();
             self.community.games.start(ui.ctx(), move || client.games(&text));
         }
-        // A mode reached by its code shows here, without a game.
+        // A mode reached by its code or a link shows here, without a game.
         if self.community.selected.is_some() {
             card(PANEL).inner_margin(Margin::same(16)).show(ui, |ui| {
                 ui.set_width(ui.available_width());
@@ -495,6 +496,36 @@ impl App {
         });
         if response.response.interact(egui::Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
             self.select_mode_page(ui.ctx(), Source::Id(mode.id.clone()));
+        }
+    }
+
+    /// The link GameViber was started with, then those later starts hand over:
+    /// the window comes to the front, on the mode's page.
+    pub(super) fn links(&mut self, ctx: &egui::Context) {
+        let mut links: Vec<Option<Link>> = self.link.take().map(Some).into_iter().collect();
+        while let Ok(text) = self.links.try_recv() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            // Wayland gives the focus to no window asking for it: the desktop shows it wants attention instead.
+            ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(egui::UserAttentionType::Informational));
+            links.push(if text.is_empty() { Some(Link::Open) } else { Link::parse(&text) });
+        }
+        for link in links {
+            let source = match link {
+                Some(Link::Mode(id)) => Source::Id(id),
+                Some(Link::Shared(code)) => Source::Code(code),
+                Some(Link::Open) => continue,
+                None => {
+                    self.community.message = Some((false, "This link is not one GameViber opens.".into()));
+                    self.page = Page::Community;
+                    continue;
+                }
+            };
+            log::info!("link: {source:?}");
+            self.page = Page::Community;
+            self.community.game = None;
+            self.community.message = None;
+            self.select_mode_page(ctx, source);
         }
     }
 

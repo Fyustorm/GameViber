@@ -44,6 +44,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::config::{self, ModeEntry};
 use crate::engine::{Command, Shared, SharedHandle, SourceHealth, HISTORY_SECS};
+use crate::links::Link;
 use crate::logging::LogBuffer;
 use theme::*;
 
@@ -110,6 +111,9 @@ pub struct App {
     updater: Option<crate::update::Updater>,
     /// The banner announcing a new version was closed ("Later") for this session.
     update_banner_closed: bool,
+    /// What later starts of GameViber hand over (`links`), and the link this one was started with.
+    links: std::sync::mpsc::Receiver<String>,
+    link: Option<Link>,
 }
 
 impl App {
@@ -119,8 +123,18 @@ impl App {
         logs: LogBuffer,
         commands: UnboundedSender<Command>,
         engine: JoinHandle<()>,
+        instance: Option<crate::links::Instance>,
+        link: Option<Link>,
     ) -> Self {
         apply(ctx);
+        let (links_tx, links) = std::sync::mpsc::channel();
+        if let Some(instance) = instance {
+            let ctx = ctx.clone();
+            instance.listen(move |text| {
+                let _ = links_tx.send(text);
+                ctx.request_repaint();
+            });
+        }
         Self {
             shared,
             logs,
@@ -149,6 +163,8 @@ impl App {
             tour: tour::Tour::from_env(),
             updater: None,
             update_banner_closed: false,
+            links,
+            link,
         }
     }
 
@@ -234,6 +250,7 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         ui.ctx().request_repaint_after(REPAINT);
         crate::platform::window_focused(ui.ctx().input(|i| i.focused));
+        self.links(ui.ctx());
         let s = self.shared.lock().unwrap().clone();
         if s.stopped {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);

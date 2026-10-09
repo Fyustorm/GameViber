@@ -12,6 +12,7 @@ mod external;
 mod gamepad;
 mod gui;
 mod intiface;
+mod links;
 mod logging;
 mod models;
 mod mode;
@@ -70,6 +71,9 @@ struct Args {
     /// Verbose logs (effects, buttons)
     #[arg(short, long)]
     verbose: bool,
+    /// A gameviber:// link to open (the website's "Open in GameViber"); handed to
+    /// the GameViber already running, if one is
+    link: Option<String>,
 }
 
 fn mode_id(arg: &str) -> String {
@@ -94,6 +98,22 @@ fn main() -> anyhow::Result<()> {
     }
     let args = Args::parse();
     let logs = logging::init(args.verbose);
+    // One GameViber at a time: a second start hands its link to the first one.
+    let instance = if args.headless {
+        None
+    } else {
+        match links::claim(args.link.as_deref()) {
+            links::Claim::First(instance) => Some(instance),
+            links::Claim::Forwarded => return Ok(()),
+        }
+    };
+    let link = args.link.as_deref().and_then(|text| {
+        let link = links::Link::parse(text);
+        if link.is_none() {
+            log::warn!("not a GameViber link: {text}");
+        }
+        link
+    });
     package::migrate();
     let opts = EngineOptions {
         source: args.source,
@@ -130,7 +150,7 @@ fn main() -> anyhow::Result<()> {
         native,
         Box::new(move |cc| {
             platform::window_created(cc);
-            Ok(Box::new(gui::App::new(&cc.egui_ctx, shared, logs, commands, engine)))
+            Ok(Box::new(gui::App::new(&cc.egui_ctx, shared, logs, commands, engine, instance, link)))
         }),
     )
     .map_err(|e| anyhow::anyhow!("GUI error: {e}"))?;
