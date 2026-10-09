@@ -1,8 +1,9 @@
 # GameViber community server
 
 Quarkus service holding the modes players publish: their games, authors,
-versions and downloads, and the back-office at `/admin/`. One native binary,
-one SQLite file and the packages beside it, one port.
+versions and downloads, the back-office at `/admin/`, and GameViber's website
+(`src/main/webui-public`). One native binary, one SQLite file and the
+packages beside it, one port.
 
 ---
 
@@ -12,6 +13,7 @@ one SQLite file and the packages beside it, one port.
 |---|---|---|
 | JDK | 21+ | build and run |
 | Podman (or Docker) | — | the native build runs in a container |
+| Node + npm | 20+ | the website is built at package time (`-Dsite.skip` packages without it) |
 
 Maven comes with the wrapper (`./mvnw`).
 
@@ -29,6 +31,29 @@ Maven comes with the wrapper (`./mvnw`).
 
 `./mvnw test` runs the tests against a database of their own, in `target/test-data/`.
 
+### The website
+
+The site (Vue 3, `src/main/webui-public`) presents GameViber, its download and
+the community's modes. In development it runs off Vite, beside `quarkus:dev`,
+which it calls for `/api`:
+
+```bash
+cd src/main/webui-public && npm install && npm run dev    # http://localhost:5174
+```
+
+`./mvnw package` builds it into the static resources (`npm ci`, `npm run build`
+at `prepare-package`), served at the root of the host. `SitePages` serves its
+`index.html` for the site's routes reached directly (`/games`, `/games/{id}`,
+`/modes/{id}`, `/m/{code}`, `/download`), with the page's title, description
+and preview (OpenGraph: a mode's first capture, else its game's Steam banner)
+between the `<!-- page -->` markers: search engines and the chats a link is
+pasted in do not run the app. A route added to the app's router goes there too.
+A mode's page opens it in the app through `gameviber://mode/<id>` or
+`gameviber://shared/<code>` (`gameviber/src/links`).
+
+Written mobile first: the styles are a phone's, `min-width` queries add the
+wider screens.
+
 ---
 
 ## The API
@@ -37,8 +62,10 @@ Maven comes with the wrapper (`./mvnw`).
 |---|---|---|
 | Anyone | `GET /api/games?search=` | games with public modes |
 | | `GET /api/games/{id}/modes?sort=trending\|rating\|played\|new\|downloads` | a game's public modes, with their `figures` (players in 30 days, median minutes, share who came back 3 times or more, likes, Wilson rating, trend) |
+| | `GET /api/games/{id}` | a game (`modes`: its public ones) |
 | | `GET /api/modes/{id}`, `GET /api/modes/{id}/package?version=` | a public mode, its package (a download) |
-| | `GET /api/shared/{code}`, `GET /api/shared/{code}/package` | a mode by its share code (private ones too) |
+| | `GET /api/modes/{id}/image` | its latest version's first capture (PNG), for the site and link previews |
+| | `GET /api/shared/{code}`, `GET /api/shared/{code}/package`, `GET /api/shared/{code}/image` | a mode by its share code (private ones too) |
 | | `POST /api/modes/{id}/reports` | `{"reason": "broken\|content\|other", "details"}` |
 | | `GET /api/games/match?name=&steamAppId=` | the game a player plays, when it has public modes |
 | | `POST /api/stats/plays` | `{"installation", "plays": [{"mode", "seconds", "sessions"}]}`, from players who share their stats |

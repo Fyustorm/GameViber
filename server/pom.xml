@@ -18,6 +18,9 @@
         <jdbc-sqlite.version>3.0.11</jdbc-sqlite.version>
         <skipITs>true</skipITs>
         <surefire-plugin.version>3.5.3</surefire-plugin.version>
+        <exec-plugin.version>3.6.4</exec-plugin.version>
+        <!-- -Dsite.skip: package without building the site (Node and npm needed otherwise). -->
+        <site.skip>false</site.skip>
     </properties>
 
     <dependencyManagement>
@@ -110,6 +113,49 @@
                             <goal>generate-code-tests</goal>
                             <goal>native-image-agent</goal>
                         </goals>
+                    </execution>
+                </executions>
+            </plugin>
+            <!--
+                The site (src/main/webui-public, Vue): built by npm straight into the resources
+                Quarkus serves statically, at the root of the host beside the back-office.
+                Bound to prepare-package, so it lands in target/classes before the Quarkus build
+                reads it; skipped by quarkus:dev, where the site runs off Vite (npm run dev).
+            -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <version>${exec-plugin.version}</version>
+                <configuration>
+                    <executable>npm</executable>
+                    <workingDirectory>src/main/webui-public</workingDirectory>
+                    <skip>${site.skip}</skip>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>site-install</id>
+                        <phase>prepare-package</phase>
+                        <goals>
+                            <goal>exec</goal>
+                        </goals>
+                        <configuration>
+                            <arguments>
+                                <argument>ci</argument>
+                            </arguments>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>site-build</id>
+                        <phase>prepare-package</phase>
+                        <goals>
+                            <goal>exec</goal>
+                        </goals>
+                        <configuration>
+                            <arguments>
+                                <argument>run</argument>
+                                <argument>build</argument>
+                            </arguments>
+                        </configuration>
                     </execution>
                 </executions>
             </plugin>

@@ -1,0 +1,5 @@
+User-agent: *
+Allow: /api/modes/*/image
+Allow: /api/shared/*/image
+Disallow: /api/
+Disallow: /admin/

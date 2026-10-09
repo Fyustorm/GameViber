@@ -4,10 +4,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
 
-import org.eclipse.microprofile.config.inject.ConfigProperty;
-
 import fr.fyustorm.gameviber.api.Problem;
-import fr.fyustorm.gameviber.api.RateLimiter;
 import fr.fyustorm.gameviber.stats.Stats;
 import io.vertx.core.http.HttpServerRequest;
 import jakarta.inject.Inject;
@@ -25,11 +22,7 @@ public class CatalogResource {
     @Inject
     ModeCatalog catalog;
     @Inject
-    RateLimiter limits;
-    @Inject
     Stats stats;
-    @ConfigProperty(name = "limits.code-per-hour", defaultValue = "60")
-    int codePerHour;
 
     /** Games with public modes, the most modes first; `search` in their name. */
     @GET
@@ -42,6 +35,13 @@ public class CatalogResource {
                 .map(Views::game)
                 .sorted((a, b) -> Long.compare(b.modes(), a.modes()))
                 .toList();
+    }
+
+    /** A game, even without public modes (`modes` is 0 then). */
+    @GET
+    @Path("/games/{id}")
+    public Views.GameView game(@PathParam("id") long id) {
+        return Game.<Game>findByIdOptional(id).map(Views::game).orElseThrow(() -> Problem.notFound("no such game"));
     }
 
     /**
@@ -84,19 +84,26 @@ public class CatalogResource {
     @GET
     @Path("/shared/{code}")
     public Views.ModeDetail shared(@PathParam("code") String code, @Context HttpServerRequest request) {
-        return catalog.detail(byCode(code, request), false);
+        return catalog.detail(catalog.byCode(code, request), false);
     }
 
     @GET
     @Path("/shared/{code}/package")
     public Response sharedDownload(@PathParam("code") String code, @QueryParam("version") Integer version, @Context HttpServerRequest request) {
-        return send(catalog.download(byCode(code, request), version));
+        return send(catalog.download(catalog.byCode(code, request), version));
     }
 
-    /** Codes are guessed only a few at a time. */
-    private Mode byCode(String code, HttpServerRequest request) {
-        limits.check("code", request, codePerHour);
-        return Mode.byShareCode(code).filter(m -> m.withdrawnAt == null).orElseThrow(() -> Problem.notFound("no mode has this code"));
+    @GET
+    @Path("/shared/{code}/image")
+    public Response sharedImage(@PathParam("code") String code, @Context HttpServerRequest request) {
+        return image(catalog.cover(catalog.byCode(code, request)));
+    }
+
+    /** A mode's cover, kept an hour by browsers and link previews. */
+    static Response image(Optional<byte[]> png) {
+        return Response.ok(png.orElseThrow(() -> Problem.notFound("this mode has no image")), "image/png")
+                .header("Cache-Control", "public, max-age=3600")
+                .build();
     }
 
     static Response send(Download.Served served) {

@@ -54,7 +54,7 @@ public class ModeResource {
     @PermitAll
     @Path("/{id}")
     public Views.ModeDetail mode(@PathParam("id") String id) {
-        return catalog.detail(publicMode(id), false);
+        return catalog.detail(ModeCatalog.publicMode(id), false);
     }
 
     /** Its latest version's package, or version `version`'s. */
@@ -62,7 +62,15 @@ public class ModeResource {
     @PermitAll
     @Path("/{id}/package")
     public Response download(@PathParam("id") String id, @QueryParam("version") Integer version) {
-        return CatalogResource.send(catalog.download(publicMode(id), version));
+        return CatalogResource.send(catalog.download(ModeCatalog.publicMode(id), version));
+    }
+
+    /** The first capture of its latest version. */
+    @GET
+    @PermitAll
+    @Path("/{id}/image")
+    public Response image(@PathParam("id") String id) {
+        return CatalogResource.image(catalog.cover(ModeCatalog.publicMode(id)));
     }
 
     public record ReportForm(String reason, String details) {}
@@ -164,10 +172,6 @@ public class ModeResource {
             mode.withdrawnReason = "withdrawn by its author";
         }
         return catalog.detail(mode, true);
-    }
-
-    private static Mode publicMode(String id) {
-        return Mode.byPublicId(id).filter(Mode::isPublic).orElseThrow(() -> Problem.notFound("no such mode"));
     }
 
     private static InputStream open(FileUpload file) throws IOException {

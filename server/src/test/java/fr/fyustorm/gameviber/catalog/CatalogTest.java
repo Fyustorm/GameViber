@@ -30,7 +30,7 @@ import io.restassured.specification.RequestSpecification;
 
 @QuarkusTest
 public class CatalogTest {
-    static final String SCRIPT = "mode { api = 1, name = \"Battles\" }\nfunction tick(dt, input) set(input.rumble.level) end\n";
+    public static final String SCRIPT = "mode { api = 1, name = \"Battles\" }\nfunction tick(dt, input) set(input.rumble.level) end\n";
 
     // --- helpers
 
@@ -83,7 +83,7 @@ public class CatalogTest {
         return out.toByteArray();
     }
 
-    static byte[] gameviber(String game, Long app, String script, Map<String, byte[]> more) {
+    public static byte[] gameviber(String game, Long app, String script, Map<String, byte[]> more) {
         String appJson = app == null ? "null" : app.toString();
         String manifest = "{\"format\":2,\"app_version\":\"0.1.0\",\"mode\":\"battles\",\"game\":{\"name\":\"" + game + "\",\"steam_app_id\":" + appJson
                 + "},\"inputs\":{\"captures\":[{\"file\":\"battle-1.png\",\"phase\":\"battle\"}]}}";

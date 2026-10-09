@@ -39,7 +39,7 @@ public final class Views {
             String withdrawnReason,
             Figures figures) {}
 
-    static GameView game(Game game) {
+    public static GameView game(Game game) {
         long modes = Mode.count("gameId = ?1 and visibility = ?2 and withdrawnAt is null", game.id, Mode.PUBLIC);
         return new GameView(game.id, game.name, game.steamAppId, modes);
     }

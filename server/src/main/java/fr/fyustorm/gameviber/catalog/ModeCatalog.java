@@ -6,12 +6,15 @@ import java.io.UncheckedIOException;
 import java.time.Instant;
 import java.util.Optional;
 
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.eclipse.microprofile.jwt.JsonWebToken;
 import org.jboss.logging.Logger;
 
 import fr.fyustorm.gameviber.api.Problem;
+import fr.fyustorm.gameviber.api.RateLimiter;
 import fr.fyustorm.gameviber.auth.Author;
 import fr.fyustorm.gameviber.stats.Stats;
+import io.vertx.core.http.HttpServerRequest;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
@@ -29,6 +32,10 @@ public class ModeCatalog {
     PackageStore store;
     @Inject
     Stats stats;
+    @Inject
+    RateLimiter limits;
+    @ConfigProperty(name = "limits.code-per-hour", defaultValue = "60")
+    int codePerHour;
 
     /** The author signed in, if they may still publish. */
     public Author author(JsonWebToken jwt) {
@@ -42,6 +49,30 @@ public class ModeCatalog {
 
     public Views.ModeDetail detail(Mode mode, boolean owner) {
         return Views.detail(mode, owner, stats.figures(mode.id));
+    }
+
+    /** A public mode, by its public id. */
+    public static Mode publicMode(String id) {
+        return Mode.byPublicId(id).filter(Mode::isPublic).orElseThrow(() -> Problem.notFound("no such mode"));
+    }
+
+    /** A mode (private ones too) by its share code; codes are guessed only a few at a time. */
+    public Mode byCode(String code, HttpServerRequest request) {
+        limits.check("code", request, codePerHour);
+        return Mode.byShareCode(code).filter(m -> m.withdrawnAt == null).orElseThrow(() -> Problem.notFound("no mode has this code"));
+    }
+
+    /** The first capture of its latest version, if it has one. */
+    public Optional<byte[]> cover(Mode mode) {
+        var latest = ModeVersion.latest(mode);
+        if (mode.withdrawnAt != null || latest.isEmpty()) {
+            return Optional.empty();
+        }
+        try {
+            return store.cover(mode, latest.get().number);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
     }
 
     /** A mode of `author`, by its public id (withdrawn ones too). */

@@ -125,7 +125,9 @@ AGENTS.md, Platforms.
 ## Community server
 
 `server/` is the service players publish modes to: Quarkus, one SQLite file,
-built as a native binary. See [`server/README.md`](server/README.md) for its
+built as a native binary. It also serves GameViber's website (Vue,
+`server/src/main/webui-public`: the presentation, the download, the
+community's modes). See [`server/README.md`](server/README.md) for its
 API, dev mode and deployment. A package it accepts must stay one the app
 imports: when the `.gameviber` format changes (`sharing.rs`), change
 `SharedPackage` too.
