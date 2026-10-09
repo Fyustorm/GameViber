@@ -52,7 +52,8 @@ impl Shortcuts {
                 }
                 log::info!("keyboard shortcuts: {bound:?}");
                 *st.lock().unwrap() = Status::Ready(bound);
-                while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+                // 0: WM_QUIT; -1: an error.
+                while GetMessageW(&mut msg, None, 0, 0).0 > 0 {
                     if msg.message == WM_HOTKEY {
                         if let Some(action) = Action::ALL.get((msg.wParam.0 as usize).wrapping_sub(1)) {
                             let _ = tx.send(*action);

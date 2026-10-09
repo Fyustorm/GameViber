@@ -73,6 +73,8 @@ jobs:
       run:
         shell: bash
     steps:
+      # The files as they are in the repository (the tests compare some).
+      - run: git config --global core.autocrlf false
       - uses: actions/checkout@v4
       - name: Rust
         run: rustup default stable

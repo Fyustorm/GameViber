@@ -54,7 +54,8 @@ cp "$work/stage/"* "$work/$name/"
 cp "$here/archive-readme.txt" "$work/$name/README.txt"
 printf 'archive\r\n' > "$work/$name/distribution"
 rm -f "$out/$name.zip"
-(cd "$work" && if command -v zip >/dev/null; then zip -qr "../package/$name.zip" "$name"; else powershell -NoProfile -Command "Compress-Archive -Path '$name' -DestinationPath '../package/$name.zip'"; fi)
+# zip, or 7-Zip (GitHub's Windows runners have it).
+(cd "$work" && if command -v zip >/dev/null; then zip -qr "../package/$name.zip" "$name"; else 7z a -tzip -bd "../package/$name.zip" "$name" >/dev/null; fi)
 
 # The installer.
 iscc=${ISCC:-iscc}

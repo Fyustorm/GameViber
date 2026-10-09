@@ -244,7 +244,7 @@ game.
 
 ## Gamepad capture
 
-**Setup › Gamepad** offers two methods:
+**Setup › Gamepad** offers two methods on Linux (Windows: see below):
 
 - **Standard** (default): GameViber shows games a copy of your gamepad and
   passes everything through. Games see two gamepads unless you hide the real
@@ -261,6 +261,33 @@ and sets again any button you click on it. Games then get it as an Xbox 360
 controller (gamepads SDL's community database knows need nothing).
 Your setups are in `~/.config/gameviber/gamecontrollerdb.txt`, in SDL's format:
 a line for your gamepad from SDL_GameControllerDB works too.
+
+On **Windows**, the Standard method is the only one: games get a virtual Xbox
+360 controller (it needs [ViGEmBus](https://github.com/nefarius/ViGEmBus/releases),
+which GameViber's installer offers). An Xbox controller is passed on as it is,
+and still vibrates; any other gamepad gets the Xbox layout from SDL's database
+or from the buttons you set up, and does not vibrate itself. To keep games
+from seeing two controllers, tick **Hide the real gamepad from games**: it
+needs [HidHide](https://github.com/nefarius/HidHide/releases) (also offered by
+the installer), and Windows asks you to allow it each time GameViber hides or
+gives back the gamepad.
+
+## On Windows
+
+Windows is in preview and gets fewer features than Linux:
+
+- No in-game panel (overlay). Modes still see the game's image: GameViber
+  reads the window of the game in front when it is fullscreen or borderless,
+  or any window of a game from Steam, Epic, GOG or Xbox. A game in exclusive
+  fullscreen may give a black image: set it to borderless. **Setup › In-game
+  overlay** shows the game being read.
+- No kernel probe: the rumble comes from the virtual controller only.
+- The game's sound is its own (Windows 10 2004 or later), whatever plays next
+  to it; or everything the computer plays.
+- Keyboard shortcuts are Ctrl+Alt+X (stop every toy), Ctrl+Alt+M (mark a
+  moment) and Ctrl+Alt+C (capture the screen); a key another program holds is
+  left without one.
+- Other programs send their values to `\\.\pipe\gameviber-<your user name>-external`.
 
 ## Built-in modes
 
@@ -294,6 +321,10 @@ how you installed GameViber:
   password.
 - **`.tar.gz` archive**: **Download and install** replaces the files where you
   extracted it (keep the `distribution` file there).
+- **Windows installer**: **Download and install** downloads it; the new
+  version installs when GameViber restarts (Windows asks you to allow it),
+  then GameViber starts again.
+- **Windows `.zip` archive**: like the `.tar.gz`, its files are replaced in place.
 - **Installed from a store or a package repository**: GameViber only tells
   you; update it there.
 
@@ -304,8 +335,10 @@ modes are kept. While GameViber is an alpha, alpha versions are offered too.
 ## Where things are saved
 
 - Settings, games, your modes and recorded sessions: `~/.config/gameviber/`
-  (your modes in `modes/`, reloaded when saved from any editor).
-- Downloaded models: `~/.local/share/gameviber/models/`.
+  (your modes in `modes/`, reloaded when saved from any editor); on Windows
+  `%APPDATA%\GameViber\`.
+- Downloaded models: `~/.local/share/gameviber/models/`; on Windows
+  `%LOCALAPPDATA%\GameViber\models\`.
 
 ## Known limitations
 

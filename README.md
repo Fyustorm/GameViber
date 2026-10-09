@@ -6,7 +6,8 @@ vibrations for the toys connected to [Intiface Central](https://intiface.com/cen
 How it feels is decided by a **mode**: ideally one an AI assistant writes for
 your game in a couple of minutes.
 
-Linux only for now (Steam, Proton, Lutris, Heroic: any game with a gamepad).
+Linux (Steam, Proton, Lutris, Heroic: any game with a gamepad), and Windows
+in preview, with fewer features (no in-game panel; see below).
 
 ## Install
 
@@ -19,12 +20,18 @@ Download the package for your system from the
 | Fedora 40+ | `.rpm` | `sudo dnf install ./gameviber-*.rpm` |
 | Arch, CachyOS, Manjaro | `.pkg.tar.zst` | `sudo pacman -U gameviber-*.pkg.tar.zst` |
 | SteamOS, Bazzite, other systems | `.tar.gz` | extract it and run `./gameviber` (see its `README.txt`) |
+| Windows 10 (2004+) and 11 | `-windows-x86_64-setup.exe` | run it: it also offers ViGEmBus (needed for the rumble) and HidHide |
+| Windows, without installing | `-windows-x86_64.zip` | extract it and run `gameviber.exe` (install [ViGEmBus](https://github.com/nefarius/ViGEmBus/releases) yourself) |
 
 GameViber tells you when a new version is out and, with these files, installs
 it for you (**Settings › Updates**).
 
 You also need [Intiface Central](https://intiface.com/central/) to connect your
-toys, and PipeWire for the game's sound (the default on recent systems).
+toys, and on Linux PipeWire for the game's sound (the default on recent systems).
+
+On Windows, GameViber shows games a virtual Xbox 360 controller to hear their
+rumble, hears the game's own sound, and reads the image of the game's window;
+there is no in-game panel yet. It is new: tell us what does not work.
 
 ## First steps
 

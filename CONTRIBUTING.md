@@ -118,9 +118,14 @@ the models are downloaded on demand into `~/.local/share/gameviber/models/`.
 
 ### Platforms
 
-Linux only for now, but every OS-specific piece lives in `linux` modules with
-fallbacks for other systems, so that Windows can be added later. See
-AGENTS.md, Platforms.
+Every OS-specific piece lives in `linux` and `windows` modules, with fallbacks
+for other systems (AGENTS.md, Platforms). Windows has fewer features: the
+proxy source makes a ViGEmBus virtual Xbox 360 controller (`source/windows/`,
+HidHide hiding the real gamepad), the sound comes from WASAPI
+(`audio/capture/windows.rs`), and with no overlay in games GameViber captures
+the game's window itself (`overlay/windows/`). [docs/windows.md](docs/windows.md)
+has what each part uses, how to build and test it from Linux (cargo-xwin and
+Wine, `tools/windows/`), and what was tested.
 
 ## Community server
 
@@ -172,9 +177,19 @@ cargo build --release && cargo build-overlay32
 packaging/linux/package.sh     # deb, rpm, Arch package, .tar.gz and SHA256SUMS in target/package/ (needs nfpm and cargo-about)
 ```
 
-On GitHub, the **CI** workflow runs the tests and the Windows check; the
-**Packages** workflow builds the packages on Ubuntu 24.04 (glibc 2.39, the
-oldest the prebuilt ONNX Runtime links with). To release, set the version in
+[`packaging/windows/`](packaging/windows/) makes the Windows installer (Inno
+Setup: GameViber, the `gameviber://` scheme, and the ViGEmBus and HidHide
+installers it offers, downloaded and checked by the script) and a zip archive:
+
+```sh
+cargo build --release -p gameviber   # on Windows; from Linux: cargo xwin build --release --target x86_64-pc-windows-msvc -p gameviber
+packaging/windows/package.sh         # -windows-x86_64-setup.exe and -windows-x86_64.zip in target/package/ (needs iscc and cargo-about)
+```
+
+On GitHub, the **CI** workflow runs the tests on Linux and Windows and the
+Windows check; the **Packages** workflow builds the Linux packages on Ubuntu
+24.04 (glibc 2.39, the oldest the prebuilt ONNX Runtime links with) and the
+Windows files on Windows, and lists them all in `SHA256SUMS`. To release, set the version in
 `gameviber/Cargo.toml` and `gameviber-overlay/Cargo.toml` (`0.1.0-alpha.1`
 while in alpha), then push a matching tag:
 
@@ -191,10 +206,14 @@ pre-releases only while it is one itself, drafts never. How it updates comes
 from a `distribution` file shipped with it: `package` in
 `/usr/lib/gameviber/` (our packages: downloaded, checked against
 `SHA256SUMS`, installed with the package manager through pkexec), `archive`
-next to the executable (the archive's files are replaced in place). Any other
-value names the store or repository that updates it (a future Flathub or
-distribution package writes its own), and GameViber only announces new
-versions; so does a build from source, which has no such file. A release must
-therefore keep its file names (`.deb`, `.rpm`, `.pkg.tar.zst`, `.tar.gz`) and
+next to the executable (the archive's files are replaced in place). On
+Windows (`update/windows.rs`), next to `gameviber.exe`: `installer` (the
+installer, run silently when GameViber closes, which starts it again) or
+`archive` (the zip's files replaced, the running executable moved aside as
+`.old`). Any other value names the store or repository that updates it (a
+future Flathub or distribution package writes its own), and GameViber only
+announces new versions; so does a build from source, which has no such file.
+A release must therefore keep its file names (`.deb`, `.rpm`, `.pkg.tar.zst`,
+`.tar.gz`, `-windows-x86_64-setup.exe`, `-windows-x86_64.zip`) and
 its `SHA256SUMS`. `GAMEVIBER_RELEASES_URL` points the check at another server
 answering like GitHub's API (the tests run one).
