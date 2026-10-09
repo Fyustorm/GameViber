@@ -2091,6 +2091,7 @@ dependencies = [
  "wayland-client",
  "wayland-protocols",
  "windows",
+ "windows-core",
  "zbus",
  "zip",
 ]

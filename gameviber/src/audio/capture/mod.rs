@@ -1,14 +1,18 @@
 //! Captures the game's sound: what to listen to (`choose`), and the capture
-//! itself, an OS backend (`linux`: PipeWire) providing `Graph` (the playing
+//! itself, an OS backend (`linux`: PipeWire; `windows`: WASAPI) providing `Graph` (the playing
 //! applications' streams) and `Capture` (mono samples at `SAMPLE_RATE`).
 
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]
 pub use linux::{Capture, Graph};
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "windows")]
+mod windows;
+#[cfg(target_os = "windows")]
+pub use self::windows::{Capture, Graph};
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 mod unsupported;
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 pub use unsupported::{Capture, Graph};
 
 use crate::config::AudioSource;

@@ -1,0 +1,11 @@
+# Builds GameViber for Windows from Linux and runs it under Wine (docs/windows.md):
+#   podman build -t gameviber-windows tools/windows
+#   tools/windows/run.sh 'cargo xwin test --target x86_64-pc-windows-msvc -p gameviber'
+FROM docker.io/library/ubuntu:24.04
+ENV DEBIAN_FRONTEND=noninteractive
+RUN dpkg --add-architecture i386 && apt-get update && apt-get install -y --no-install-recommends \
+    wine wine64 wine32:i386 clang-19 lld-19 llvm-19 curl ca-certificates pkg-config git build-essential \
+    libssl-dev cmake ninja-build xvfb xauth imagemagick zip unzip \
+    && rm -rf /var/lib/apt/lists/* \
+    && for t in clang clang++ clang-cl lld lld-link ld.lld llvm-lib llvm-ar llvm-rc llvm-dlltool; do \
+         [ -e /usr/lib/llvm-19/bin/$t ] && ln -sf /usr/lib/llvm-19/bin/$t /usr/local/bin/$t; done; true

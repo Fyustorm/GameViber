@@ -59,6 +59,6 @@ Nothing tested on a real Windows yet. Under Wine: the tests pass, the GUI
 starts, the installer builds and installs.
 
 - [x] Base: platform, links, shortcuts, external inputs pipe, updates, CI, installer
-- [ ] Sound
+- [x] Sound
 - [ ] Rumble
 - [ ] Image
