@@ -42,3 +42,5 @@ install -Dm644 "$root/LICENSE-MIT" "$dest/usr/share/licenses/gameviber/LICENSE-M
 install -Dm644 "$here/60-gameviber-uinput.rules" "$dest/usr/lib/udev/rules.d/60-gameviber-uinput.rules"
 install -Dm644 "$here/io.github.gameviber.GameViber.policy" "$dest/usr/share/polkit-1/actions/io.github.gameviber.GameViber.policy"
 install -Dm644 "$here/io.github.gameviber.GameViber.desktop" "$dest/usr/share/applications/io.github.gameviber.GameViber.desktop"
+install -Dm644 "$root/gameviber/icons/gameviber.svg" "$dest/usr/share/icons/hicolor/scalable/apps/io.github.gameviber.GameViber.svg"
+install -Dm644 "$root/gameviber/icons/gameviber-256.png" "$dest/usr/share/icons/hicolor/256x256/apps/io.github.gameviber.GameViber.png"

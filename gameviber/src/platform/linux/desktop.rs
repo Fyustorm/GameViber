@@ -18,11 +18,19 @@ fn user_entries() -> PathBuf {
     super::data_home().join("applications")
 }
 
+/// The icon the entry names, written beside the entry GameViber writes (a
+/// package installs it in `/usr/share/icons`).
+const ICON: &str = include_str!("../../../icons/gameviber.svg");
+
+fn user_icon_path() -> PathBuf {
+    super::data_home().join("icons/hicolor/scalable/apps").join(format!("{APP_ID}.svg"))
+}
+
 /// The start of the entries GameViber writes, up to the executable.
 const ENTRY_HEAD: &str = "[Desktop Entry]\nType=Application\nName=GameViber\nComment=Game rumble, sound and image to toys\nExec=";
 
 fn entry_text(exe: &Path) -> String {
-    format!("{ENTRY_HEAD}{} %u\nIcon=input-gaming\nCategories=Game;\nMimeType=x-scheme-handler/{SCHEME};\n", exec_quoted(exe))
+    format!("{ENTRY_HEAD}{} %u\nIcon={APP_ID}\nCategories=Game;\nMimeType=x-scheme-handler/{SCHEME};\n", exec_quoted(exe))
 }
 
 /// The executable as the Exec key wants it: quoted when it holds a space or a
@@ -49,8 +57,8 @@ fn exec_quoted(exe: &Path) -> String {
 }
 
 /// `~/.local/share/applications/<APP_ID>.desktop`, launching this executable,
-/// unless a package installed one (then a user entry we wrote earlier, which
-/// would hide it, is removed).
+/// and its icon, unless a package installed them (then a user entry and icon
+/// we wrote earlier, which would hide them, are removed).
 pub fn desktop_entry() -> anyhow::Result<()> {
     let path = user_entries().join(format!("{APP_ID}.desktop"));
     if system_entry_path().exists() {
@@ -59,7 +67,15 @@ pub fn desktop_entry() -> anyhow::Result<()> {
             log::info!("desktop entry of the package used: {} removed", path.display());
             refresh_user_entries();
         }
+        let _ = std::fs::remove_file(user_icon_path());
         return Ok(());
+    }
+    let icon = user_icon_path();
+    if std::fs::read_to_string(&icon).ok().as_deref() != Some(ICON) {
+        if let Some(dir) = icon.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        std::fs::write(&icon, ICON)?;
     }
     let entry = entry_text(&std::env::current_exe()?);
     if std::fs::read_to_string(&path).ok().as_deref() != Some(entry.as_str()) {

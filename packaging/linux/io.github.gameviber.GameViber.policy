@@ -6,7 +6,7 @@
      action only covers /usr/bin/gameviber helper. -->
 <policyconfig>
   <vendor>GameViber</vendor>
-  <icon_name>input-gaming</icon_name>
+  <icon_name>io.github.gameviber.GameViber</icon_name>
   <action id="io.github.gameviber.GameViber.helper">
     <description>Run the GameViber helper</description>
     <message>GameViber needs your authorization to watch the rumble games send to the gamepad, or to hide the real gamepad from games.</message>

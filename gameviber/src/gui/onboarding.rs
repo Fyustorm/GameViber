@@ -18,7 +18,10 @@ impl App {
     pub(super) fn onboarding_ui(&mut self, ui: &mut egui::Ui, s: &Shared, step: usize) {
         let frame = egui::Frame::new().fill(SIDEBAR).inner_margin(Margin::symmetric(20, 28));
         egui::Panel::left("setup-steps").frame(frame).exact_size(260.0).resizable(false).show(ui, |ui| {
-            ui.label(RichText::new("〰 GameViber").size(17.0).strong().color(ACCENT));
+            ui.horizontal(|ui| {
+                logo(ui, 26.0);
+                ui.label(RichText::new("GameViber").size(17.0).strong().color(ACCENT));
+            });
             ui.add_space(24.0);
             eyebrow(ui, "Setup");
             ui.add_space(4.0);
@@ -113,7 +116,7 @@ impl App {
         ui.horizontal(|ui| {
             let boxes = [
                 ("🎮", "Your game", "sends rumble to the gamepad"),
-                ("〰", "GameViber", "turns it into a feeling"),
+                ("", "GameViber", "turns it into a feeling"),
                 ("🔌", "Intiface Central", "talks to your toys"),
                 ("📳", "Your toy", "Bluetooth or USB"),
             ];
@@ -125,7 +128,11 @@ impl App {
                     .show(ui, |ui| {
                         ui.set_width(118.0);
                         ui.vertical_centered(|ui| {
-                            ui.label(RichText::new(*icon).size(18.0).color(ACCENT));
+                            if i == 1 {
+                                logo(ui, 24.0);
+                            } else {
+                                ui.label(RichText::new(*icon).size(18.0).color(ACCENT));
+                            }
                             ui.label(RichText::new(*name).strong());
                             ui.label(muted(*sub).size(11.5));
                         });

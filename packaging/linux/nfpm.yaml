@@ -60,6 +60,10 @@ contents:
     dst: /usr/share/polkit-1/actions/io.github.gameviber.GameViber.policy
   - src: target/package/root/usr/share/applications/io.github.gameviber.GameViber.desktop
     dst: /usr/share/applications/io.github.gameviber.GameViber.desktop
+  - src: target/package/root/usr/share/icons/hicolor/scalable/apps/io.github.gameviber.GameViber.svg
+    dst: /usr/share/icons/hicolor/scalable/apps/io.github.gameviber.GameViber.svg
+  - src: target/package/root/usr/share/icons/hicolor/256x256/apps/io.github.gameviber.GameViber.png
+    dst: /usr/share/icons/hicolor/256x256/apps/io.github.gameviber.GameViber.png
 
 scripts:
   postinstall: packaging/linux/postinstall.sh

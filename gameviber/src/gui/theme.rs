@@ -20,6 +20,23 @@ pub const DANGER_TEXT: Color32 = Color32::from_rgb(0xff, 0x7a, 0x7f);
 pub const GAME: Color32 = Color32::from_rgb(0x6a, 0xa8, 0xff);
 pub const IDLE: Color32 = Color32::from_rgb(0x5b, 0x62, 0x73);
 
+/// GameViber's icon (`gameviber/icons/`, rendered by `tools/render-icons.sh`):
+/// the window's, the rail's and the setup guide's.
+pub const ICON: &[u8] = include_bytes!("../../icons/gameviber-256.png");
+
+/// The icon, `size` points wide, its texture loaded once.
+pub fn logo(ui: &mut egui::Ui, size: f32) -> egui::Response {
+    let id = egui::Id::new("gameviber-logo");
+    let texture = ui.ctx().data_mut(|d| d.get_temp::<egui::TextureHandle>(id)).unwrap_or_else(|| {
+        let image = image::load_from_memory(ICON).map(|i| i.to_rgba8()).unwrap_or_default();
+        let pixels = egui::ColorImage::from_rgba_unmultiplied([image.width() as usize, image.height() as usize], &image);
+        let texture = ui.ctx().load_texture("gameviber-logo", pixels, egui::TextureOptions::LINEAR);
+        ui.ctx().data_mut(|d| d.insert_temp(id, texture.clone()));
+        texture
+    });
+    ui.add(egui::Image::new((texture.id(), Vec2::splat(size))))
+}
+
 /// The symbols egui's fonts lack (arrows, shapes, box drawing): DejaVu Sans
 /// 2.37's, cut down to those blocks (`gameviber/fonts/`) with fontTools:
 /// `pyftsubset DejaVuSans.ttf --no-hinting --desubroutinize --unicodes=U+2190-23FF,U+2500-27BF,U+2B00-2BFF`.

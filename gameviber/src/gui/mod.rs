@@ -50,6 +50,7 @@ use crate::engine::{Command, Shared, SharedHandle, SourceHealth, HISTORY_SECS};
 use crate::links::Link;
 use crate::logging::LogBuffer;
 use theme::*;
+pub use theme::ICON;
 
 const REPAINT: Duration = Duration::from_millis(33);
 /// The first-launch setup guide is off while the app changes too much for it
@@ -329,7 +330,8 @@ impl App {
         let frame = egui::Frame::new().fill(PANEL).inner_margin(Margin::symmetric(16, 10));
         egui::Panel::top("status").frame(frame).show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.label(RichText::new("〰 GameViber").size(16.0).strong().color(ACCENT));
+                logo(ui, 22.0);
+                ui.label(RichText::new("GameViber").size(16.0).strong().color(ACCENT));
                 ui.add_space(8.0);
                 self.game_picker(ui, s);
                 let session = match (s.recording, &s.replay) {

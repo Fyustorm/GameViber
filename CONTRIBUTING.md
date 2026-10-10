@@ -50,7 +50,10 @@ Options: `--source proxy|ebpf|none` (remembered), `--device /dev/input/eventX`,
 
 Test helpers: `tools/sdl_rumble.py` simulates an SDL3 game,
 `tools/fake_gamepad.py` a physical gamepad. `tools/update-gamecontrollerdb.sh`
-refreshes the gamepad mappings embedded from SDL_GameControllerDB. `prototype/`
+refreshes the gamepad mappings embedded from SDL_GameControllerDB.
+`tools/render-icons.sh` renders GameViber's icon (`gameviber/icons/gameviber.svg`,
+the one to edit) into the files made from it: the window's PNG, Windows' `.ico`
+and the website's icons. `prototype/`
 is the original Python prototype (reference only).
 
 ## How it works
