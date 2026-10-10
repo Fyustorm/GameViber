@@ -1,18 +1,22 @@
 //! Library page: the player's modes, by game (the built-in ones under "Any
-//! game"); creating a mode, which starts with its game and a diagram of how a
-//! mode works before opening the Creator; and the active mode's page: its
+//! game"); creating a mode, which starts with its game and how its script is
+//! got (what an AI assistant is asked for it, ticked there) before opening the
+//! Creator; and the active mode's page: its
 //! settings, what it reads, sharing it, and its game (how GameViber
 //! recognizes it, which sound it listens to).
 
 use eframe::egui::{self, Margin, RichText};
 
+use super::creator::Way;
 use super::diagram::mode_diagram;
+use super::generator::wishes_ui;
 use super::theme::*;
 use super::{main_of, mode_icon, App, Page, Route};
 use crate::config::{AudioSource, ModeEntry, NEW_MODE_TEMPLATE};
 use crate::engine::{Command, Shared};
 use crate::game::{slug, Game};
 use crate::mode::prompt;
+use crate::package::Inputs;
 
 const TILE_MIN_WIDTH: f32 = 260.0;
 const TILE_HEIGHT: f32 = 92.0;
@@ -40,6 +44,10 @@ pub struct State {
     /// The game's name being edited.
     renaming: Option<String>,
     confirm_delete_game: bool,
+    /// How the Create page's mode gets its script (None: an AI assistant writes it).
+    start: Option<Way>,
+    /// How a mode works, shown on the Create page.
+    diagram: bool,
 }
 
 impl State {
@@ -307,20 +315,57 @@ impl App {
         }
         ui.add_space(12.0);
 
-        card(SIDEBAR).inner_margin(Margin::symmetric(20, 16)).show(ui, |ui| {
+        let start = self.library.start.unwrap_or(Way::Ai);
+        card(PANEL).inner_margin(Margin::symmetric(20, 16)).show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.label(RichText::new("How a mode works").strong().size(17.0));
-            ui.label(muted(
-                "All of it is set in the Creator. Only the script is needed; the rest makes the mode feel like the game.",
-            ));
-            ui.add_space(8.0);
-            mode_diagram(ui, None);
-            ui.add_space(8.0);
-            ui.horizontal_wrapped(|ui| {
-                ui.label(RichText::new("⟲ No fixed order.").strong().color(GAME));
-                ui.label(muted("The mode is live while you make it: play, feel, change the phases or the script, play again."));
-            });
+            ui.label(RichText::new("How do you want to start?").strong().size(17.0));
+            ui.add_space(4.0);
+            for (way, label, note) in [
+                (Way::Ai, "✨ An AI assistant writes it for this game", "Recommended"),
+                (Way::BuiltIn, "Start from a built-in mode", "made for a genre"),
+                (Way::Write, "Write it yourself", "in Luau"),
+            ] {
+                ui.horizontal(|ui| {
+                    if ui.radio(start == way, label).clicked() {
+                        self.library.start = Some(way);
+                    }
+                    ui.label(muted(note).size(12.5));
+                });
+            }
         });
+        if start == Way::Ai {
+            ui.add_space(10.0);
+            card(PANEL).inner_margin(Margin::symmetric(20, 16)).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                wishes_ui(ui, &mut self.generator.new_wishes);
+                ui.add_space(6.0);
+                ui.label(RichText::new("Anything else?").strong());
+                ui.add(
+                    egui::TextEdit::multiline(&mut self.generator.new_instructions)
+                        .hint_text("e.g. parries should feel like a release, not a hit")
+                        .desired_width(f32::INFINITY)
+                        .desired_rows(2),
+                );
+                ui.label(muted("Kept with the mode: the Creator's AI assistant tab builds the requests from all this.").size(12.0));
+            });
+        }
+        if self.library.diagram {
+            ui.add_space(10.0);
+            card(SIDEBAR).inner_margin(Margin::symmetric(20, 16)).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(RichText::new("How a mode works").strong().size(17.0));
+                ui.label(muted(
+                    "All of it is set in the Creator. Only the script is needed; the rest makes the mode feel like the game.",
+                ));
+                ui.add_space(8.0);
+                mode_diagram(ui, None);
+                ui.add_space(8.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new("⟲ No fixed order.").strong().color(GAME));
+                    ui.label(muted("The mode is live while you make it: play, feel, change the phases or the script, play again."));
+                });
+            });
+        }
         ui.add_space(12.0);
         let name = name.trim().to_owned();
         ui.horizontal(|ui| {
@@ -329,10 +374,13 @@ impl App {
                 self.route = Route::Library;
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.add_enabled(!name.is_empty(), primary("Open the Creator")).clicked() {
+                if ui.add_enabled(!name.is_empty(), primary("Open the Creator ›")).clicked() {
                     self.start_mode_for(s, &name);
                 }
-                ui.label(muted("This diagram stays one click away: ? in the Creator."));
+                let diagram = self.library.diagram;
+                if ui.selectable_label(diagram, "How a mode works ?").on_hover_text("Also one click away in the Creator: ?").clicked() {
+                    self.library.diagram = !diagram;
+                }
             });
         });
     }
@@ -366,8 +414,19 @@ impl App {
             stem if stem.is_empty() => "my-mode".to_owned(),
             stem => stem,
         };
-        if self.create_mode(&stem, &source, None, Some(&game.id)).is_some() {
-            self.creator.open_new();
+        let way = self.library.start.unwrap_or(Way::Ai);
+        if let Some(entry) = self.create_mode(&stem, &source, None, Some(&game.id)) {
+            // What the assistant is asked for, kept with the mode (after its selection, so the engine has it).
+            if way == Way::Ai {
+                let mut inputs = Inputs::of(&entry);
+                inputs.wishes = Some(self.generator.new_wishes.clone());
+                inputs.instructions = self.generator.new_instructions.trim().to_owned();
+                self.generator.new_instructions.clear();
+                if inputs.has_package() {
+                    self.send(Command::SaveInputs(inputs));
+                }
+            }
+            self.creator.open_new(way);
         }
         self.route = Route::Mode;
     }

@@ -4,8 +4,9 @@
 #   packaging/third-party/licenses.sh OUTPUT
 # The Rust crates come from cargo-about (in PATH; see about.toml), then what it
 # does not see: Luau (C++, built by a build dependency of mlua), ONNX
-# Runtime (a prebuilt library, with the notices of what it contains) and the
-# gamepad mappings of SDL_GameControllerDB (gameviber/gamepads/).
+# Runtime (a prebuilt library, with the notices of what it contains), the
+# gamepad mappings of SDL_GameControllerDB (gameviber/gamepads/) and the
+# symbols of DejaVu Sans (gameviber/fonts/).
 set -eu
 [ $# -eq 1 ] || { echo "usage: $0 OUTPUT" >&2; exit 2; }
 here=$(cd "$(dirname "$0")" && pwd)
@@ -58,4 +59,8 @@ HEAD
     printf 'SDL_GameControllerDB (https://github.com/mdqinc/SDL_GameControllerDB): its Linux and Windows mappings\n'
     printf -- '--------------------------------------------------------------------------------\n'
     cat "$root/gameviber/gamepads/LICENSE"
+    printf '\n================================================================================\n'
+    printf 'DejaVu Sans 2.37 (https://dejavu-fonts.github.io): its symbols (arrows, shapes, box drawing)\n'
+    printf -- '--------------------------------------------------------------------------------\n'
+    cat "$root/gameviber/fonts/LICENSE"
 } > "$out"

@@ -585,9 +585,13 @@ fn surge_fills_with_parries_and_spends_on_a_surge() {
     assert!(plot_value(&out, "gauge") < 0.14);
 }
 
+/// Vibrators only, nothing ticked, the script at once.
+static NO_WISHES: std::sync::LazyLock<prompt::Wishes> =
+    std::sync::LazyLock::new(|| prompt::Wishes { strokers: false, feel: Vec::new(), phases_first: false, ..prompt::Wishes::default() });
+
 /// A request for a mode made for `game`.
 fn new_mode<'a>(game: &'a str, language: &'a str, depth: prompt::Depth, described: Option<&'a str>, phases: &'a [String]) -> prompt::NewMode<'a> {
-    prompt::NewMode { game, language, style: prompt::Style::Direct, depth, described, phases, instructions: "" }
+    prompt::NewMode { game, language, step: prompt::Step::Script, wishes: &NO_WISHES, depth, described, phases, instructions: "" }
 }
 
 #[test]
@@ -609,6 +613,7 @@ fn ai_prompt_names_the_game_and_embeds_the_api() {
         assert!(!text.contains(advanced), "{advanced}");
     }
     assert!(text.contains("Nothing more: use the rumble"), "{text}");
+    assert!(!text.contains("### 8.5 "), "no strokers");
 
     // An advanced request: the raw inputs and the inputs set up for the mode.
     let profile = "Indicators of the screen (`input.indicators`, `on_indicator`):\n- `battle_hud`: true while shown, false otherwise\n";
@@ -624,20 +629,22 @@ fn ai_prompt_names_the_game_and_embeds_the_api() {
 }
 
 #[test]
-fn request_styles_ask_for_questions_an_analysis_or_the_script() {
+fn requests_ask_for_questions_an_analysis_or_the_script() {
     let templates = prompt::Templates::builtin();
     let phases = ["battle".to_owned(), "story".to_owned()];
-    let request = |style, instructions| {
-        let r = prompt::NewMode { style, instructions, ..new_mode("Hades II", "English", prompt::Depth::Quick, None, &phases) };
+    let asking = prompt::Wishes { ask_first: true, ..NO_WISHES.clone() };
+    let request = |step, wishes, instructions| {
+        let r = prompt::NewMode { step, wishes, instructions, ..new_mode("Hades II", "English", prompt::Depth::Quick, None, &phases) };
         prompt::new_mode_prompt(&templates, &r)
     };
-    let direct = request(prompt::Style::Direct, "");
-    let chat = request(prompt::Style::Conversation, "  No vibration in menus.  ");
-    let analysis = request(prompt::Style::Analysis, "");
-    let after = request(prompt::Style::AfterAnalysis, "");
-    for text in [&direct, &chat, &analysis, &after] {
+    let direct = request(prompt::Step::Script, &NO_WISHES, "");
+    let chat = request(prompt::Step::Script, &asking, "  No vibration in menus.  ");
+    let analysis = request(prompt::Step::Analysis, &NO_WISHES, "");
+    let after = request(prompt::Step::AfterAnalysis, &NO_WISHES, "");
+    let after_chat = request(prompt::Step::AfterAnalysis, &asking, "");
+    for text in [&direct, &chat, &analysis, &after, &after_chat] {
         assert!(!text.contains("{{") && !text.contains("<!--"), "every placeholder and marker replaced");
-        assert!(text.contains("# The player's own instructions"));
+        assert!(text.contains("# What the player wants") && text.contains("# The player's own instructions"));
     }
     assert!(direct.contains("Design the mode") && !direct.contains("Ask the player"));
     assert!(chat.contains("Ask the player before writing anything") && chat.contains("contrasted designs"));
@@ -648,8 +655,43 @@ fn request_styles_ask_for_questions_an_analysis_or_the_script() {
     // The script after it, in the same conversation: short.
     assert!(after.contains("The player set up in GameViber what you proposed") && after.contains("`battle`, `story`"));
     assert!(!after.contains("## 3. Mode file") && !after.contains("Continuous beats intermittent") && !after.contains("turns what a game does"));
-    assert!(after.contains("category = \"Hades II\""));
+    assert!(after.contains("category = \"Hades II\"") && after.contains("Design the mode") && !after.contains("Ask the player"));
+    assert!(after_chat.contains("Ask the player before writing anything") && !after_chat.contains("Design the mode around"));
     assert!(after.len() * 5 < direct.len());
+}
+
+#[test]
+fn requests_ask_for_what_the_player_ticked() {
+    let templates = prompt::Templates::builtin();
+    let mut wishes = prompt::Wishes::default();
+    assert!(wishes.vibrators && wishes.strokers && wishes.phases_first && !wishes.ask_first, "both toys and phases first at first");
+    assert!(wishes.wants("damage_taken") && wishes.wants("parry") && wishes.wants("low_health") && !wishes.wants("combo"));
+    wishes.feel.retain(|k| ["damage_taken", "fight_wave"].contains(&k.as_str()));
+    assert!(!wishes.needs_screen());
+    let request = |wishes: &prompt::Wishes, step| {
+        let r = prompt::NewMode { step, wishes, ..new_mode("Hades II", "English", prompt::Depth::Quick, None, &[]) };
+        prompt::new_mode_prompt(&templates, &r)
+    };
+    let text = request(&wishes, prompt::Step::Script);
+    assert!(text.contains("vibrators and strokers") && text.contains("### 8.5 "), "strokers get their outputs");
+    assert!(text.contains("- a jolt when the player takes damage") && text.contains("- a wave running through fights"));
+    assert!(!text.contains("genres only") && !text.contains("### 6.5 "), "{text}");
+    // Genre-specific moments may be left out; the screen makes an advanced request.
+    wishes.set("parry", true);
+    wishes.set("low_health", true);
+    wishes.set("damage_taken", false);
+    let text = request(&wishes, prompt::Step::Script);
+    assert!(text.contains("leave out those the game has nothing for") && !text.contains("takes damage"));
+    assert!(text.contains("### 6.5 ") && text.contains("tell the player which indicators to draw"), "the health gauge");
+    let analysis = request(&wishes, prompt::Step::Analysis);
+    assert!(analysis.contains("propose the phases and indicators these need") && analysis.contains("- a heartbeat while health is low"));
+    let asking = request(&prompt::Wishes { ask_first: true, ..wishes.clone() }, prompt::Step::Script);
+    assert!(asking.contains("do not ask again what is listed here"));
+    // Kept with the mode.
+    let inputs = Inputs { wishes: Some(wishes.clone()), ..Inputs::default() };
+    let back: Inputs = serde_json::from_str(&serde_json::to_string(&inputs).unwrap()).unwrap();
+    assert_eq!(back.wishes, Some(wishes));
+    assert!(!serde_json::to_string(&Inputs::default()).unwrap().contains("wishes"));
 }
 
 #[test]
@@ -666,8 +708,10 @@ fn an_analysis_setup_is_read_and_set_up() {
     let mut inputs = Inputs::default();
     inputs.phases.push(PhaseDef { name: "battle".into(), indicators: vec!["menu".into()], ..PhaseDef::default() });
     inputs.zones.push(Zone { indicator: "hp".into(), kind: IndicatorKind::Gauge, ..Zone::default() });
+    assert!(!inputs.analysed);
     let applied = inputs.apply_setup(&setup);
     assert_eq!((applied.phases_added, applied.phases_completed, applied.indicators_to_draw), (2, 1, 1));
+    assert!(inputs.analysed, "the assistant's tab goes on to the indicators and the script");
     let names: Vec<&str> = inputs.phases.iter().map(|p| p.name.as_str()).collect();
     assert_eq!(names, ["battle", "exploration", "story"], "the invalid name left out");
     assert_eq!((inputs.phases[0].sound.as_deref(), &inputs.phases[0].indicators[..]), (Some("drums"), &["menu".to_owned()][..]));

@@ -749,8 +749,8 @@ impl App {
             return None;
         }
         let editor = &self.creator.editor;
-        // What the mode reads: the requests' instructions and the indicators to draw do not change it.
-        let inputs = s.mode_inputs.clone().map(|i| Inputs { instructions: String::new(), planned: Vec::new(), ..i });
+        // What the mode reads: the requests' instructions and wishes and the indicators to draw do not change it.
+        let inputs = s.mode_inputs.clone().map(|i| Inputs { instructions: String::new(), wishes: None, analysed: false, planned: Vec::new(), ..i });
         // The script as saved: the editor holds it when it is this mode's.
         let source = if editor.id == s.mode.id && !editor.text.is_empty() {
             if editor.dirty {

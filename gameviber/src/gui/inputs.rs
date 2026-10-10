@@ -54,6 +54,14 @@ impl App {
     pub(super) fn phases_tab(&mut self, ui: &mut egui::Ui, s: &Shared, game: &Game) {
         let Some(inputs) = self.inputs_of(ui, s, game) else { return };
         self.phases_why(ui);
+        if inputs.phases.is_empty() {
+            ui.horizontal(|ui| {
+                ui.label(muted("Not sure which ones?"));
+                if ui.link("✨ The AI assistant proposes them, with the indicators to draw ›").clicked() {
+                    self.creator.tab = Tab::Assistant;
+                }
+            });
+        }
         ui.add_space(10.0);
         self.phases_step(ui, s, game, inputs);
         ui.add_space(10.0);

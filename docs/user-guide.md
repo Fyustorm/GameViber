@@ -17,7 +17,7 @@ intensity and **STOP ALL**.
 | **Toys** | The connection to Intiface Central (disconnect, reconnect, start or stop its scan for toys, its address), the toys it found, a test buzz, and how each toy plays: which mode channels, weakest and strongest intensity, response curve, and for strokers what they can do (see Strokers). |
 | **Setup** | What does not depend on the game: the gamepad and how it is captured, the shortcuts (panic stop, mark a moment, capture the screen) on the gamepad or the keyboard, the in-game overlay, the sound listened to by default, other programs. |
 | **Settings** | The language AI assistants answer in, the requests sent to them (editable). |
-| **Creator** | The workspace of the mode being played, in tabs to visit in any order: **Phases**, **Captures & indicators**, **Other programs** (see A mode's inputs), its **Script** (asked of an AI assistant, started from a built-in mode, or written by hand, with hot reload), **Sessions** (recorded sessions to watch again like a video, replayed into the mode as it is now (its script, settings, phases, captures and indicators: change one, in any tab, and the player offers to apply it: it pauses while the session is replayed again, then plays on; indicators drawn or moved since the recording are read from its images) — the game's images, its rumble, your buttons, the phases, what the mode's inputs said and what it sent to the toys, at any moment — while the toys play it; images to add to the captures, picked with the keyboard too (**⌨ Shortcuts** under the timeline lists the keys); one indicator to follow in the timeline, chosen under it (a gauge as a line, a visibility as the background where it is shown); and a simulator to try the mode without the game). A recorded session keeps 1 to 10 images of the game a second (2 by default, about 250 MB an hour, written to disk as they come; a recording stops after an hour); the last 2 minutes, always kept in memory, keep 2 a second and **Logs**. The mode runs while you edit it: every change can be felt at once, and **Live ›** shows what it does; **? How a mode works** shows how the parts fit. |
+| **Creator** | The workspace of the mode being played, in tabs to visit in any order: the **✨ AI assistant** (what you ask of it: the game's phases and indicators proposed, the script written), **Phases**, **Captures & indicators**, **Other programs** (see A mode's inputs), its **Script** (started from a built-in mode, or written by hand, with hot reload), **Sessions** (recorded sessions to watch again like a video, replayed into the mode as it is now (its script, settings, phases, captures and indicators: change one, in any tab, and the player offers to apply it: it pauses while the session is replayed again, then plays on; indicators drawn or moved since the recording are read from its images) — the game's images, its rumble, your buttons, the phases, what the mode's inputs said and what it sent to the toys, at any moment — while the toys play it; images to add to the captures, picked with the keyboard too (**⌨ Shortcuts** under the timeline lists the keys); one indicator to follow in the timeline, chosen under it (a gauge as a line, a visibility as the background where it is shown); and a simulator to try the mode without the game). A recorded session keeps 1 to 10 images of the game a second (2 by default, about 250 MB an hour, written to disk as they come; a recording stops after an hour); the last 2 minutes, always kept in memory, keep 2 a second and **Logs**. The mode runs while you edit it: every change can be felt at once, and **Live ›** shows what it does; **? How a mode works** shows how the parts fit. |
 
 A mode's own page shows its explanation, its main
 settings, all its settings and named **presets**, and its **variants**: other scripts of the same mode
@@ -71,34 +71,45 @@ stop it where it is. The global cap slows and shortens its strokes.
 The best experience is a mode written for the game you play. In the
 **Library**, **Create a mode**:
 
-1. Type the game's name (the game running is filled in). The page shows how a
-   mode works: what it reads, the phases, the script, your toys.
-2. **Open the Creator**. Name the game's phases first if you like (**Phases**):
-   the request then gives each its own feel.
-3. In **Script**, **Ask an AI assistant**, in one of three ways:
-   - **Direct**: the script in one answer;
-   - **Analysis first**: the assistant proposes the game's phases and the
-     indicators to draw. Pasting its answer sets the phases up (with their
-     sure signs) and lists the indicators under **To draw** in **Captures &
-     indicators**, with where to find them. Once they are drawn, send the
-     short script request in the same conversation;
-   - **Conversation**: the assistant first asks what you want, with choices,
-     and proposes 2 or 3 designs, then writes the script.
+1. Type the game's name (the game running is filled in) and choose how to
+   start: **An AI assistant writes it** (recommended), a built-in mode, or
+   writing it yourself. **How a mode works ?** shows what a mode reads, the
+   phases, the script and your toys.
+2. For an AI assistant, tick what you want:
+   - your **toys** (vibrators, strokers, both);
+   - **what you should feel**: moments (damage you take, hits you land,
+     button presses, big moments), backgrounds (a wave in fights, a calm wave
+     exploring, a heartbeat on low health, silence in menus) and moments
+     **depending on the game** (parries, charged attacks, combos, recoil,
+     speed), which the assistant leaves out where the game has none. The
+     common ones are ticked at first; 🖥 marks those read from the screen;
+   - **how the assistant works**: **Propose the game's phases and screen
+     indicators first** (ticked at first, and needed by what reads the screen):
+     pasting its answer sets the phases up (with their sure signs) and lists
+     the indicators under **To draw** in **Captures & indicators**, with where
+     to find them; once they are drawn, send the short script request in the
+     same conversation. **Ask me questions and propose designs** first: the
+     assistant asks what you want, with choices, and proposes 2 or 3 designs
+     before writing the script.
 
-   Copy the request GameViber builds and paste it into a new conversation. An
-   assistant with web search can check the game's default controls.
-   Indicators or values from other programs make it an advanced request,
-   which uses them. **Your instructions** are written at the end of every
-   request for the mode and kept with it; you can also write more at the end
-   of the request once pasted.
+   **Anything else?** takes your own instructions. All of it is kept with the
+   mode: **Change** in the Creator's **✨ AI assistant** tab ticks it again.
+3. **Open the Creator**: its **✨ AI assistant** tab shows the request to copy
+   and paste into a new conversation, and the steps: its answer pasted
+   under its request sets the phases up, then the indicators to draw, then the
+   script request and its answer. The bar on top shows where you are; a step
+   done folds up, and **↺ Ask again** opens it again. An assistant with web search can
+   check the game's default controls. Indicators or values from other
+   programs make it an advanced request, which uses them. You can also write
+   more at the end of the request once pasted.
 4. Paste the answer back (or just its code, or drop the `.luau` file on the
    window) and **Use this script**. GameViber checks that it loads first; if it
    does not, copy the fix request and send it back to the assistant.
 
 There is no fixed order: the mode runs while you make it, so play, feel,
-change the phases or the script, and play again. **Start from a built-in
-mode** instead copies one made for a genre, and **Write it yourself** opens the
-script.
+change the phases or the script, and play again. In the **Script** tab,
+**Start from a built-in mode** instead copies one made for a genre, and
+**Write it yourself** opens the script.
 
 ### When it does not feel right
 

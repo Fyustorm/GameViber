@@ -1,6 +1,7 @@
 //! Requests for an AI assistant (ChatGPT, Claude...) to write a mode for one
-//! game — at once, after questions to the player, or after an analysis of the
-//! game proposing its phases and indicators — or to fix a mode that does not
+//! game — what the player wants to feel, the mode at once or after questions to
+//! the player, or after an analysis of the game proposing its phases and
+//! indicators — or to fix a mode that does not
 //! feel right, and extraction of the script (or of the proposed setup) from its
 //! answer. The request templates ship with GameViber; players can override them
 //! with files in `~/.config/gameviber/prompts/`.
@@ -9,7 +10,7 @@ use std::collections::BTreeMap;
 use std::io;
 use std::path::PathBuf;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use super::{ParamDef, ParamValue};
 use crate::config;
@@ -19,8 +20,8 @@ const SPEC: &str = include_str!("../../../docs/spec-modes.md");
 /// Blocks of the templates, between `<!-- name -->` and `<!-- /name -->`, kept
 /// only in some requests: `full` (the context, rules and API) is left out of a
 /// request sent in the conversation that already has them; the others hold the
-/// steps of one style of request.
-const BLOCKS: [&str; 4] = ["full", "direct", "conversation", "after-analysis"];
+/// steps of one kind of request (`Step`, `Wishes::ask_first`).
+const BLOCKS: [&str; 6] = ["full", "direct", "conversation", "after-analysis", "after-analysis-direct", "after-analysis-conversation"];
 /// Spec sections left out of the requests: they are about GameViber itself
 /// (architecture, presets, reloading, safety, plans, built-in modes), not about
 /// writing a mode.
@@ -34,9 +35,10 @@ const SPEC_LEFT_OUT: [&str; 7] = [
     "## 14. ",
 ];
 /// Left out of quick requests too: the raw sound and image, the inputs set
-/// up for the mode, the advanced inputs and the strokers' own outputs
-/// (`Depth::Quick`).
-const SPEC_ADVANCED: [&str; 4] = ["### 6.4 ", "### 6.5 ", "### 7.1 ", "### 8.5 "];
+/// up for the mode and the advanced inputs (`Depth::Quick`).
+const SPEC_ADVANCED: [&str; 3] = ["### 6.4 ", "### 6.5 ", "### 7.1 "];
+/// The strokers' own outputs, left out when the player has none.
+const SPEC_STROKERS: &str = "### 8.5 ";
 
 /// How much of GameViber a request shows the assistant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -193,18 +195,140 @@ impl Templates {
     }
 }
 
-/// How the assistant gets to a mode.
+/// Which request of the way to a mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Style {
-    /// The mode in one answer.
+pub enum Step {
+    /// The mode, in a new conversation.
     #[default]
-    Direct,
-    /// Questions to the player and designs to choose from, then the mode.
-    Conversation,
+    Script,
     /// The game's phases and indicators proposed, to set up in GameViber (`Setup`)...
     Analysis,
     /// ...then the mode, asked in the same conversation.
     AfterAnalysis,
+}
+
+/// What a moment the player may want to feel is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FeelKind {
+    /// Something happening: a pulse, a jolt.
+    Moment,
+    /// A background running while it lasts.
+    Background,
+    /// Only some genres have it: left out by the assistant where the game has none.
+    Genre,
+}
+
+/// Something the player may want to feel, ticked when asking for a mode.
+pub struct Feel {
+    pub key: &'static str,
+    pub label: &'static str,
+    pub help: &'static str,
+    /// What the request asks for.
+    pub ask: &'static str,
+    pub kind: FeelKind,
+    /// Ticked at first: most games have it.
+    pub common: bool,
+    /// Read from the screen, through an indicator.
+    pub screen: bool,
+}
+
+const fn feel(key: &'static str, label: &'static str, help: &'static str, ask: &'static str, kind: FeelKind, common: bool, screen: bool) -> Feel {
+    Feel { key, label, help, ask, kind, common, screen }
+}
+
+/// What a player may tick, the most common first in each kind.
+pub const FEELS: [Feel; 14] = [
+    feel("damage_taken", "Damage you take", "a jolt, stronger for big hits", "a jolt when the player takes damage, stronger for big hits", FeelKind::Moment, true, false),
+    feel("hits_landed", "Hits you land", "short pulses on impacts", "short pulses on the hits the player lands", FeelKind::Moment, true, false),
+    feel("buttons", "Button presses", "attack, shoot, dodge...", "a short response to the main action buttons (attack, shoot, dodge)", FeelKind::Moment, true, false),
+    feel("big_moments", "Big moments", "boss down, level up, death", "a strong burst on big moments: a boss down, a level up, a death", FeelKind::Moment, true, false),
+    feel("fight_wave", "A wave in fights", "rises with the action", "a wave running through fights, rising with the action", FeelKind::Background, true, false),
+    feel("explore_wave", "A calm wave exploring", "low, never quite 0", "a calm, low wave while exploring", FeelKind::Background, true, false),
+    feel("low_health", "Heartbeat on low health", "reads the health bar on screen", "a heartbeat while health is low, faster as it drops (read from a health gauge on screen)", FeelKind::Background, true, true),
+    feel("quiet_menus", "Silence in menus and cutscenes", "nothing while not playing", "nothing at all in menus, pauses and cutscenes", FeelKind::Background, true, false),
+    feel("parry", "Parries and dodges", "a release, a short burst", "a short burst on successful parries and dodges, felt as a release rather than a hit", FeelKind::Genre, true, false),
+    feel("charge", "Charged attacks", "builds while charging", "a rise while an attack charges, released on the hit", FeelKind::Genre, true, false),
+    feel("special", "Special moves", "ultimates, finishers, magic", "a long, strong surge on special moves (ultimates, finishers, magic)", FeelKind::Genre, false, false),
+    feel("combo", "Combos and streaks", "rises with the combo", "a level rising with combos and kill streaks, falling when they break", FeelKind::Genre, false, false),
+    feel("recoil", "Weapon recoil", "each shot, by weapon", "a kick on each shot, heavier weapons kicking harder", FeelKind::Genre, false, false),
+    feel("speed", "Speed", "vehicles, sprinting", "a level following speed (vehicles, sprinting)", FeelKind::Genre, false, false),
+];
+
+/// What the player asks of a mode, kept with it for its next requests.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Wishes {
+    pub vibrators: bool,
+    pub strokers: bool,
+    /// The `FEELS` ticked, by key.
+    pub feel: Vec<String>,
+    /// The game's phases and indicators proposed first (`Step::Analysis`).
+    pub phases_first: bool,
+    /// Questions and designs to choose from before the script.
+    pub ask_first: bool,
+}
+
+impl Default for Wishes {
+    fn default() -> Self {
+        Self {
+            vibrators: true,
+            strokers: true,
+            feel: FEELS.iter().filter(|f| f.common).map(|f| f.key.to_owned()).collect(),
+            phases_first: true,
+            ask_first: false,
+        }
+    }
+}
+
+impl Wishes {
+    pub fn wants(&self, key: &str) -> bool {
+        self.feel.iter().any(|k| k == key)
+    }
+
+    pub fn set(&mut self, key: &str, on: bool) {
+        self.feel.retain(|k| k != key);
+        if on {
+            self.feel.push(key.to_owned());
+        }
+    }
+
+    fn feels(&self) -> impl Iterator<Item = &'static Feel> + '_ {
+        FEELS.iter().filter(|f| self.wants(f.key))
+    }
+
+    /// Something ticked is read from the screen.
+    pub fn needs_screen(&self) -> bool {
+        self.feels().any(|f| f.screen)
+    }
+
+    /// What the request asks for, before the player's own instructions.
+    fn text(&self, step: Step) -> String {
+        let toys = match (self.vibrators, self.strokers) {
+            (true, false) | (false, false) => "The player's toys vibrate.",
+            (false, true) => "The player's toy is a stroker: shape its strokes (§8.5) where the game gives a rhythm.",
+            (true, true) => "The player uses vibrators and strokers: the channels drive both; shape the strokes (§8.5) where the \
+                             game gives a rhythm.",
+        };
+        let mut out = format!("# What the player wants\n\n{toys}");
+        let feels: Vec<&Feel> = self.feels().collect();
+        if !feels.is_empty() {
+            out.push_str(match step {
+                Step::Analysis => " They want to feel the moments below: propose the phases and indicators these need \
+                                   (a health gauge for a heartbeat on low health).\n\n",
+                _ => " Build the mode around these moments:\n\n",
+            });
+            for f in &feels {
+                out.push_str(&format!("- {}\n", f.ask));
+            }
+            if feels.iter().any(|f| f.kind == FeelKind::Genre) {
+                out.push_str("\nSome are for some genres only: leave out those the game has nothing for.\n");
+            }
+            if self.ask_first && step != Step::Analysis {
+                out.push_str("\nYour questions are about the rest: do not ask again what is listed here.\n");
+            }
+        }
+        out
+    }
 }
 
 /// A request for a mode made for one game.
@@ -212,7 +336,8 @@ pub struct NewMode<'a> {
     pub game: &'a str,
     /// The language the assistant answers in.
     pub language: &'a str,
-    pub style: Style,
+    pub step: Step,
+    pub wishes: &'a Wishes,
     pub depth: Depth,
     /// The inputs set up for the mode, described (advanced requests).
     pub described: Option<&'a str>,
@@ -223,23 +348,24 @@ pub struct NewMode<'a> {
 
 /// The request to paste into an AI assistant to get a mode made for a game (or its analysis).
 pub fn new_mode_prompt(t: &Templates, r: &NewMode) -> String {
-    let (template, block) = match r.style {
-        Style::Direct => (&t.new_mode, "direct"),
-        Style::Conversation => (&t.new_mode, "conversation"),
-        Style::AfterAnalysis => (&t.new_mode, "after-analysis"),
-        Style::Analysis => (&t.analysis, "full"),
+    let ask = r.wishes.ask_first;
+    let (template, keep): (&str, &[&str]) = match r.step {
+        Step::Script if ask => (&t.new_mode, &["full", "conversation"]),
+        Step::Script => (&t.new_mode, &["full", "direct"]),
+        // The conversation of an analysis already has the context, rules and API.
+        Step::AfterAnalysis if ask => (&t.new_mode, &["after-analysis", "after-analysis-conversation"]),
+        Step::AfterAnalysis => (&t.new_mode, &["after-analysis", "after-analysis-direct"]),
+        Step::Analysis => (&t.analysis, &["full"]),
     };
-    // The conversation of an analysis already has the context, rules and API.
-    let keep: &[&str] = if r.style == Style::AfterAnalysis { &[block] } else { &["full", block] };
-    // An analysis proposes indicators: it gets their API.
-    let depth = if r.style == Style::Analysis { Depth::Advanced } else { r.depth };
+    // An analysis proposes indicators, and a heartbeat on low health reads one: they get their API.
+    let depth = if r.step == Step::Analysis || r.wishes.needs_screen() { Depth::Advanced } else { r.depth };
     let text = sections(template, keep)
         .replace("{{RULES}}", t.rules.trim_end())
         .replace("{{INPUTS}}", &inputs_text(depth, r.described, r.phases))
-        .replace("{{SPEC}}", &spec(depth))
+        .replace("{{SPEC}}", &spec(depth, r.wishes.strokers))
         .replace("{{LANGUAGE}}", r.language)
         .replace("{{GAME}}", r.game.trim());
-    format!("{}\n\n{}", text.trim_end(), instructions_text(r.instructions))
+    format!("{}\n\n{}\n{}", text.trim_end(), r.wishes.text(r.step), instructions_text(r.instructions))
 }
 
 /// The end of a request: the player's own instructions, and room for more.
@@ -276,9 +402,13 @@ fn sections(text: &str, keep: &[&str]) -> String {
     out
 }
 
-/// The specification without the sections of `SPEC_LEFT_OUT` (and `SPEC_ADVANCED` for a quick request).
-fn spec(depth: Depth) -> String {
-    let advanced: &[&str] = if depth == Depth::Quick { &SPEC_ADVANCED } else { &[] };
+/// The specification without the sections of `SPEC_LEFT_OUT` (`SPEC_ADVANCED` for
+/// a quick request, `SPEC_STROKERS` without strokers).
+fn spec(depth: Depth, strokers: bool) -> String {
+    let mut advanced: Vec<&str> = if depth == Depth::Quick { SPEC_ADVANCED.to_vec() } else { Vec::new() };
+    if !strokers {
+        advanced.push(SPEC_STROKERS);
+    }
     let mut out = String::new();
     // Heading level of the section being skipped.
     let mut skipping: Option<usize> = None;
@@ -292,7 +422,7 @@ fn spec(depth: Depth) -> String {
             if skipping.is_some_and(|skipped| level <= skipped) {
                 skipping = None;
             }
-            if skipping.is_none() && SPEC_LEFT_OUT.iter().chain(advanced).any(|s| line.starts_with(s)) {
+            if skipping.is_none() && SPEC_LEFT_OUT.iter().chain(&advanced).any(|s| line.starts_with(s)) {
                 skipping = Some(level);
             }
         }
@@ -389,7 +519,7 @@ pub fn feel_prompt(t: &Templates, r: &FeelReport) -> String {
     sections(&t.fix_feel, if r.full { &["full"] } else { &[] })
         .replace("{{RULES}}", t.rules.trim_end())
         .replace("{{INPUTS}}", &described)
-        .replace("{{SPEC}}", &spec(depth))
+        .replace("{{SPEC}}", &spec(depth, depth == Depth::Advanced || ["stroke(", "thrust("].iter().any(|a| r.source.contains(a))))
         .replace("{{LANGUAGE}}", r.language)
         .replace("{{GAME}}", &game)
         .replace("{{PROBLEMS}}", &problems)
@@ -451,7 +581,7 @@ pub fn extract_script(answer: &str) -> String {
     format!("{}\n", script.trim())
 }
 
-/// The setup an analysis proposes (`Style::Analysis`), from the `json` block of its answer.
+/// The setup an analysis proposes (`Step::Analysis`), from the `json` block of its answer.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct Setup {

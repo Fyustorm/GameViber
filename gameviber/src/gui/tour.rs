@@ -42,10 +42,11 @@ enum Stop {
     PadSetup(Labels),
 }
 
-const STOPS: [(&str, Stop); 26] = [
+const STOPS: [(&str, Stop); 27] = [
     ("library", Stop::Library(Route::Library)),
     ("create-mode", Stop::Library(Route::Create)),
     ("mode", Stop::Library(Route::Mode)),
+    ("creator-assistant", Stop::Creator(Tab::Assistant, false)),
     ("creator-phases", Stop::Creator(Tab::Phases, false)),
     ("creator-help", Stop::Creator(Tab::Phases, true)),
     ("creator-captures-indicators", Stop::Creator(Tab::Screen, false)),

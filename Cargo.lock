@@ -2087,6 +2087,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "toml",
+ "ttf-parser",
  "ureq",
  "vigem-client",
  "wayland-client",

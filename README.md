@@ -40,9 +40,10 @@ there is no in-game panel yet. It is new: tell us what does not work.
    `sudo`: GameViber asks for your password itself when it needs it.
 3. Check that your toys show up in **Toys**, and your gamepad in **Setup**.
 4. Get a mode made for your game: in **Library**, **Create a mode**, type
-   your game's name, then in the Creator's **Script** tab ask an AI assistant.
-   GameViber prepares a request to paste into any AI assistant (ChatGPT,
-   Claude, Gemini, Le Chat...), and you paste its answer back.
+   your game's name, tick what you want to feel, then follow the Creator's
+   **✨ AI assistant** tab: it proposes the game's phases, then writes the script.
+   GameViber prepares a request to paste into any AI assistant (Gemini,
+   Claude, ChatGPT...), and you paste its answer back.
 5. Start your game and play.
 
 If something feels wrong, open the mode's page and click **Doesn't feel

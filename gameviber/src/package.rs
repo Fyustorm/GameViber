@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use crate::config::{self, ModeEntry};
 use crate::game;
 use crate::mode::phases::{Ignored, PhaseDecl};
+use crate::mode::prompt::Wishes;
 use crate::screen::Frame;
 
 /// The inputs of a mode, in its package.
@@ -315,9 +316,15 @@ pub struct Inputs {
     /// Indicators an assistant's analysis proposed, to draw (those drawn are left out).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub planned: Vec<PlannedIndicator>,
+    /// An analysis's setup was taken in (the AI assistant goes on to the indicators and the script).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub analysed: bool,
     /// The player's own instructions, written at the end of the requests for the mode's script.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub instructions: String,
+    /// What the player asked of the mode when requesting it (None: not asked yet).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wishes: Option<Wishes>,
 }
 
 /// An indicator an assistant proposed: what it reads and where to draw it.
@@ -417,7 +424,9 @@ impl Inputs {
             }),
             Err(_) => Inputs::default(),
         };
-        Inputs { dir: dir.to_owned(), ..inputs }
+        // Analyses set up before `analysed` was kept left indicators to draw.
+        let analysed = inputs.analysed || !inputs.planned.is_empty();
+        Inputs { dir: dir.to_owned(), analysed, ..inputs }
     }
 
     pub fn save(&self) {
@@ -503,6 +512,7 @@ impl Inputs {
             }
         }
         applied.indicators_to_draw = self.to_draw().count();
+        self.analysed = true;
         applied
     }
 

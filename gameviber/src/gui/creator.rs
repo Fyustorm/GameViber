@@ -1,7 +1,7 @@
 //! Creator page: the active mode's workspace, in tabs that can be visited in
-//! any order — its phases, captures and indicators, values from other
-//! programs, its script (written by an AI assistant, started from a built-in
-//! mode, or by hand), sessions and a simulator to try it without the game,
+//! any order — the AI assistant (the game's phases proposed, the script
+//! written), its phases, captures and indicators, values from other programs,
+//! its script (started from a built-in mode, or written by hand), sessions and a simulator to try it without the game,
 //! logs — and how a mode works one click away. What the mode does while
 //! playing is on the Live page.
 
@@ -27,7 +27,9 @@ const WIDE_HEADER: f32 = 860.0;
 /// The Creator's tabs.
 #[derive(PartialEq, Clone, Copy, Default)]
 pub(super) enum Tab {
+    /// What an AI assistant is asked: the game's phases, the script.
     #[default]
+    Assistant,
     Phases,
     /// Captures and indicators.
     Screen,
@@ -48,12 +50,12 @@ impl Tab {
             Tab::Screen => Some(Part::Image),
             Tab::Programs => Some(Part::Programs),
             Tab::Script => Some(Part::Script),
-            Tab::Funscripts | Tab::Sessions | Tab::Logs => None,
+            Tab::Assistant | Tab::Funscripts | Tab::Sessions | Tab::Logs => None,
         }
     }
 }
 
-/// How the script is got.
+/// How the script is got: asked of the AI assistant (its own tab), or in the Script tab.
 #[derive(PartialEq, Clone, Copy)]
 pub(super) enum Way {
     Ai,
@@ -104,7 +106,7 @@ pub struct State {
     pub(super) tab: Tab,
     /// How a mode works, shown above the tab.
     pub(super) help: bool,
-    /// How the script is got; None: as fits the script (an AI assistant for a new mode).
+    /// How the Script tab gets the script; None: as fits the script.
     pub(super) way: Option<Way>,
     pub(super) editor: Editor,
     pub sim: Simulator,
@@ -117,11 +119,11 @@ impl State {
         self.tab = Tab::Sessions;
     }
 
-    /// A mode just made: its phases first, its script asked of an AI assistant.
-    pub(super) fn open_new(&mut self) {
-        self.tab = Tab::Phases;
+    /// A mode just made, got the `way` chosen on the Create page: the AI assistant, or the Script tab.
+    pub(super) fn open_new(&mut self, way: Way) {
+        self.tab = if way == Way::Ai { Tab::Assistant } else { Tab::Script };
         self.help = false;
-        self.way = None;
+        self.way = (way != Way::Ai).then_some(way);
     }
 
     /// The tab shows the game's image (captures, phases recognized from it).
@@ -147,8 +149,9 @@ impl App {
             match (tab, &game) {
                 (Tab::Sessions, _) => self.sessions(ui, s),
                 (Tab::Logs, _) => self.log(ui),
-                (Tab::Script, _) => self.script_tab(ui, s, game.as_ref()),
+                (Tab::Script, _) => self.script_tab(ui, s),
                 (_, None) => self.no_game(ui, s),
+                (Tab::Assistant, Some(game)) => self.assistant_tab(ui, s, game),
                 (Tab::Screen, Some(game)) => self.screen_page(ui, s, game),
                 (Tab::Phases, Some(game)) => {
                     egui::ScrollArea::vertical().show(ui, |ui| self.phases_tab(ui, s, game));
@@ -264,6 +267,8 @@ impl App {
             ("loads", OK)
         };
         ui.add_space(8.0);
+        let asked = inputs.is_some_and(|i| i.wishes.is_some());
+        let assistant = if asked || !is_draft(&self.creator.editor.text) { ("", MUTED) } else { ("start here", GAME) };
         ui.horizontal_wrapped(|ui| {
             let mut tab = |ui: &mut egui::Ui, tab: Tab, label: &str, state: String, color: egui::Color32| {
                 let selected = self.creator.tab == tab;
@@ -278,6 +283,8 @@ impl App {
                     self.creator.tab = tab;
                 }
             };
+            tab(ui, Tab::Assistant, "✨ AI assistant", assistant.0.to_owned(), assistant.1);
+            ui.label(muted("|"));
             tab(ui, Tab::Phases, "Phases", count(phases, "recommended"), if phases > 0 { OK } else { GAME });
             tab(ui, Tab::Screen, "Captures & indicators", count(screen, "optional"), MUTED);
             tab(ui, Tab::Programs, "Other programs", count(programs, "optional"), MUTED);

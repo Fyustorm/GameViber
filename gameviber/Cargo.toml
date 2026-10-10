@@ -95,3 +95,7 @@ windows = { version = "0.62", features = [
 
 [build-dependencies]
 aya-build = "0.2"
+
+[dev-dependencies]
+# Checks that the GUI's fonts draw every character it writes.
+ttf-parser = "0.25"

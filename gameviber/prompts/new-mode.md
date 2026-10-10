@@ -45,12 +45,25 @@ transformation; its API is specified at the end of this message.
 3. Once they answered, **write the mode** (below) following their choices, and say in a
    few sentences how it does.
 <!-- /conversation -->
-<!-- after-analysis -->
+<!-- after-analysis-direct -->
 1. **Design the mode** around 2 to 4 mechanics, using what was set up: the phases for
    the mood, the indicators where they say exactly what the phases only guess. Explain
    it in a few sentences.
 2. **Write the mode** (below).
-<!-- /after-analysis -->
+<!-- /after-analysis-direct -->
+<!-- after-analysis-conversation -->
+1. **Ask the player before writing anything**, in one short message:
+   - 3 to 5 numbered questions about what they want, each with lettered choices they can
+     answer in a few characters ("1b 2a 3c"): which moments should vibrate, continuous
+     or in bursts, how strong, how the phases set up should differ;
+   - 2 or 3 **contrasted designs** for this game, each a name and 2 sentences, with the
+     mechanics each one uses: the phases for the mood, the indicators where they say
+     exactly what the phases only guess.
+
+   Then stop and wait for the answer.
+2. Once they answered, **write the mode** (below) following their choices, and say in a
+   few sentences how it does.
+<!-- /after-analysis-conversation -->
 
 The mode is the complete `.luau` file in a single code block: a header comment naming the
 game, then `mode { }` with `api = 1`, a short `name`, a one-line `description`,

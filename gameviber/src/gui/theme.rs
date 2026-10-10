@@ -20,7 +20,23 @@ pub const DANGER_TEXT: Color32 = Color32::from_rgb(0xff, 0x7a, 0x7f);
 pub const GAME: Color32 = Color32::from_rgb(0x6a, 0xa8, 0xff);
 pub const IDLE: Color32 = Color32::from_rgb(0x5b, 0x62, 0x73);
 
+/// The symbols egui's fonts lack (arrows, shapes, box drawing): DejaVu Sans
+/// 2.37's, cut down to those blocks (`gameviber/fonts/`) with fontTools:
+/// `pyftsubset DejaVuSans.ttf --no-hinting --desubroutinize --unicodes=U+2190-23FF,U+2500-27BF,U+2B00-2BFF`.
+const SYMBOLS: &[u8] = include_bytes!("../../fonts/DejaVuSans-Symbols.ttf");
+
+/// egui's fonts, then the symbols they lack.
+fn fonts() -> egui::FontDefinitions {
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert("symbols".to_owned(), std::sync::Arc::new(egui::FontData::from_static(SYMBOLS)));
+    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+        fonts.families.entry(family).or_default().push("symbols".to_owned());
+    }
+    fonts
+}
+
 pub fn apply(ctx: &egui::Context) {
+    ctx.set_fonts(fonts());
     ctx.set_theme(egui::Theme::Dark);
     let mut visuals = egui::Visuals::dark();
     visuals.panel_fill = BG;
@@ -240,5 +256,31 @@ pub fn tile_grid(ui: &mut egui::Ui, count: usize, min_width: f32, height: f32, m
             }
         });
         ui.add_space(gap - ui.spacing().item_spacing.y);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every character the GUI writes can be drawn: none shows as a square.
+    #[test]
+    fn the_fonts_draw_every_character_of_the_gui() {
+        let fonts = fonts();
+        let faces: Vec<ttf_parser::Face> = fonts.font_data.values().map(|d| ttf_parser::Face::parse(&d.font, d.index).unwrap()).collect();
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/gui");
+        let mut missing = Vec::new();
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            let text = std::fs::read_to_string(&path).unwrap();
+            for (n, line) in text.lines().enumerate().filter(|(_, l)| !l.trim_start().starts_with("//")) {
+                for c in line.chars().filter(|c| !c.is_ascii() && *c != '\u{fe0f}') {
+                    if !faces.iter().any(|face| face.glyph_index(c).is_some()) {
+                        missing.push(format!("{c} (U+{:04X}) {}:{}", c as u32, path.display(), n + 1));
+                    }
+                }
+            }
+        }
+        assert!(missing.is_empty(), "{missing:#?}");
     }
 }
