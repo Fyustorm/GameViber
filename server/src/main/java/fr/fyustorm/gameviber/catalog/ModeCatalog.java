@@ -75,6 +75,32 @@ public class ModeCatalog {
         }
     }
 
+    /** One of the captures of its latest version, by its file name. */
+    public Optional<byte[]> capture(Mode mode, String file) {
+        var latest = ModeVersion.latest(mode);
+        if (mode.withdrawnAt != null || latest.isEmpty()) {
+            return Optional.empty();
+        }
+        try {
+            return store.capture(mode, latest.get().number, file);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    /**
+     * One of the captures of a mode shared by its code. A page shows many: only
+     * those not found count among the codes tried, the same whether the code or
+     * the file is wrong.
+     */
+    public Optional<byte[]> sharedCapture(String code, String file, HttpServerRequest request) {
+        var capture = Mode.byShareCode(code).filter(m -> m.withdrawnAt == null).flatMap(m -> capture(m, file));
+        if (capture.isEmpty()) {
+            limits.check("code", request, codePerHour);
+        }
+        return capture;
+    }
+
     /** A mode of `author`, by its public id (withdrawn ones too). */
     public Mode own(Author author, String publicId) {
         Mode mode = Mode.byPublicId(publicId).orElseThrow(() -> Problem.notFound("no such mode"));

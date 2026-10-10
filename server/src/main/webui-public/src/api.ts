@@ -65,11 +65,40 @@ export interface ModeDetail {
   downloads: number
   versions: Version[]
   uses: Use[]
+  setup: ModeSetup
   createdAt: string
   updatedAt: string
   withdrawnAt: string | null
   withdrawnReason: string | null
   figures: Figures
+}
+
+// What a mode's package sets up (`ModeSetup` on the server).
+export interface ModeSetup {
+  phases: Phase[]
+  indicators: Indicator[]
+  captures: Capture[]
+  variants: string[]
+  funscripts: string[]
+}
+
+export interface Phase {
+  name: string
+  sound: string | null
+  screen: string | null
+  indicators: string[]
+}
+
+export interface Indicator {
+  name: string
+  kind: 'gauge' | 'visibility'
+  // Left, top, width, height as fractions of the screen; the capture it shows on.
+  zones: { rect: [number, number, number, number]; capture: string | null }[]
+}
+
+export interface Capture {
+  file: string
+  phase: string | null
 }
 
 export type Sort = 'trending' | 'rating' | 'played' | 'new' | 'downloads'
@@ -97,10 +126,14 @@ export const api = {
   shared: (code: string) => get<ModeDetail>(`/api/shared/${encodeURIComponent(code)}`),
 }
 
-/** Where a mode's package and image are, by its public id or its share code. */
+/** Where a mode's package, image and captures are, by its public id or its share code. */
 export function modePaths(by: { id: string } | { code: string }) {
   const base = 'id' in by ? `/api/modes/${encodeURIComponent(by.id)}` : `/api/shared/${encodeURIComponent(by.code)}`
-  return { package: `${base}/package`, image: `${base}/image` }
+  return {
+    package: `${base}/package`,
+    image: `${base}/image`,
+    capture: (file: string) => `${base}/captures/${encodeURIComponent(file)}`,
+  }
 }
 
 /** The game's banner on Steam, when GameViber knows its app id. */

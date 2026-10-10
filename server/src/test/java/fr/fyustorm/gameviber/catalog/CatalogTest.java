@@ -142,6 +142,7 @@ public class CatalogTest {
         given().get("/api/games").then().body("name", not(hasItem(game)));
         given().get("/api/modes/" + id).then().statusCode(404);
         given().get("/api/shared/" + code.toLowerCase()).then().statusCode(200).body("name", equalTo("Battle pulse")).body("shareCode", nullValue());
+        given().get("/api/shared/" + code + "/captures/battle-1.png").then().statusCode(200);
         byte[] file = given().get("/api/shared/" + code + "/package").then().statusCode(200).extract().asByteArray();
         Map<String, byte[]> entries = SharedPackage.entries(file);
         assertTrue(entries.containsKey("variants/boss.luau"), "variants travel with the mode");
@@ -161,7 +162,11 @@ public class CatalogTest {
         given().queryParam("name", game.toLowerCase()).get("/api/games/match").then().statusCode(200).body("id", equalTo(gameId)).body("modes", equalTo(1));
         given().queryParam("name", "No such game").get("/api/games/match").then().statusCode(404);
         given().get("/api/modes/" + id + "/package").then().statusCode(200).header("Content-Disposition", containsString(id + "-1.gameviber"));
-        given().get("/api/modes/" + id).then().body("downloads", equalTo(2)).body("visibility", nullValue());
+        given().get("/api/modes/" + id).then().body("downloads", equalTo(2)).body("visibility", nullValue())
+                .body("setup.captures[0].file", equalTo("battle-1.png")).body("setup.captures[0].phase", equalTo("battle"))
+                .body("setup.variants", equalTo(List.of("boss"))).body("setup.funscripts", equalTo(List.of("hit")));
+        given().get("/api/modes/" + id + "/captures/battle-1.png").then().statusCode(200).contentType("image/png");
+        given().get("/api/modes/" + id + "/captures/other.png").then().statusCode(404);
 
         // A new share code: the old one no longer works.
         String newCode = as(token).post("/api/modes/" + id + "/share-code").then().statusCode(200).extract().path("shareCode");
@@ -195,6 +200,29 @@ public class CatalogTest {
         entries.put("variants/hard.luau", "if input.external.heart then stroke(0.5, 1) end".getBytes(StandardCharsets.UTF_8));
         assertEquals(List.of("strokers", "screen", "programs"), SharedPackage.uses(entries));
         assertEquals(List.of(), SharedPackage.uses(Map.of("mode.luau", SCRIPT.getBytes(StandardCharsets.UTF_8))));
+    }
+
+    @Test
+    void aModesSetupIsReadFromItsPackageOlderNamesToo() {
+        Map<String, byte[]> entries = new LinkedHashMap<>();
+        entries.put("gameviber.json", ("{\"inputs\":{"
+                + "\"scenes\":[{\"name\":\"combat\",\"screen\":\"a fight\",\"zone\":\"combat_hud\"},{\"name\":\"menu\",\"indicators\":[\"a\",\"b\"]}],"
+                + "\"zones\":[{\"name\":\"hp\",\"kind\":\"bar\",\"rect\":[0.1,0.9,0.2,0.02],\"scene\":\"combat\"},"
+                + "{\"indicator\":\"hp\",\"kind\":\"gauge\",\"rect\":[0.5,0.1,0.2,0.02],\"capture\":\"menu-1.png\"},"
+                + "{\"indicator\":\"combat_hud\",\"kind\":\"visibility\",\"rect\":[0,0,0.1,0.1],\"capture\":\"gone.png\"}],"
+                + "\"captures\":[{\"file\":\"combat-1.png\",\"scene\":\"combat\"},{\"file\":\"menu-1.png\",\"phase\":\"menu\"},{\"file\":\"missing.png\",\"phase\":\"menu\"}]}}")
+                .getBytes(StandardCharsets.UTF_8));
+        entries.put("captures/combat-1.png", new byte[0]);
+        entries.put("captures/menu-1.png", new byte[0]);
+        ModeSetup setup = ModeSetup.of(entries);
+        assertEquals(List.of(new ModeSetup.Phase("combat", null, "a fight", List.of("combat_hud")), new ModeSetup.Phase("menu", null, null, List.of("a", "b"))),
+                setup.phases());
+        assertEquals(List.of(new ModeSetup.Capture("combat-1.png", "combat"), new ModeSetup.Capture("menu-1.png", "menu")), setup.captures());
+        var hp = setup.indicators().get(0);
+        assertEquals("gauge", hp.kind());
+        assertEquals(List.of("combat-1.png", "menu-1.png"), hp.zones().stream().map(ModeSetup.Zone::capture).toList(), "its phase's first capture, else its own");
+        assertEquals("visibility", setup.indicators().get(1).kind());
+        assertEquals(null, setup.indicators().get(1).zones().get(0).capture(), "no capture of its phase");
     }
 
     @Test

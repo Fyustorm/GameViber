@@ -22,8 +22,11 @@ import jakarta.enterprise.context.ApplicationScoped;
 public class PackageStore {
     @ConfigProperty(name = "data.dir")
     String dataDir;
-    /** What each version's mode is made for: a version's package never changes. */
-    private final Map<Path, List<String>> uses = new ConcurrentHashMap<>();
+    /** What each version's mode is made for and sets up: a version's package never changes. */
+    private final Map<Path, Described> described = new ConcurrentHashMap<>();
+
+    /** `SharedPackage.uses` and `ModeSetup` of a version. */
+    public record Described(List<String> uses, ModeSetup setup) {}
 
     public Path path(Mode mode, int version) {
         return Path.of(dataDir, "packages", mode.publicId, version + ".gameviber");
@@ -44,9 +47,9 @@ public class PackageStore {
         }
     }
 
-    /** What a version's mode is made for (`SharedPackage.uses`), read from its package once. */
-    public List<String> uses(Mode mode, int version) {
-        return uses.computeIfAbsent(path(mode, version), path -> {
+    /** What a version's mode is made for and sets up, read from its package once. */
+    public Described describe(Mode mode, int version) {
+        return described.computeIfAbsent(path(mode, version), path -> {
             Map<String, byte[]> entries = new LinkedHashMap<>();
             try (var zip = new ZipFile(path.toFile())) {
                 for (var entry : zip.stream().toList()) {
@@ -57,10 +60,23 @@ public class PackageStore {
                     }
                 }
             } catch (IOException e) {
-                return List.of();
+                return new Described(List.of(), ModeSetup.NONE);
             }
-            return List.copyOf(SharedPackage.uses(entries));
+            return new Described(List.copyOf(SharedPackage.uses(entries)), ModeSetup.of(entries));
         });
+    }
+
+    /** One of a version's captures, by its file name. */
+    public Optional<byte[]> capture(Mode mode, int version, String file) throws IOException {
+        try (var zip = new ZipFile(path(mode, version).toFile())) {
+            var entry = zip.getEntry("captures/" + file);
+            if (entry == null || file.contains("/")) {
+                return Optional.empty();
+            }
+            try (var in = zip.getInputStream(entry)) {
+                return Optional.of(in.readAllBytes());
+            }
+        }
     }
 
     /** Written beside, then renamed: a failure leaves no half file. */

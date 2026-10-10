@@ -5,6 +5,7 @@ import { useLoad } from '@/load'
 import { setTitle } from '@/router'
 import { ago, date, size } from '@/format'
 import FigureList from '@/components/FigureList.vue'
+import ModeSetupView from '@/components/ModeSetupView.vue'
 
 // A public mode by its id, or any mode by the code its author shares with testers.
 const props = defineProps<{ id?: string; code?: string }>()
@@ -88,6 +89,8 @@ watchEffect(() => {
 
           <p v-if="mode.data.value.description" class="description">{{ mode.data.value.description }}</p>
           <p v-else class="muted">No description.</p>
+
+          <ModeSetupView v-if="mode.data.value.setup" :setup="mode.data.value.setup" :capture="paths.capture" />
         </div>
 
         <aside class="install card">

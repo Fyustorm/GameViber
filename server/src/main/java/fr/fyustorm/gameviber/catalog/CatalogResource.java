@@ -101,6 +101,12 @@ public class CatalogResource {
         return image(catalog.cover(catalog.byCode(code, request)));
     }
 
+    @GET
+    @Path("/shared/{code}/captures/{file}")
+    public Response sharedCapture(@PathParam("code") String code, @PathParam("file") String file, @Context HttpServerRequest request) {
+        return image(catalog.sharedCapture(code, file, request));
+    }
+
     /** A mode's cover, kept an hour by browsers and link previews. */
     static Response image(Optional<byte[]> png) {
         return Response.ok(png.orElseThrow(() -> Problem.notFound("this mode has no image")), "image/png")

@@ -63,9 +63,9 @@ wider screens.
 | Anyone | `GET /api/games?search=` | games with public modes |
 | | `GET /api/games/{id}/modes?sort=trending\|rating\|played\|new\|downloads` | a game's public modes, with their `figures` (players in 30 days, median minutes, share who came back 3 times or more, likes, Wilson rating, trend) |
 | | `GET /api/games/{id}` | a game (`modes`: its public ones) |
-| | `GET /api/modes/{id}`, `GET /api/modes/{id}/package?version=` | a public mode, its package (a download) |
-| | `GET /api/modes/{id}/image` | its latest version's first capture (PNG), for the site and link previews |
-| | `GET /api/shared/{code}`, `GET /api/shared/{code}/package`, `GET /api/shared/{code}/image` | a mode by its share code (private ones too) |
+| | `GET /api/modes/{id}`, `GET /api/modes/{id}/package?version=` | a public mode (`uses`: what it is made for; `setup`: its phases, indicators, captures, variants and funscripts, read from its latest package), its package (a download) |
+| | `GET /api/modes/{id}/image`, `GET /api/modes/{id}/captures/{file}` | its latest version's first capture (PNG), for the site and link previews; one of its captures |
+| | `GET /api/shared/{code}`, `GET /api/shared/{code}/package`, `GET /api/shared/{code}/image`, `GET /api/shared/{code}/captures/{file}` | a mode by its share code (private ones too; only the captures not found count among the codes tried) |
 | | `POST /api/modes/{id}/reports` | `{"reason": "broken\|content\|other", "details"}` |
 | | `GET /api/games/match?name=&steamAppId=` | the game a player plays, when it has public modes |
 | | `POST /api/stats/plays` | `{"installation", "plays": [{"mode", "seconds", "sessions"}]}`, from players who share their stats |

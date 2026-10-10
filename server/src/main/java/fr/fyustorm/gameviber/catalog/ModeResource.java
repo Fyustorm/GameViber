@@ -73,6 +73,14 @@ public class ModeResource {
         return CatalogResource.image(catalog.cover(ModeCatalog.publicMode(id)));
     }
 
+    /** One of the captures of its latest version (`setup.captures`). */
+    @GET
+    @PermitAll
+    @Path("/{id}/captures/{file}")
+    public Response capture(@PathParam("id") String id, @PathParam("file") String file) {
+        return CatalogResource.image(catalog.capture(ModeCatalog.publicMode(id), file));
+    }
+
     public record ReportForm(String reason, String details) {}
 
     @POST

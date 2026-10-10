@@ -44,6 +44,7 @@ public final class Views {
             long downloads,
             List<VersionView> versions,
             List<String> uses,
+            ModeSetup setup,
             Instant createdAt,
             Instant updatedAt,
             String visibility,
@@ -63,7 +64,7 @@ public final class Views {
         return new ModeSummary(
                 mode.publicId, mode.name, mode.description, author.pseudo, mode.downloads,
                 latest.map(v -> v.number).orElse(0), latest.map(v -> v.api).orElse(0),
-                latest.map(v -> store.uses(mode, v.number)).orElse(List.of()), mode.updatedAt, figures);
+                latest.map(v -> store.describe(mode, v.number).uses()).orElse(List.of()), mode.updatedAt, figures);
     }
 
     static ModeDetail detail(Mode mode, boolean owner, Figures figures, PackageStore store) {
@@ -71,7 +72,7 @@ public final class Views {
         Game game = Game.findById(mode.gameId);
         List<ModeVersion> all = ModeVersion.of(mode);
         List<VersionView> versions = all.stream().map(VersionView::of).toList();
-        List<String> uses = all.isEmpty() ? List.of() : store.uses(mode, all.get(0).number);
+        var described = all.isEmpty() ? new PackageStore.Described(List.of(), ModeSetup.NONE) : store.describe(mode, all.get(0).number);
         return new ModeDetail(
                 mode.publicId,
                 mode.name,
@@ -80,7 +81,8 @@ public final class Views {
                 author.pseudo,
                 mode.downloads,
                 versions,
-                uses,
+                described.uses(),
+                described.setup(),
                 mode.createdAt,
                 mode.updatedAt,
                 owner ? mode.visibility : null,

@@ -28,3 +28,8 @@ export function count(n: number, one: string, many = one + 's'): string {
 export function size(bytes: number): string {
   return bytes < 1 << 20 ? `${Math.max(1, Math.round(bytes / 1024))} kB` : `${(bytes / (1 << 20)).toFixed(1)} MB`
 }
+
+/** A name as scripts read it ("hp_player_1"), for reading ("hp player 1"). */
+export function words(name: string): string {
+  return name.replace(/[_-]+/g, ' ').trim()
+}
