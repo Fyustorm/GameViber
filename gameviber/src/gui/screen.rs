@@ -34,6 +34,8 @@ const SIDE_MIN_WIDTH: f32 = 250.0;
 const PANEL_MARGIN: f32 = 14.0;
 /// Distance (in points) from a rectangle's edge that grabs the edge.
 const HANDLE: f32 = 6.0;
+/// Share of the indicator editor's height the image keeps at least (the settings scroll).
+const MIN_IMAGE_SHARE: f32 = 0.45;
 /// Seconds "Saved" shows after Save.
 const SAVED_SECS: f64 = 2.0;
 
@@ -64,6 +66,8 @@ pub struct State {
     captures_below: f32,
     editor_below: f32,
     below_image_top: f32,
+    /// The height of the actions (Save) under the indicator's settings, last frame.
+    actions_height: f32,
     pub(super) port: Option<String>,
     /// Images being imported from files (their dialog open, or being read),
     /// and what the last import did (true: it went well); None: cancelled.
@@ -148,6 +152,7 @@ impl Default for State {
             confirm_delete: false,
             captures_below: 0.0,
             editor_below: 0.0,
+            actions_height: 0.0,
             below_image_top: 0.0,
             port: None,
             import: None,
@@ -465,9 +470,6 @@ struct Draft {
     end: Option<Pos2>,
     /// The drag going on...
     grab: Option<Grab>,
-    /// ...drawing the first rectangle: the settings it shows wait until it is
-    /// drawn, so that they do not shrink the image under the pointer.
-    sketching: bool,
     name: String,
     kind: IndicatorKind,
     direction: Direction,
@@ -547,7 +549,6 @@ impl Default for Draft {
             start: None,
             end: None,
             grab: None,
-            sketching: false,
             name: String::new(),
             kind: IndicatorKind::Visibility,
             direction: Direction::Right,
@@ -636,7 +637,6 @@ impl Draft {
         self.start = Some(Pos2::new(x, y));
         self.end = Some(Pos2::new(x + w, y + h));
         self.grab = None;
-        self.sketching = false;
         self.picking = None;
         self.by_look = indicators::has_look(zone);
         self.look = self.by_look.then(|| Look {
@@ -1320,7 +1320,6 @@ impl App {
                     ));
                 }
             }
-            remember_height(ui, &mut self.screen.editor_below, self.screen.below_image_top);
         });
         changed
     }
@@ -1347,879 +1346,894 @@ impl App {
             None => Vec::new(),
         };
 
-        // The mode's indicators, and those an assistant proposed: what to edit.
-        ui.label(RichText::new("Indicators").strong().size(16.0));
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
-            let mut seen: Vec<&str> = Vec::new();
-            for zone in &inputs.zones {
-                if seen.contains(&zone.indicator.as_str()) {
-                    continue;
+        // Everything but the actions scrolls when it does not fit; the actions (Save) stay under it.
+        let room = (ui.available_height() - st.actions_height - 8.0).max(120.0);
+        let scrolled = egui::ScrollArea::vertical()
+            .id_salt("indicator-editor")
+            .max_height(room)
+            .auto_shrink([false, true])
+            .show(ui, |ui| {
+                let top = ui.cursor().top();
+                // The mode's indicators, and those an assistant proposed: what to edit.
+                ui.label(RichText::new("Indicators").strong().size(16.0));
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
+                    let mut seen: Vec<&str> = Vec::new();
+                    for zone in &inputs.zones {
+                        if seen.contains(&zone.indicator.as_str()) {
+                            continue;
+                        }
+                        seen.push(&zone.indicator);
+                        let n = inputs.zones.iter().filter(|z| z.indicator == zone.indicator).count();
+                        let on = indicator_name.as_deref() == Some(zone.indicator.as_str());
+                        let text = format!("{} {}", kind_icon(zone.kind), zone.indicator);
+                        let hover = format!("{}, {n} zone(s)", zone.kind.label());
+                        if ui.selectable_label(on, text).on_hover_text(hover).clicked() && !on {
+                            target = Some(Target::Indicator(zone.indicator.clone()));
+                        }
+                    }
+                    if ui.button(RichText::new("+ New indicator").color(ACCENT_TEXT)).clicked() && (indicator_name.is_some() || !draft.name.is_empty() || draft.kind_chosen) {
+                        target = Some(Target::NewIndicator);
+                    }
+                });
+                let to_draw: Vec<_> = inputs.to_draw().collect();
+                if !to_draw.is_empty() {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
+                        ui.label(muted("✨ Proposed, to draw:").size(12.5));
+                        for planned in &to_draw {
+                            let on = indicator_name.is_none() && draft.name == planned.name;
+                            let hover = format!("{}\n{}\n\nProposed by the assistant: click, then draw it.", planned.kind.label(), planned.place);
+                            if ui.selectable_label(on, format!("{} {}", kind_icon(planned.kind), planned.name)).on_hover_text(hover).clicked() && !on {
+                                target = Some(Target::Planned(planned.name.clone(), planned.kind));
+                            }
+                        }
+                        if ui.small_button("✕").on_hover_text("Forget the indicators proposed").clicked() {
+                            linked = Some(Inputs { planned: Vec::new(), ..inputs.clone() });
+                        }
+                    });
                 }
-                seen.push(&zone.indicator);
-                let n = inputs.zones.iter().filter(|z| z.indicator == zone.indicator).count();
-                let on = indicator_name.as_deref() == Some(zone.indicator.as_str());
-                let text = format!("{} {}", kind_icon(zone.kind), zone.indicator);
-                let hover = format!("{}, {n} zone(s)", zone.kind.label());
-                if ui.selectable_label(on, text).on_hover_text(hover).clicked() && !on {
-                    target = Some(Target::Indicator(zone.indicator.clone()));
+                ui.add_space(4.0);
+
+                // The indicator edited: its name, what it reads and its zones, or what a new one reads.
+                card(RAISED).inner_margin(Margin::same(10)).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
+                    match &indicator_name {
+                        Some(name) => {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(RichText::new(kind_icon(draft.kind)).size(16.0));
+                                ui.add(egui::TextEdit::singleline(&mut draft.name).desired_width(160.0).font(egui::TextStyle::Monospace))
+                                    .on_hover_text("Its name in scripts. Renaming renames all its zones, and keeps the phase it is a sign of");
+                                ui.label(muted(draft.kind.label())).on_hover_text("Set when the indicator was made: for another kind, make a new indicator");
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    if st.confirm_delete {
+                                        if ui.button("Keep it").clicked() {
+                                            st.confirm_delete = false;
+                                        }
+                                        let really = egui::Button::new(RichText::new(format!("Delete {name} and its {} zone(s)", indicator_zones.len())).color(Color32::WHITE)).fill(DANGER);
+                                        if ui.add(really).clicked() {
+                                            delete_indicator = true;
+                                        }
+                                    } else if ui.button(RichText::new("🗑 Delete").color(DANGER_TEXT)).on_hover_text("Delete the indicator and all its zones").clicked() {
+                                        st.confirm_delete = true;
+                                    }
+                                });
+                            });
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label("Zones").on_hover_text(
+                                    "Where the game shows it. Draw it again where, or as, the game also shows it: the health bar out of \
+                                     battles, another menu. Its value comes from the zone where it is found; shown when any zone is.",
+                                );
+                                for (n, &i) in indicator_zones.iter().enumerate() {
+                                    let on = draft.editing == Some(i);
+                                    let phase = inputs.zones[i].phase.as_deref().unwrap_or("any phase");
+                                    let hover = if on { "Leave this zone" } else { "Edit this zone, on its capture" };
+                                    if ui.selectable_label(on, format!("{} · {phase}", n + 1)).on_hover_text(hover).clicked() {
+                                        target = Some(if on { Target::Indicator(name.clone()) } else { Target::Zone(i, true) });
+                                    }
+                                }
+                                let adding = draft.editing.is_none() && draft.rect().is_some();
+                                let hover = "Draw it again where, or as, the game also shows it: the health bar out of battles, another menu";
+                                if ui.selectable_label(adding, "+ Zone").on_hover_text(hover).clicked() && draft.editing.is_some() {
+                                    target = Some(Target::Indicator(name.clone()));
+                                }
+                            });
+                        }
+                        None => {
+                            let planned = to_draw.iter().find(|p| draft.name == p.name);
+                            ui.label(RichText::new(if planned.is_some() { "New indicator, proposed by the assistant" } else { "New indicator" }).strong().size(15.0));
+                            if let Some(planned) = planned {
+                                ui.label(RichText::new(format!("Where: {}", planned.place)).color(ACCENT_TEXT).size(12.5));
+                            }
+                            step(ui, 1, draft.kind_chosen, |ui| {
+                                ui.label("What does it read?");
+                            });
+                            ui.columns(2, |columns| {
+                                let kinds = [
+                                    (IndicatorKind::Visibility, "Whether an element is on screen: a battle menu, a dialogue box"),
+                                    (IndicatorKind::Gauge, "How full a bar is: health, mana, a timer"),
+                                ];
+                                for (ui, (kind, help)) in columns.iter_mut().zip(kinds) {
+                                    let on = draft.kind_chosen && draft.kind == kind;
+                                    let text = format!("{} {}\n{help}", kind_icon(kind), kind.label());
+                                    let button = egui::Button::new(RichText::new(text).size(13.0)).selected(on).min_size(Vec2::new(ui.available_width(), 44.0)).wrap();
+                                    if ui.add(button).clicked() {
+                                        draft.kind = kind;
+                                        draft.kind_chosen = true;
+                                    }
+                                }
+                            });
+                            step(ui, 2, valid_name(&draft.name), |ui| {
+                                ui.label("Name it");
+                                ui.add(egui::TextEdit::singleline(&mut draft.name).hint_text("battle_menu").desired_width(160.0).font(egui::TextStyle::Monospace))
+                                    .on_hover_text("Its name in scripts: letters, digits and _, starting with a letter");
+                            });
+                            step(ui, 3, draft.rect().is_some(), |ui| {
+                                ui.label(if draft.kind_chosen { "Draw it on the image below" } else { "Draw it on the image below, once you chose what it reads" });
+                            });
+                        }
+                    }
+                });
+                ui.add_space(4.0);
+
+                // The capture shown, what the image shows, and its zoom.
+                ui.horizontal(|ui| {
+                    let phase = inputs.captures.iter().find(|c| c.file == file).map(|c| if c.phase.is_empty() { "to sort" } else { c.phase.as_str() });
+                    ui.label(muted(format!("Capture: {}", phase.unwrap_or(file))).size(12.5)).on_hover_text("Pick another in the left column");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.add(egui::Slider::new(&mut draft.zoom, 1.0..=MAX_ZOOM).logarithmic(true).suffix("x").show_value(true))
+                            .on_hover_text("Also Ctrl + wheel over the image; drag with the middle button to move around");
+                        ui.label(muted("Zoom"));
+                        ui.add_space(8.0);
+                        ui.toggle_value(&mut st.hide_zones, "Hide zones").on_hover_text("Hide every zone drawn, to see the image (also H)");
+                        ui.add_enabled(!st.hide_zones, egui::Checkbox::new(&mut st.show_others, "Other indicators")).on_hover_text("Also outline the other indicators' zones; click one to edit it");
+                    });
+                });
+
+                // The image, taking the height what is above it and the settings
+                // below it (last frame) leave, and at least about half of it.
+                let max_height = (room - (ui.cursor().top() - top) - st.editor_below - 12.0).max((room * MIN_IMAGE_SHARE).max(120.0));
+                let fit = image_size(ui.available_width(), frame);
+                let base = if fit.y > max_height { fit.x * max_height / fit.y } else { fit.x };
+                let size = image_size(base * draft.zoom, frame);
+                let visible = Vec2::new(ui.available_width(), size.y.min(max_height));
+                // Zoomed with the slider, or an indicator opened: the indicator (else what was in the middle) stays in the middle.
+                if st.scroll_to.is_none() && ((draft.zoom - st.last_zoom).abs() > 1e-4 || st.center_zone) {
+                    let focus = draft.rect().map(|[x, y, w, h]| Pos2::new(x + w / 2.0, y + h / 2.0)).unwrap_or(st.view_center);
+                    st.scroll_to = Some(Vec2::new(focus.x * size.x, focus.y * size.y) - visible / 2.0);
                 }
-            }
-            if ui.button(RichText::new("+ New indicator").color(ACCENT_TEXT)).clicked() && (indicator_name.is_some() || !draft.name.is_empty() || draft.kind_chosen) {
-                target = Some(Target::NewIndicator);
-            }
-        });
-        let to_draw: Vec<_> = inputs.to_draw().collect();
-        if !to_draw.is_empty() {
-            ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
-                ui.label(muted("✨ Proposed, to draw:").size(12.5));
-                for planned in &to_draw {
-                    let on = indicator_name.is_none() && draft.name == planned.name;
-                    let hover = format!("{}\n{}\n\nProposed by the assistant: click, then draw it.", planned.kind.label(), planned.place);
-                    if ui.selectable_label(on, format!("{} {}", kind_icon(planned.kind), planned.name)).on_hover_text(hover).clicked() && !on {
-                        target = Some(Target::Planned(planned.name.clone(), planned.kind));
+                st.center_zone = false;
+                st.last_zoom = draft.zoom;
+                let mut scroll = egui::ScrollArea::both()
+                    .id_salt("zone-editor")
+                    .min_scrolled_height(visible.y + 12.0)
+                    .max_height(visible.y + 12.0)
+                    .auto_shrink([false, true]);
+                if let Some(offset) = st.scroll_to.take() {
+                    scroll = scroll.scroll_offset(offset.max(Vec2::ZERO));
+                }
+                let can_draw = draft.indicator.is_some() || draft.kind_chosen;
+                let output = scroll.show(ui, |ui| {
+                    // Centered when narrower than the column.
+                    let (outer, response) = ui.allocate_exact_size(Vec2::new(size.x.max(ui.available_width()), size.y), Sense::click_and_drag());
+                    let area = Rect::from_min_size(outer.min + Vec2::new((outer.width() - size.x) / 2.0, 0.0), size);
+                    ui.painter().image(texture.id(), area, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
+                    let to_fraction = |p: Pos2| Pos2::new(((p.x - area.left()) / area.width()).clamp(0.0, 1.0), ((p.y - area.top()) / area.height()).clamp(0.0, 1.0));
+                    let hover = response.hover_pos();
+                    if hover.is_some() {
+                        // egui turns Ctrl + wheel (and pinches) into a zoom factor; the point under the pointer stays there.
+                        let zoom = ui.input(|i| i.zoom_delta());
+                        if zoom != 1.0 {
+                            let new = (draft.zoom * zoom).clamp(1.0, MAX_ZOOM);
+                            if let Some(p) = hover {
+                                let f = to_fraction(p);
+                                let new_size = image_size(base * new, frame);
+                                st.scroll_to = Some(Vec2::new(f.x * new_size.x, f.y * new_size.y) - (p - ui.clip_rect().min));
+                            }
+                            draft.zoom = new;
+                            st.last_zoom = new;
+                        }
+                    }
+                    // The zone of the indicator selected under a point, when none is being edited.
+                    let zone_at = |p: Pos2| indicator_zones.iter().copied().find(|&i| on_image(area, inputs.zones[i].rect).expand(3.0).contains(p));
+                    // Dragging with the middle button moves the view (nothing else).
+                    if response.dragged_by(egui::PointerButton::Middle) {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                        let delta = ui.input(|i| i.pointer.delta());
+                        st.scroll_to = Some(ui.clip_rect().min - outer.min - delta);
+                    } else if let Some(pick) = draft.picking {
+                        if hover.is_some() {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+                        }
+                        if response.clicked() {
+                            if let Some(p) = response.interact_pointer_pos().map(to_fraction) {
+                                let color = indicators::pick_color(frame, p.x, p.y);
+                                match pick {
+                                    Pick::Full if !draft.full.contains(&color) => draft.full.push(color),
+                                    Pick::Empty if !draft.empty.contains(&color) => draft.empty.push(color),
+                                    Pick::Tier(k) => {
+                                        if let Some(tier) = draft.tiers.get_mut(k).filter(|t| !t.contains(&color)) {
+                                            tier.push(color);
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            draft.picking = None;
+                        }
+                    } else if can_draw && draft.traced() {
+                        // A curved bar's path: a click adds a point at its end, a drag moves one, a right-click removes one.
+                        let near = |draft: &Draft, p: Pos2| draft.path.iter().position(|q| (on_image_point(area, *q) - p).length() <= HANDLE + 2.0);
+                        if let Some(p) = hover.filter(|_| draft.point.is_none()) {
+                            ui.ctx().set_cursor_icon(if near(draft, p).is_some() { egui::CursorIcon::Grab } else { egui::CursorIcon::Crosshair });
+                        }
+                        if response.drag_started() {
+                            draft.point = ui.input(|i| i.pointer.press_origin()).or(response.interact_pointer_pos()).and_then(|o| near(draft, o));
+                        }
+                        if let Some(k) = draft.point {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                            if let Some(p) = response.interact_pointer_pos().filter(|_| response.dragged()) {
+                                draft.path[k] = to_fraction(p);
+                                draft.drawn_on = Some(file.to_owned());
+                            }
+                        }
+                        if response.drag_stopped() {
+                            draft.point = None;
+                        }
+                        if let Some(p) = response.interact_pointer_pos() {
+                            if response.clicked() && near(draft, p).is_none() {
+                                draft.path.push(to_fraction(p));
+                                draft.drawn_on = Some(file.to_owned());
+                            } else if response.secondary_clicked() {
+                                if let Some(k) = near(draft, p) {
+                                    draft.path.remove(k);
+                                    draft.drawn_on = Some(file.to_owned());
+                                }
+                            }
+                        }
+                    } else if can_draw {
+                        let grab_at = |draft: &Draft, p: Pos2| match draft.rect() {
+                            Some(rect) => Grab::at(on_image(area, rect), p),
+                            // On one of the indicator's zones: picks it and moves it.
+                            None if draft.editing.is_none() && zone_at(p).is_some() => Grab::Move { from: Pos2::ZERO, rect: [0.0; 4] },
+                            None => Grab::New,
+                        };
+                        if let Some(p) = hover.filter(|_| draft.grab.is_none()) {
+                            ui.ctx().set_cursor_icon(grab_at(draft, p).cursor());
+                        }
+                        if response.drag_started() {
+                            // Where the button went down: egui only calls it a drag once the pointer moved a little.
+                            if let Some(origin) = ui.input(|i| i.pointer.press_origin()).or(response.interact_pointer_pos()) {
+                                if draft.rect().is_none() && draft.editing.is_none() {
+                                    if let Some(i) = zone_at(origin) {
+                                        draft.take_zone(i, &inputs.zones[i]);
+                                    }
+                                }
+                                let mut grab = grab_at(draft, origin);
+                                if let Some([x, y, w, h]) = draft.rect() {
+                                    draft.start = Some(Pos2::new(x, y));
+                                    draft.end = Some(Pos2::new(x + w, y + h));
+                                }
+                                match &mut grab {
+                                    Grab::New => {
+                                        draft.start = Some(to_fraction(origin));
+                                        draft.end = draft.start;
+                                    }
+                                    Grab::Move { from, rect } => {
+                                        *from = to_fraction(origin);
+                                        *rect = draft.rect().unwrap_or_default();
+                                    }
+                                    Grab::Resize(_) => {}
+                                }
+                                draft.grab = Some(grab);
+                                draft.drawn_on = Some(file.to_owned());
+                            }
+                        }
+                        if let Some(grab) = draft.grab {
+                            ui.ctx().set_cursor_icon(grab.cursor());
+                            if let Some(p) = response.interact_pointer_pos().filter(|_| response.dragged()) {
+                                draft.drag_to(to_fraction(p));
+                            }
+                        }
+                        if response.drag_stopped() {
+                            draft.grab = None;
+                        }
+                    }
+                    // A click on another indicator's zone, or one of this indicator, opens it (not while clicking a path).
+                    if response.clicked() && draft.picking.is_none() && !(can_draw && draft.traced()) {
+                        if let Some(p) = response.interact_pointer_pos() {
+                            let hit = inputs
+                                .zones
+                                .iter()
+                                .enumerate()
+                                .filter(|(i, z)| draft.editing != Some(*i) && on_image(area, z.rect).expand(3.0).contains(p))
+                                .min_by(|(_, a), (_, b)| (a.rect[2] * a.rect[3]).total_cmp(&(b.rect[2] * b.rect[3])))
+                                .map(|(i, _)| i);
+                            if let Some(i) = hit {
+                                target = Some(Target::Zone(i, false));
+                            }
+                        }
+                    }
+                    // The other zones; their name and reading when hovered.
+                    for (i, zone) in inputs.zones.iter().enumerate() {
+                        let same = indicator_name.as_deref() == Some(zone.indicator.as_str());
+                        let shown = !st.hide_zones && (same || st.show_others);
+                        if draft.editing == Some(i) || !shown {
+                            continue;
+                        }
+                        let r = on_image(area, zone.rect);
+                        let hovered = hover.is_some_and(|p| r.expand(3.0).contains(p)) && draft.grab.is_none();
+                        // The indicator's zones stand out.
+                        let stroke = match (hovered, same) {
+                            (true, _) => Stroke::new(1.5, TEXT),
+                            (false, true) => Stroke::new(1.5, ACCENT.gamma_multiply(0.8)),
+                            (false, false) => Stroke::new(1.0, MUTED.gamma_multiply(0.7)),
+                        };
+                        ui.painter().rect_stroke(r, 2.0, stroke, StrokeKind::Outside);
+                        if indicators::has_path(zone) {
+                            let points = zone.path.iter().map(|p| on_image_point(area, Pos2::new(p[0], p[1]))).collect();
+                            ui.painter().add(egui::Shape::line(points, stroke));
+                        }
+                        if hovered {
+                            let (text, color) = reading_here(zone, &inputs.zones, frame);
+                            tag(ui, r.left_top() - Vec2::new(0.0, 4.0), egui::Align2::LEFT_BOTTOM, format!("{} · {text} · click to edit", zone.indicator), color);
+                        }
+                    }
+                    // A path being clicked: its line as thick as it reads, its points (its first one ringed).
+                    if draft.traced() && !st.hide_zones {
+                        let points: Vec<Pos2> = draft.path.iter().map(|p| on_image_point(area, *p)).collect();
+                        if points.len() >= 2 {
+                            let width = (draft.thickness * area.height()).max(1.0);
+                            ui.painter().add(egui::Shape::line(points.clone(), Stroke::new(width, ACCENT.gamma_multiply(0.3))));
+                            ui.painter().add(egui::Shape::line(points.clone(), Stroke::new(1.0, ACCENT)));
+                        }
+                        for (k, p) in points.iter().enumerate() {
+                            ui.painter().circle_filled(*p, 3.5, ACCENT);
+                            if k == 0 {
+                                ui.painter().circle_stroke(*p, 6.0, Stroke::new(1.5, ACCENT));
+                            }
+                        }
+                        if let (Some(first), Some(last)) = (points.first(), points.last().filter(|_| points.len() >= 2)) {
+                            tag(ui, *first + Vec2::new(0.0, 8.0), egui::Align2::CENTER_TOP, "0%".to_owned(), ACCENT_TEXT);
+                            tag(ui, *last + Vec2::new(0.0, 8.0), egui::Align2::CENTER_TOP, "100%".to_owned(), ACCENT_TEXT);
+                        }
+                    }
+                    if let Some(rect) = draft.rect().filter(|_| !st.hide_zones) {
+                        let r = on_image(area, rect);
+                        if draft.traced() {
+                            ui.painter().rect_stroke(r, 1.0, Stroke::new(1.0, ACCENT.gamma_multiply(0.5)), StrokeKind::Outside);
+                        } else {
+                            ui.painter().rect_stroke(r, 1.0, Stroke::new(2.0, ACCENT), StrokeKind::Outside);
+                            // Handles at the corners.
+                            for corner in [r.left_top(), r.right_top(), r.left_bottom(), r.right_bottom()] {
+                                ui.painter().rect_filled(Rect::from_center_size(corner, Vec2::splat(5.0)), 1.0, ACCENT);
+                            }
+                        }
+                        if let Some(zone) = &tested {
+                            let (text, color) = reading_here(zone, &inputs.zones, frame);
+                            let label = if draft.name.is_empty() { text } else { format!("{} · {text}", draft.name) };
+                            tag(ui, r.left_top() - Vec2::new(0.0, 6.0), egui::Align2::LEFT_BOTTOM, label, color);
+                            // The cells it is compared on, when it compares only what stays.
+                            if indicators::has_weights(zone) {
+                                let cell = Vec2::new(r.width() / indicators::REF_WIDTH as f32, r.height() / indicators::REF_HEIGHT as f32);
+                                for (k, &w) in zone.weights.iter().enumerate().filter(|(_, w)| **w > 0) {
+                                    let at = r.left_top() + Vec2::new((k % indicators::REF_WIDTH) as f32 * cell.x, (k / indicators::REF_WIDTH) as f32 * cell.y);
+                                    ui.painter().rect_filled(Rect::from_min_size(at, cell), 0.0, ACCENT.gamma_multiply(0.15 + 0.35 * w as f32 / 255.0));
+                                }
+                            }
+                            // The bar as found: its full part green, its empty part red, along the indicator.
+                            if zone.kind == IndicatorKind::Gauge && indicators::has_path(zone) && (zone.empty_color.is_some() || indicators::has_look(zone)) {
+                                // Along the path, beside it.
+                                let ((a, b), (c, d)) = indicators::bar_extent(zone, frame);
+                                let points: Vec<Pos2> = zone.path.iter().map(|p| on_image_point(area, Pos2::new(p[0], p[1]))).collect();
+                                let beside = (zone.thickness * area.height()).max(1.0) / 2.0 + 3.0;
+                                ui.painter().add(egui::Shape::line(along(&points, a, b, beside), Stroke::new(3.0, OK)));
+                                ui.painter().add(egui::Shape::line(along(&points, c, d, beside), Stroke::new(3.0, DANGER)));
+                            } else if zone.kind == IndicatorKind::Gauge && (zone.empty_color.is_some() || indicators::has_look(zone)) {
+                                let ((a, b), (c, d)) = indicators::bar_extent(zone, frame);
+                                let horizontal = matches!(zone.direction, Direction::Right | Direction::Left);
+                                let segment = |from: f32, to: f32| {
+                                    if horizontal {
+                                        Rect::from_min_max(Pos2::new(r.left() + from * r.width(), r.bottom() + 3.0), Pos2::new(r.left() + to * r.width(), r.bottom() + 7.0))
+                                    } else {
+                                        Rect::from_min_max(Pos2::new(r.right() + 3.0, r.top() + from * r.height()), Pos2::new(r.right() + 7.0, r.top() + to * r.height()))
+                                    }
+                                };
+                                ui.painter().rect_filled(segment(a, b), 0.0, OK);
+                                ui.painter().rect_filled(segment(c, d), 0.0, DANGER);
+                            }
+                        }
+                    }
+                });
+                st.below_image_top = ui.cursor().top();
+                let content = output.content_size;
+                if content.x > 0.0 && content.y > 0.0 {
+                    let center = output.state.offset + output.inner_rect.size() / 2.0;
+                    st.view_center = Pos2::new((center.x / content.x).clamp(0.0, 1.0), (center.y / content.y).clamp(0.0, 1.0));
+                }
+
+                // Keys, while nothing is typed: Esc leaves (the color picking, the
+                // zone, the indicator), Delete deletes the zone, arrows nudge it, H hides the zones.
+                if ui.ctx().memory(|m| m.focused().is_none()) {
+                    let (escape, delete, step) = ui.input(|i| {
+                        let px = if i.modifiers.shift { 10.0 } else { 1.0 };
+                        let key = |k: egui::Key| if i.key_pressed(k) { px } else { 0.0 };
+                        let step = Vec2::new(key(egui::Key::ArrowRight) - key(egui::Key::ArrowLeft), key(egui::Key::ArrowDown) - key(egui::Key::ArrowUp));
+                        (i.key_pressed(egui::Key::Escape), i.key_pressed(egui::Key::Delete), step)
+                    });
+                    if ui.input(|i| i.key_pressed(egui::Key::H)) {
+                        st.hide_zones = !st.hide_zones;
+                    }
+                    if escape {
+                        if draft.picking.is_some() {
+                            draft.picking = None;
+                        } else if let (Some(_), Some(name)) = (draft.editing, &indicator_name) {
+                            target = Some(Target::Indicator(name.clone()));
+                        } else if indicator_name.is_some() {
+                            target = Some(Target::NewIndicator);
+                        }
+                    }
+                    if delete && indicator_zones.len() > 1 {
+                        delete_zone = draft.editing;
+                    }
+                    if step != Vec2::ZERO && draft.rect().is_some() {
+                        draft.nudge(Vec2::new(step.x / frame.width.max(1) as f32, step.y / frame.height.max(1) as f32));
+                        draft.drawn_on = Some(file.to_owned());
                     }
                 }
-                if ui.small_button("✕").on_hover_text("Forget the indicators proposed").clicked() {
-                    linked = Some(Inputs { planned: Vec::new(), ..inputs.clone() });
-                }
-            });
-        }
-        ui.add_space(4.0);
 
-        // The indicator edited: its name, what it reads and its zones, or what a new one reads.
-        card(RAISED).inner_margin(Margin::same(10)).show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
-            match &indicator_name {
-                Some(name) => {
+                let hint = match (draft.picking, draft.rect()) {
+                    (None, _) if can_draw && draft.traced() => {
+                        "Click along the middle of the bar, from the end it fills from (0%) to its full end (100%); drag a point to move it, \
+                         right-click one to remove it; arrow keys nudge it all."
+                    }
+                    (Some(Pick::Full), _) => "Click the bar's full part on the image (Esc: stop).",
+                    (Some(Pick::Empty), _) => "Click the bar's empty part on the image (Esc: stop).",
+                    (Some(Pick::Tier(_)), _) => "Click the bar's part in this tier's color on the image (Esc: stop).",
+                    (None, None) if !can_draw => "Choose what the new indicator reads, above, then draw it on the image.",
+                    (None, None) if indicator_name.is_some() => "Pick a zone above, or click or drag it on the image; or draw a new zone.",
+                    (None, None) if draft.kind == IndicatorKind::Gauge => "Drag a rectangle along the bar, from its empty end to its full end.",
+                    (None, None) => "Drag a rectangle around fixed parts of the element (not text that changes).",
+                    (None, Some(_)) => "Drag its edges to resize it, its inside to move it; arrow keys nudge it (Shift: 10 px). Esc leaves it.",
+                };
+                ui.label(muted(hint).size(12.0));
+                // The indicator's settings, shared by its zones.
+                if can_draw {
+                    section(ui, "Indicator", "all its zones", |_| {});
                     ui.horizontal_wrapped(|ui| {
-                        ui.label(RichText::new(kind_icon(draft.kind)).size(16.0));
-                        ui.add(egui::TextEdit::singleline(&mut draft.name).desired_width(160.0).font(egui::TextStyle::Monospace))
-                            .on_hover_text("Its name in scripts. Renaming renames all its zones, and keeps the phase it is a sign of");
-                        ui.label(muted(draft.kind.label())).on_hover_text("Set when the indicator was made: for another kind, make a new indicator");
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if st.confirm_delete {
-                                if ui.button("Keep it").clicked() {
-                                    st.confirm_delete = false;
+                        if draft.kind == IndicatorKind::Gauge {
+                            egui::ComboBox::from_id_salt("zone-direction").selected_text(draft.direction.label()).show_ui(ui, |ui| {
+                                for d in Direction::ALL {
+                                    ui.selectable_value(&mut draft.direction, d, d.label());
                                 }
-                                let really = egui::Button::new(RichText::new(format!("Delete {name} and its {} zone(s)", indicator_zones.len())).color(Color32::WHITE)).fill(DANGER);
-                                if ui.add(really).clicked() {
-                                    delete_indicator = true;
+                            });
+                        }
+                        if draft.kind == IndicatorKind::Visibility {
+                            // Several zones: one of them, or all.
+                            if indicator_name.is_some() {
+                                let label = |all: bool| if all { "Shown in all its zones" } else { "Shown in one of its zones" };
+                                egui::ComboBox::from_id_salt("zone-all").selected_text(label(draft.all_zones)).show_ui(ui, |ui| {
+                                    ui.selectable_value(&mut draft.all_zones, false, label(false))
+                                        .on_hover_text("An element the game shows in several places (a bar in battle and out of it): a zone for each place.");
+                                    ui.selectable_value(&mut draft.all_zones, true, label(true))
+                                        .on_hover_text("An interface told by several elements together (three button prompts): a zone for each element.");
+                                });
+                            }
+                            ui.checkbox(&mut draft.compare_colors, "Compare colors").on_hover_text(
+                                "Compares the zones in color rather than in brightness only: an element shown in the same place in \
+                                 another color (button prompts red in battles, white out of them) is not taken for it. Leave it off \
+                                 for an element whose color changes while it is shown. Set the threshold again after changing it.",
+                            );
+                            let unknown = indicator_zones.iter().map(|&i| &inputs.zones[i]).any(|z| z.reference_colors.is_empty() && !z.capture.as_ref().is_some_and(|f| st.captures.contains_key(f)));
+                            if draft.compare_colors && unknown {
+                                ui.label(RichText::new("A zone's capture is gone: draw it again for its colors.").color(WARN).size(12.0));
+                            }
+                        }
+                        // The phases this indicator is a sure sign of (saved right away).
+                        if let Some(name) = indicator_name.as_ref().filter(|_| !inputs.phases.is_empty()) {
+                            let of: Vec<&PhaseDef> = inputs.phases.iter().filter(|sc| sc.indicators.contains(name)).collect();
+                            let phases: Vec<&str> = of.iter().map(|sc| sc.name.as_str()).collect();
+                            let signs: Vec<String> = of.iter().map(|sc| format!("{}: {}", sc.name, sc.indicators.join(" + "))).collect();
+                            ui.label("Sure sign of").on_hover_text(
+                                "While this indicator is shown, GameViber is sure of the phase, right away (a \
+                                 battle menu: battle). A phase can need several indicators shown together (in the Phases tab), \
+                                 and an indicator can be part of the signs of several phases: the sign of the most indicators \
+                                 shown wins. How long the phase is kept once it hides is set with the phase, in the Phases tab.",
+                            );
+                            let label = if phases.is_empty() { "no phase".to_owned() } else { phases.join(", ") };
+                            let mut toggled = None;
+                            egui::ComboBox::from_id_salt("indicator-phase")
+                                .selected_text(label)
+                                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                                .show_ui(ui, |ui| {
+                                    for (k, phase) in inputs.phases.iter().enumerate() {
+                                        let mut on = phase.indicators.contains(name);
+                                        if ui.checkbox(&mut on, &phase.name).changed() {
+                                            toggled = Some((k, on));
+                                        }
+                                    }
+                                })
+                                .response
+                                .on_hover_text(signs.join("\n"));
+                            if let Some((k, on)) = toggled {
+                                let mut g = inputs.clone();
+                                let phase = &mut g.phases[k];
+                                if on {
+                                    phase.indicators.push(name.clone());
+                                    phase.otherwise = false;
+                                } else {
+                                    phase.indicators.retain(|z| z != name);
                                 }
-                            } else if ui.button(RichText::new("🗑 Delete").color(DANGER_TEXT)).on_hover_text("Delete the indicator and all its zones").clicked() {
-                                st.confirm_delete = true;
+                                linked = Some(g);
+                            }
+                        }
+                    });
+                    if draft.kind == IndicatorKind::Gauge {
+                        ui.horizontal(|ui| {
+                            ui.label("Read by");
+                            ui.selectable_value(&mut draft.by_look, false, "Colors");
+                            ui.selectable_value(&mut draft.by_look, true, "Look");
+                        });
+                        let why = if draft.by_look {
+                            "Look: for bars a color does not describe — a gradient (red to green), segments, hearts, stripes. \
+                             GameViber learns how the bar looks full and empty along its length, from captures; the bar must stay in place."
+                        } else {
+                            "Colors: for a bar of one color over an empty part of another (filled again in another color once \
+                             full: add a tier). It may move inside the zone. For a gradient, segments, hearts or stripes, choose Look."
+                        };
+                        ui.label(muted(why).size(12.0));
+                    }
+                    if draft.kind == IndicatorKind::Gauge {
+                        read_when(ui, draft, inputs);
+                    }
+                    if draft.kind == IndicatorKind::Gauge && draft.by_look {
+                        let rect = draft.rect();
+                        let fits = |draft: &Draft| draft.look.as_ref().is_some_and(|l| l.fits(draft));
+                        let moved = rect.is_some() && draft.look.is_some() && !fits(draft);
+                        let seen = draft.look.as_ref().filter(|_| fits(draft)).map_or(0.0, |l| indicators::empty_seen(&Zone { empty_look: l.empty.clone(), ..Zone::default() }));
+                        // 1. The rectangle.
+                        step(ui, 1, rect.is_some(), |ui| {
+                            if draft.traced() {
+                                ui.label("Click the path along the middle of the bar's track, from its empty end to its full end, its thickness \
+                                          that of the track. Leave out its icon and its frame.");
+                            } else {
+                                ui.label("Draw the rectangle exactly on the bar's track, from its empty end to its full end, and set which way it fills. \
+                                          Leave out its icon (a heart before the bar) and its frame.");
                             }
                         });
-                    });
-                    ui.horizontal_wrapped(|ui| {
-                        ui.label("Zones").on_hover_text(
-                            "Where the game shows it. Draw it again where, or as, the game also shows it: the health bar out of \
-                             battles, another menu. Its value comes from the zone where it is found; shown when any zone is.",
-                        );
-                        for (n, &i) in indicator_zones.iter().enumerate() {
-                            let on = draft.editing == Some(i);
-                            let phase = inputs.zones[i].phase.as_deref().unwrap_or("any phase");
-                            let hover = if on { "Leave this zone" } else { "Edit this zone, on its capture" };
-                            if ui.selectable_label(on, format!("{} · {phase}", n + 1)).on_hover_text(hover).clicked() {
-                                target = Some(if on { Target::Indicator(name.clone()) } else { Target::Zone(i, true) });
-                            }
-                        }
-                        let adding = draft.editing.is_none() && draft.rect().is_some();
-                        let hover = "Draw it again where, or as, the game also shows it: the health bar out of battles, another menu";
-                        if ui.selectable_label(adding, "+ Zone").on_hover_text(hover).clicked() && draft.editing.is_some() {
-                            target = Some(Target::Indicator(name.clone()));
-                        }
-                    });
-                }
-                None => {
-                    let planned = to_draw.iter().find(|p| draft.name == p.name);
-                    ui.label(RichText::new(if planned.is_some() { "New indicator, proposed by the assistant" } else { "New indicator" }).strong().size(15.0));
-                    if let Some(planned) = planned {
-                        ui.label(RichText::new(format!("Where: {}", planned.place)).color(ACCENT_TEXT).size(12.5));
-                    }
-                    step(ui, 1, draft.kind_chosen, |ui| {
-                        ui.label("What does it read?");
-                    });
-                    ui.columns(2, |columns| {
-                        let kinds = [
-                            (IndicatorKind::Visibility, "Whether an element is on screen: a battle menu, a dialogue box"),
-                            (IndicatorKind::Gauge, "How full a bar is: health, mana, a timer"),
-                        ];
-                        for (ui, (kind, help)) in columns.iter_mut().zip(kinds) {
-                            let on = draft.kind_chosen && draft.kind == kind;
-                            let text = format!("{} {}\n{help}", kind_icon(kind), kind.label());
-                            let button = egui::Button::new(RichText::new(text).size(13.0)).selected(on).min_size(Vec2::new(ui.available_width(), 44.0)).wrap();
-                            if ui.add(button).clicked() {
-                                draft.kind = kind;
-                                draft.kind_chosen = true;
-                            }
-                        }
-                    });
-                    step(ui, 2, valid_name(&draft.name), |ui| {
-                        ui.label("Name it");
-                        ui.add(egui::TextEdit::singleline(&mut draft.name).hint_text("battle_menu").desired_width(160.0).font(egui::TextStyle::Monospace))
-                            .on_hover_text("Its name in scripts: letters, digits and _, starting with a letter");
-                    });
-                    step(ui, 3, draft.rect().is_some(), |ui| {
-                        ui.label(if draft.kind_chosen { "Draw it on the image below" } else { "Draw it on the image below, once you chose what it reads" });
-                    });
-                }
-            }
-        });
-        ui.add_space(4.0);
-
-        // The capture shown, what the image shows, and its zoom.
-        ui.horizontal(|ui| {
-            let phase = inputs.captures.iter().find(|c| c.file == file).map(|c| if c.phase.is_empty() { "to sort" } else { c.phase.as_str() });
-            ui.label(muted(format!("Capture: {}", phase.unwrap_or(file))).size(12.5)).on_hover_text("Pick another in the left column");
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.add(egui::Slider::new(&mut draft.zoom, 1.0..=MAX_ZOOM).logarithmic(true).suffix("x").show_value(true))
-                    .on_hover_text("Also Ctrl + wheel over the image; drag with the middle button to move around");
-                ui.label(muted("Zoom"));
-                ui.add_space(8.0);
-                ui.toggle_value(&mut st.hide_zones, "Hide zones").on_hover_text("Hide every zone drawn, to see the image (also H)");
-                ui.add_enabled(!st.hide_zones, egui::Checkbox::new(&mut st.show_others, "Other indicators")).on_hover_text("Also outline the other indicators' zones; click one to edit it");
-            });
-        });
-
-        // The image, taking the height the settings below it (last frame) leave.
-        let max_height = (ui.available_height() - st.editor_below - 12.0).max(120.0);
-        let fit = image_size(ui.available_width(), frame);
-        let base = if fit.y > max_height { fit.x * max_height / fit.y } else { fit.x };
-        let size = image_size(base * draft.zoom, frame);
-        let visible = Vec2::new(ui.available_width(), size.y.min(max_height));
-        // Zoomed with the slider, or an indicator opened: the indicator (else what was in the middle) stays in the middle.
-        if st.scroll_to.is_none() && ((draft.zoom - st.last_zoom).abs() > 1e-4 || st.center_zone) {
-            let focus = draft.rect().map(|[x, y, w, h]| Pos2::new(x + w / 2.0, y + h / 2.0)).unwrap_or(st.view_center);
-            st.scroll_to = Some(Vec2::new(focus.x * size.x, focus.y * size.y) - visible / 2.0);
-        }
-        st.center_zone = false;
-        st.last_zoom = draft.zoom;
-        let mut scroll = egui::ScrollArea::both()
-            .id_salt("zone-editor")
-            .min_scrolled_height(visible.y + 12.0)
-            .max_height(visible.y + 12.0)
-            .auto_shrink([false, true]);
-        if let Some(offset) = st.scroll_to.take() {
-            scroll = scroll.scroll_offset(offset.max(Vec2::ZERO));
-        }
-        let can_draw = draft.indicator.is_some() || draft.kind_chosen;
-        let output = scroll.show(ui, |ui| {
-            // Centered when narrower than the column.
-            let (outer, response) = ui.allocate_exact_size(Vec2::new(size.x.max(ui.available_width()), size.y), Sense::click_and_drag());
-            let area = Rect::from_min_size(outer.min + Vec2::new((outer.width() - size.x) / 2.0, 0.0), size);
-            ui.painter().image(texture.id(), area, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
-            let to_fraction = |p: Pos2| Pos2::new(((p.x - area.left()) / area.width()).clamp(0.0, 1.0), ((p.y - area.top()) / area.height()).clamp(0.0, 1.0));
-            let hover = response.hover_pos();
-            if hover.is_some() {
-                // egui turns Ctrl + wheel (and pinches) into a zoom factor; the point under the pointer stays there.
-                let zoom = ui.input(|i| i.zoom_delta());
-                if zoom != 1.0 {
-                    let new = (draft.zoom * zoom).clamp(1.0, MAX_ZOOM);
-                    if let Some(p) = hover {
-                        let f = to_fraction(p);
-                        let new_size = image_size(base * new, frame);
-                        st.scroll_to = Some(Vec2::new(f.x * new_size.x, f.y * new_size.y) - (p - ui.clip_rect().min));
-                    }
-                    draft.zoom = new;
-                    st.last_zoom = new;
-                }
-            }
-            // The zone of the indicator selected under a point, when none is being edited.
-            let zone_at = |p: Pos2| indicator_zones.iter().copied().find(|&i| on_image(area, inputs.zones[i].rect).expand(3.0).contains(p));
-            // Dragging with the middle button moves the view (nothing else).
-            if response.dragged_by(egui::PointerButton::Middle) {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
-                let delta = ui.input(|i| i.pointer.delta());
-                st.scroll_to = Some(ui.clip_rect().min - outer.min - delta);
-            } else if let Some(pick) = draft.picking {
-                if hover.is_some() {
-                    ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
-                }
-                if response.clicked() {
-                    if let Some(p) = response.interact_pointer_pos().map(to_fraction) {
-                        let color = indicators::pick_color(frame, p.x, p.y);
-                        match pick {
-                            Pick::Full if !draft.full.contains(&color) => draft.full.push(color),
-                            Pick::Empty if !draft.empty.contains(&color) => draft.empty.push(color),
-                            Pick::Tier(k) => {
-                                if let Some(tier) = draft.tiers.get_mut(k).filter(|t| !t.contains(&color)) {
-                                    tier.push(color);
+                        // 2. The bar full.
+                        step(ui, 2, fits(draft), |ui| {
+                            ui.label("Open a capture where the bar is");
+                            ui.label(RichText::new("full").strong());
+                            ui.label("(left column), then");
+                            if ui.add_enabled(rect.is_some(), egui::Button::new("Use it as the full bar")).clicked() {
+                                if let Some(shape) = draft.shape() {
+                                    // Empty parts already seen stay when the zone did not change.
+                                    let empty = draft.look.as_ref().filter(|_| fits(draft)).map(|l| l.empty.clone()).unwrap_or_default();
+                                    let full = indicators::look(&shape, frame);
+                                    draft.look = Some(Look { zone: shape, full, empty });
                                 }
+                            }
+                            if moved {
+                                ui.label(RichText::new("The zone moved or turned since: do it again.").color(WARN));
+                            }
+                        });
+                        // 3. The bar empty.
+                        step(ui, 3, seen >= 0.95, |ui| {
+                            ui.label("Open captures where the bar is");
+                            ui.label(RichText::new("low or empty").strong());
+                            ui.label(", then");
+                            let help = "The part of the bar past its end on this capture is how it looks empty. Add captures at \
+                                        different levels until all of it is seen.";
+                            if ui.add_enabled(fits(draft), egui::Button::new("Add its empty part")).on_hover_text(help).clicked() {
+                                if let (Some(shape), Some(look)) = (draft.shape(), draft.look.as_mut()) {
+                                    let zone = Zone {
+                                        tolerance: draft.tolerance,
+                                        full_look: look.full.clone(),
+                                        empty_look: look.empty.clone(),
+                                        ..shape
+                                    };
+                                    look.empty = indicators::add_empty_look(&zone, frame);
+                                }
+                            }
+                            ui.label(muted(format!("{:.0}% of the bar seen empty", seen * 100.0)));
+                            if seen > 0.0 && ui.small_button("Clear").on_hover_text("Forget how it looks empty").clicked() {
+                                if let Some(look) = draft.look.as_mut() {
+                                    look.empty.clear();
+                                }
+                            }
+                        });
+                        if fits(draft) && seen < 0.95 {
+                            ui.label(
+                                muted("Recommended: until all of it is seen empty, the reading is rougher, and a bar gone from the screen \
+                                       (a menu) reads empty instead of unknown (nil).")
+                                .size(12.0),
+                            );
+                        }
+                        // 4. Checking it.
+                        step(ui, 4, false, |ui| {
+                            ui.label("Check it: under the rectangle, green is the part read as full, red as empty; each capture on the left shows its reading.");
+                        });
+                        ui.horizontal(|ui| {
+                            ui.add(egui::Slider::new(&mut draft.tolerance, 10.0..=150.0).text("tolerance")).on_hover_text(
+                                "How different from its looks the bar may be. Raise it when the bar shines or blinks, lower it when \
+                                 its empty part reads full.",
+                            );
+                        });
+                    } else if draft.kind == IndicatorKind::Gauge {
+                        ui.horizontal_wrapped(|ui| {
+                            let mut remove = None;
+                            let first = if draft.tiers.is_empty() { "Full" } else { "Tier 1" };
+                            for (pick, label) in [(Pick::Full, first), (Pick::Empty, "Empty")] {
+                                let colors = if pick == Pick::Full { &draft.full } else { &draft.empty };
+                                ui.label(label);
+                                if colors.is_empty() {
+                                    swatch(ui, None);
+                                }
+                                for (k, color) in colors.iter().enumerate() {
+                                    if color_button(ui, *color).on_hover_text("Click to remove this color").clicked() {
+                                        remove = Some((pick, k));
+                                    }
+                                }
+                                let picking = draft.picking == Some(pick);
+                                let help = "Then click on the image. Pick several shades when the bar blinks or changes color. With both \
+                                            colors the bar is found inside the zone (green and red under it): the zone may be larger than \
+                                            the bar, and a bar gone from the screen reads unknown (nil).";
+                                let text = if colors.is_empty() { "🖊 Pick" } else { "🖊 +" };
+                                if ui.selectable_label(picking, text).on_hover_text(help).clicked() {
+                                    draft.picking = if picking { None } else { Some(pick) };
+                                }
+                                ui.add_space(8.0);
+                            }
+                            match remove {
+                                Some((Pick::Full, k)) => {
+                                    draft.full.remove(k);
+                                }
+                                Some((Pick::Empty, k)) => {
+                                    draft.empty.remove(k);
+                                }
+                                _ => {}
+                            }
+                            ui.add(egui::Slider::new(&mut draft.tolerance, 10.0..=150.0).text("tolerance")).on_hover_text("How far from the colors a pixel may be");
+                        });
+                        // Its next tiers: the bar filled again over itself in other colors.
+                        let mut remove_tier = None;
+                        for k in 0..draft.tiers.len() {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(format!("Tier {}", k + 2));
+                                if draft.tiers[k].is_empty() {
+                                    swatch(ui, None);
+                                }
+                                let mut remove = None;
+                                for (c, color) in draft.tiers[k].iter().enumerate() {
+                                    if color_button(ui, *color).on_hover_text("Click to remove this color").clicked() {
+                                        remove = Some(c);
+                                    }
+                                }
+                                if let Some(c) = remove {
+                                    draft.tiers[k].remove(c);
+                                }
+                                let picking = draft.picking == Some(Pick::Tier(k));
+                                let text = if draft.tiers[k].is_empty() { "🖊 Pick" } else { "🖊 +" };
+                                if ui.selectable_label(picking, text).on_hover_text("Then click the bar's part in this tier's color on the image").clicked() {
+                                    draft.picking = if picking { None } else { Some(Pick::Tier(k)) };
+                                }
+                                if ui.small_button("✕").on_hover_text("Remove this tier").clicked() {
+                                    remove_tier = Some(k);
+                                }
+                            });
+                        }
+                        if let Some(k) = remove_tier {
+                            draft.tiers.remove(k);
+                            draft.picking = None;
+                        }
+                        ui.horizontal_wrapped(|ui| {
+                            let help = "For a bar filled again over itself in another color once full (green up to half, then yellow over \
+                                        the green). Each tier is an equal share of the value: with two, the first color reads 0 to 50%, \
+                                        the second 50 to 100%.";
+                            if ui.small_button("+ Tier").on_hover_text(help).clicked() {
+                                draft.tiers.push(Vec::new());
+                                draft.picking = Some(Pick::Tier(draft.tiers.len() - 1));
+                            }
+                            if !draft.tiers.is_empty() {
+                                let share = 100.0 / (draft.tiers.len() + 1) as f32;
+                                ui.label(muted(format!("Each tier is {share:.0}% of the value; under the rectangle, green is the highest tier's part.")).size(12.0));
+                            }
+                        });
+                        if draft.empty.is_empty() {
+                            ui.label(RichText::new("Pick the empty color too: the bar is then found inside the zone, and reads unknown (nil) when not on screen.").color(WARN).size(12.0));
+                        }
+                    }
+                }
+
+                // The zone's own settings: its shape, and where it was drawn.
+                if can_draw {
+                    let title = match draft.editing.and_then(|i| indicator_zones.iter().position(|&z| z == i)) {
+                        Some(n) => format!("Zone {}", n + 1),
+                        None if indicator_name.is_some() => "New zone".to_owned(),
+                        None => "Zone".to_owned(),
+                    };
+                    section(ui, &title, "where the game shows it", |ui| {
+                        if let Some(i) = draft.editing.filter(|_| indicator_zones.len() > 1) {
+                            if ui.small_button(RichText::new("🗑 Delete this zone").color(DANGER_TEXT)).on_hover_text("Also the Delete key").clicked() {
+                                delete_zone = Some(i);
+                            }
+                        }
+                    });
+                }
+                // A gauge's zone: a rectangle, or a path along a curved bar.
+                if can_draw && draft.kind == IndicatorKind::Gauge {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("Shape");
+                        let rectangle = ui.selectable_label(!draft.traced(), "▭ Rectangle").on_hover_text("For a straight bar");
+                        let path = ui.selectable_label(draft.traced(), "〰 Path").on_hover_text(
+                            "For a curved bar (an arc, a ring): click points along its middle, from the end it fills from to its full end. \
+                             Only the pixels along the path are read, not the scenery around it.",
+                        );
+                        if rectangle.clicked() && draft.traced() {
+                            draft.tracing = false;
+                            draft.drawn_on = Some(file.to_owned());
+                        }
+                        if path.clicked() && !draft.traced() {
+                            draft.tracing = true;
+                            draft.drawn_on = Some(file.to_owned());
+                        }
+                        if draft.traced() {
+                            let height = frame.height.max(1) as f32;
+                            let mut px = (draft.thickness * height).round();
+                            if ui.add(egui::Slider::new(&mut px, 1.0..=20.0).step_by(1.0).text("thickness (px)")).on_hover_text("The bar's thickness on the captures").changed() {
+                                draft.thickness = px / height;
+                                draft.drawn_on = Some(file.to_owned());
+                            }
+                            if draft.path.len() >= 2 && ui.small_button("⇄ Reverse").on_hover_text("It fills from the other end").clicked() {
+                                draft.path.reverse();
+                                draft.drawn_on = Some(file.to_owned());
+                            }
+                            if !draft.path.is_empty() && ui.small_button("Clear").on_hover_text("Click the path again").clicked() {
+                                draft.path.clear();
+                            }
+                        }
+                    });
+                }
+                if can_draw {
+                    let saved = draft.editing.and_then(|i| inputs.zones.get(i));
+                    ui.horizontal_wrapped(|ui| {
+                        if draft.kind == IndicatorKind::Visibility {
+                            ui.add(egui::Slider::new(&mut draft.threshold, 0.1..=0.95).text("threshold"))
+                                .on_hover_text("Similarity with its look (where it was drawn) above which it counts as shown");
+                        }
+                        match saved.and_then(|z| z.capture.as_ref()) {
+                            Some(capture) if capture == file => {
+                                ui.label(RichText::new("📍 drawn on this capture").color(OK).size(12.0));
+                            }
+                            Some(capture) if st.captures.contains_key(capture) && ui.small_button("Show the capture it was drawn on").clicked() => {
+                                show_capture = Some(capture.clone());
                             }
                             _ => {}
                         }
-                    }
-                    draft.picking = None;
-                }
-            } else if can_draw && draft.traced() {
-                // A curved bar's path: a click adds a point at its end, a drag moves one, a right-click removes one.
-                let near = |draft: &Draft, p: Pos2| draft.path.iter().position(|q| (on_image_point(area, *q) - p).length() <= HANDLE + 2.0);
-                if let Some(p) = hover.filter(|_| draft.point.is_none()) {
-                    ui.ctx().set_cursor_icon(if near(draft, p).is_some() { egui::CursorIcon::Grab } else { egui::CursorIcon::Crosshair });
-                }
-                if response.drag_started() {
-                    draft.point = ui.input(|i| i.pointer.press_origin()).or(response.interact_pointer_pos()).and_then(|o| near(draft, o));
-                }
-                if let Some(k) = draft.point {
-                    ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
-                    if let Some(p) = response.interact_pointer_pos().filter(|_| response.dragged()) {
-                        draft.path[k] = to_fraction(p);
-                        draft.drawn_on = Some(file.to_owned());
-                    }
-                }
-                if response.drag_stopped() {
-                    draft.point = None;
-                }
-                if let Some(p) = response.interact_pointer_pos() {
-                    if response.clicked() && near(draft, p).is_none() {
-                        draft.path.push(to_fraction(p));
-                        draft.drawn_on = Some(file.to_owned());
-                    } else if response.secondary_clicked() {
-                        if let Some(k) = near(draft, p) {
-                            draft.path.remove(k);
-                            draft.drawn_on = Some(file.to_owned());
-                        }
-                    }
-                }
-            } else if can_draw {
-                let grab_at = |draft: &Draft, p: Pos2| match draft.rect() {
-                    Some(rect) => Grab::at(on_image(area, rect), p),
-                    // On one of the indicator's zones: picks it and moves it.
-                    None if draft.editing.is_none() && zone_at(p).is_some() => Grab::Move { from: Pos2::ZERO, rect: [0.0; 4] },
-                    None => Grab::New,
-                };
-                if let Some(p) = hover.filter(|_| draft.grab.is_none()) {
-                    ui.ctx().set_cursor_icon(grab_at(draft, p).cursor());
-                }
-                if response.drag_started() {
-                    // Where the button went down: egui only calls it a drag once the pointer moved a little.
-                    if let Some(origin) = ui.input(|i| i.pointer.press_origin()).or(response.interact_pointer_pos()) {
-                        if draft.rect().is_none() && draft.editing.is_none() {
-                            if let Some(i) = zone_at(origin) {
-                                draft.take_zone(i, &inputs.zones[i]);
-                            }
-                        }
-                        let mut grab = grab_at(draft, origin);
-                        if let Some([x, y, w, h]) = draft.rect() {
-                            draft.start = Some(Pos2::new(x, y));
-                            draft.end = Some(Pos2::new(x + w, y + h));
-                        }
-                        match &mut grab {
-                            Grab::New => {
-                                draft.sketching = draft.rect().is_none();
-                                draft.start = Some(to_fraction(origin));
-                                draft.end = draft.start;
-                            }
-                            Grab::Move { from, rect } => {
-                                *from = to_fraction(origin);
-                                *rect = draft.rect().unwrap_or_default();
-                            }
-                            Grab::Resize(_) => {}
-                        }
-                        draft.grab = Some(grab);
-                        draft.drawn_on = Some(file.to_owned());
-                    }
-                }
-                if let Some(grab) = draft.grab {
-                    ui.ctx().set_cursor_icon(grab.cursor());
-                    if let Some(p) = response.interact_pointer_pos().filter(|_| response.dragged()) {
-                        draft.drag_to(to_fraction(p));
-                    }
-                }
-                if response.drag_stopped() {
-                    draft.grab = None;
-                    draft.sketching = false;
-                }
-            }
-            // A click on another indicator's zone, or one of this indicator, opens it (not while clicking a path).
-            if response.clicked() && draft.picking.is_none() && !(can_draw && draft.traced()) {
-                if let Some(p) = response.interact_pointer_pos() {
-                    let hit = inputs
-                        .zones
-                        .iter()
-                        .enumerate()
-                        .filter(|(i, z)| draft.editing != Some(*i) && on_image(area, z.rect).expand(3.0).contains(p))
-                        .min_by(|(_, a), (_, b)| (a.rect[2] * a.rect[3]).total_cmp(&(b.rect[2] * b.rect[3])))
-                        .map(|(i, _)| i);
-                    if let Some(i) = hit {
-                        target = Some(Target::Zone(i, false));
-                    }
-                }
-            }
-            // The other zones; their name and reading when hovered.
-            for (i, zone) in inputs.zones.iter().enumerate() {
-                let same = indicator_name.as_deref() == Some(zone.indicator.as_str());
-                let shown = !st.hide_zones && (same || st.show_others);
-                if draft.editing == Some(i) || !shown {
-                    continue;
-                }
-                let r = on_image(area, zone.rect);
-                let hovered = hover.is_some_and(|p| r.expand(3.0).contains(p)) && draft.grab.is_none();
-                // The indicator's zones stand out.
-                let stroke = match (hovered, same) {
-                    (true, _) => Stroke::new(1.5, TEXT),
-                    (false, true) => Stroke::new(1.5, ACCENT.gamma_multiply(0.8)),
-                    (false, false) => Stroke::new(1.0, MUTED.gamma_multiply(0.7)),
-                };
-                ui.painter().rect_stroke(r, 2.0, stroke, StrokeKind::Outside);
-                if indicators::has_path(zone) {
-                    let points = zone.path.iter().map(|p| on_image_point(area, Pos2::new(p[0], p[1]))).collect();
-                    ui.painter().add(egui::Shape::line(points, stroke));
-                }
-                if hovered {
-                    let (text, color) = reading_here(zone, &inputs.zones, frame);
-                    tag(ui, r.left_top() - Vec2::new(0.0, 4.0), egui::Align2::LEFT_BOTTOM, format!("{} · {text} · click to edit", zone.indicator), color);
-                }
-            }
-            // A path being clicked: its line as thick as it reads, its points (its first one ringed).
-            if draft.traced() && !st.hide_zones {
-                let points: Vec<Pos2> = draft.path.iter().map(|p| on_image_point(area, *p)).collect();
-                if points.len() >= 2 {
-                    let width = (draft.thickness * area.height()).max(1.0);
-                    ui.painter().add(egui::Shape::line(points.clone(), Stroke::new(width, ACCENT.gamma_multiply(0.3))));
-                    ui.painter().add(egui::Shape::line(points.clone(), Stroke::new(1.0, ACCENT)));
-                }
-                for (k, p) in points.iter().enumerate() {
-                    ui.painter().circle_filled(*p, 3.5, ACCENT);
-                    if k == 0 {
-                        ui.painter().circle_stroke(*p, 6.0, Stroke::new(1.5, ACCENT));
-                    }
-                }
-                if let (Some(first), Some(last)) = (points.first(), points.last().filter(|_| points.len() >= 2)) {
-                    tag(ui, *first + Vec2::new(0.0, 8.0), egui::Align2::CENTER_TOP, "0%".to_owned(), ACCENT_TEXT);
-                    tag(ui, *last + Vec2::new(0.0, 8.0), egui::Align2::CENTER_TOP, "100%".to_owned(), ACCENT_TEXT);
-                }
-            }
-            if let Some(rect) = draft.rect().filter(|_| !st.hide_zones) {
-                let r = on_image(area, rect);
-                if draft.traced() {
-                    ui.painter().rect_stroke(r, 1.0, Stroke::new(1.0, ACCENT.gamma_multiply(0.5)), StrokeKind::Outside);
-                } else {
-                    ui.painter().rect_stroke(r, 1.0, Stroke::new(2.0, ACCENT), StrokeKind::Outside);
-                    // Handles at the corners.
-                    for corner in [r.left_top(), r.right_top(), r.left_bottom(), r.right_bottom()] {
-                        ui.painter().rect_filled(Rect::from_center_size(corner, Vec2::splat(5.0)), 1.0, ACCENT);
-                    }
-                }
-                if let Some(zone) = &tested {
-                    let (text, color) = reading_here(zone, &inputs.zones, frame);
-                    let label = if draft.name.is_empty() { text } else { format!("{} · {text}", draft.name) };
-                    tag(ui, r.left_top() - Vec2::new(0.0, 6.0), egui::Align2::LEFT_BOTTOM, label, color);
-                    // The cells it is compared on, when it compares only what stays.
-                    if indicators::has_weights(zone) {
-                        let cell = Vec2::new(r.width() / indicators::REF_WIDTH as f32, r.height() / indicators::REF_HEIGHT as f32);
-                        for (k, &w) in zone.weights.iter().enumerate().filter(|(_, w)| **w > 0) {
-                            let at = r.left_top() + Vec2::new((k % indicators::REF_WIDTH) as f32 * cell.x, (k / indicators::REF_WIDTH) as f32 * cell.y);
-                            ui.painter().rect_filled(Rect::from_min_size(at, cell), 0.0, ACCENT.gamma_multiply(0.15 + 0.35 * w as f32 / 255.0));
-                        }
-                    }
-                    // The bar as found: its full part green, its empty part red, along the indicator.
-                    if zone.kind == IndicatorKind::Gauge && indicators::has_path(zone) && (zone.empty_color.is_some() || indicators::has_look(zone)) {
-                        // Along the path, beside it.
-                        let ((a, b), (c, d)) = indicators::bar_extent(zone, frame);
-                        let points: Vec<Pos2> = zone.path.iter().map(|p| on_image_point(area, Pos2::new(p[0], p[1]))).collect();
-                        let beside = (zone.thickness * area.height()).max(1.0) / 2.0 + 3.0;
-                        ui.painter().add(egui::Shape::line(along(&points, a, b, beside), Stroke::new(3.0, OK)));
-                        ui.painter().add(egui::Shape::line(along(&points, c, d, beside), Stroke::new(3.0, DANGER)));
-                    } else if zone.kind == IndicatorKind::Gauge && (zone.empty_color.is_some() || indicators::has_look(zone)) {
-                        let ((a, b), (c, d)) = indicators::bar_extent(zone, frame);
-                        let horizontal = matches!(zone.direction, Direction::Right | Direction::Left);
-                        let segment = |from: f32, to: f32| {
-                            if horizontal {
-                                Rect::from_min_max(Pos2::new(r.left() + from * r.width(), r.bottom() + 3.0), Pos2::new(r.left() + to * r.width(), r.bottom() + 7.0))
-                            } else {
-                                Rect::from_min_max(Pos2::new(r.right() + 3.0, r.top() + from * r.height()), Pos2::new(r.right() + 7.0, r.top() + to * r.height()))
-                            }
-                        };
-                        ui.painter().rect_filled(segment(a, b), 0.0, OK);
-                        ui.painter().rect_filled(segment(c, d), 0.0, DANGER);
-                    }
-                }
-            }
-        });
-        st.below_image_top = ui.cursor().top();
-        let content = output.content_size;
-        if content.x > 0.0 && content.y > 0.0 {
-            let center = output.state.offset + output.inner_rect.size() / 2.0;
-            st.view_center = Pos2::new((center.x / content.x).clamp(0.0, 1.0), (center.y / content.y).clamp(0.0, 1.0));
-        }
-
-        // Keys, while nothing is typed: Esc leaves (the color picking, the
-        // zone, the indicator), Delete deletes the zone, arrows nudge it, H hides the zones.
-        if ui.ctx().memory(|m| m.focused().is_none()) {
-            let (escape, delete, step) = ui.input(|i| {
-                let px = if i.modifiers.shift { 10.0 } else { 1.0 };
-                let key = |k: egui::Key| if i.key_pressed(k) { px } else { 0.0 };
-                let step = Vec2::new(key(egui::Key::ArrowRight) - key(egui::Key::ArrowLeft), key(egui::Key::ArrowDown) - key(egui::Key::ArrowUp));
-                (i.key_pressed(egui::Key::Escape), i.key_pressed(egui::Key::Delete), step)
-            });
-            if ui.input(|i| i.key_pressed(egui::Key::H)) {
-                st.hide_zones = !st.hide_zones;
-            }
-            if escape {
-                if draft.picking.is_some() {
-                    draft.picking = None;
-                } else if let (Some(_), Some(name)) = (draft.editing, &indicator_name) {
-                    target = Some(Target::Indicator(name.clone()));
-                } else if indicator_name.is_some() {
-                    target = Some(Target::NewIndicator);
-                }
-            }
-            if delete && indicator_zones.len() > 1 {
-                delete_zone = draft.editing;
-            }
-            if step != Vec2::ZERO && draft.rect().is_some() {
-                draft.nudge(Vec2::new(step.x / frame.width.max(1) as f32, step.y / frame.height.max(1) as f32));
-                draft.drawn_on = Some(file.to_owned());
-            }
-        }
-
-        // The rectangle drawn, once the first one is.
-        let drawn = draft.rect().filter(|_| !draft.sketching);
-        let hint = match (draft.picking, drawn) {
-            (None, _) if can_draw && draft.traced() => {
-                "Click along the middle of the bar, from the end it fills from (0%) to its full end (100%); drag a point to move it, \
-                 right-click one to remove it; arrow keys nudge it all."
-            }
-            (Some(Pick::Full), _) => "Click the bar's full part on the image (Esc: stop).",
-            (Some(Pick::Empty), _) => "Click the bar's empty part on the image (Esc: stop).",
-            (Some(Pick::Tier(_)), _) => "Click the bar's part in this tier's color on the image (Esc: stop).",
-            (None, None) if !can_draw => "Choose what the new indicator reads, above, then draw it on the image.",
-            (None, None) if indicator_name.is_some() => "Pick a zone above, or click or drag it on the image; or draw a new zone.",
-            (None, None) if draft.kind == IndicatorKind::Gauge => "Drag a rectangle along the bar, from its empty end to its full end.",
-            (None, None) => "Drag a rectangle around fixed parts of the element (not text that changes).",
-            (None, Some(_)) => "Drag its edges to resize it, its inside to move it; arrow keys nudge it (Shift: 10 px). Esc leaves it.",
-        };
-        ui.label(muted(hint).size(12.0));
-        // The indicator's settings, shared by its zones.
-        if can_draw {
-            section(ui, "Indicator", "all its zones", |_| {});
-            ui.horizontal_wrapped(|ui| {
-                if draft.kind == IndicatorKind::Gauge {
-                    egui::ComboBox::from_id_salt("zone-direction").selected_text(draft.direction.label()).show_ui(ui, |ui| {
-                        for d in Direction::ALL {
-                            ui.selectable_value(&mut draft.direction, d, d.label());
-                        }
                     });
-                }
-                if draft.kind == IndicatorKind::Visibility {
-                    // Several zones: one of them, or all.
-                    if indicator_name.is_some() {
-                        let label = |all: bool| if all { "Shown in all its zones" } else { "Shown in one of its zones" };
-                        egui::ComboBox::from_id_salt("zone-all").selected_text(label(draft.all_zones)).show_ui(ui, |ui| {
-                            ui.selectable_value(&mut draft.all_zones, false, label(false))
-                                .on_hover_text("An element the game shows in several places (a bar in battle and out of it): a zone for each place.");
-                            ui.selectable_value(&mut draft.all_zones, true, label(true))
-                                .on_hover_text("An interface told by several elements together (three button prompts): a zone for each element.");
-                        });
+                    if draft.kind == IndicatorKind::Visibility {
+                        if draft.editing.is_some() && draft.drawn_on.is_some() {
+                            ui.label(muted("Its look is taken again from this capture.").size(12.0));
+                        } else if saved.is_some_and(|z| indicators::measure(z, frame).is_none_or(|m| m < z.threshold)) {
+                            ui.label(
+                                RichText::new("Hidden on this capture: moving it here would take its look from an image without it.").color(WARN).size(12.0),
+                            );
+                        }
                     }
-                    ui.checkbox(&mut draft.compare_colors, "Compare colors").on_hover_text(
-                        "Compares the zones in color rather than in brightness only: an element shown in the same place in \
-                         another color (button prompts red in battles, white out of them) is not taken for it. Leave it off \
-                         for an element whose color changes while it is shown. Set the threshold again after changing it.",
-                    );
-                    let unknown = indicator_zones.iter().map(|&i| &inputs.zones[i]).any(|z| z.reference_colors.is_empty() && !z.capture.as_ref().is_some_and(|f| st.captures.contains_key(f)));
-                    if draft.compare_colors && unknown {
-                        ui.label(RichText::new("A zone's capture is gone: draw it again for its colors.").color(WARN).size(12.0));
+                    if draft.kind == IndicatorKind::Visibility && tested.is_none() {
+                        ui.label(
+                            muted("Once the zone is drawn: whether it shows on each capture, comparing only what stays, and a threshold suggested from the captures.")
+                                .size(12.0),
+                        );
                     }
-                }
-                // The phases this indicator is a sure sign of (saved right away).
-                if let Some(name) = indicator_name.as_ref().filter(|_| !inputs.phases.is_empty()) {
-                    let of: Vec<&PhaseDef> = inputs.phases.iter().filter(|sc| sc.indicators.contains(name)).collect();
-                    let phases: Vec<&str> = of.iter().map(|sc| sc.name.as_str()).collect();
-                    let signs: Vec<String> = of.iter().map(|sc| format!("{}: {}", sc.name, sc.indicators.join(" + "))).collect();
-                    ui.label("Sure sign of").on_hover_text(
-                        "While this indicator is shown, GameViber is sure of the phase, right away (a \
-                         battle menu: battle). A phase can need several indicators shown together (in the Phases tab), \
-                         and an indicator can be part of the signs of several phases: the sign of the most indicators \
-                         shown wins. How long the phase is kept once it hides is set with the phase, in the Phases tab.",
-                    );
-                    let label = if phases.is_empty() { "no phase".to_owned() } else { phases.join(", ") };
-                    let mut toggled = None;
-                    egui::ComboBox::from_id_salt("indicator-phase")
-                        .selected_text(label)
-                        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                        .show_ui(ui, |ui| {
-                            for (k, phase) in inputs.phases.iter().enumerate() {
-                                let mut on = phase.indicators.contains(name);
-                                if ui.checkbox(&mut on, &phase.name).changed() {
-                                    toggled = Some((k, on));
+                    if let Some(zone) = tested.as_ref().filter(|z| z.kind == IndicatorKind::Visibility) {
+                        // Whether it shows on this capture, marked by the player.
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(muted("On this capture:").size(12.0));
+                            if zone.capture.as_deref() == Some(file) {
+                                ui.label(RichText::new("👁 shown (drawn here)").color(OK).size(12.0));
+                            } else {
+                                let (shown, hidden) = (draft.shown_on.iter().any(|f| f == file), draft.hidden_on.iter().any(|f| f == file));
+                                let mark = |ui: &mut egui::Ui, on: bool, text: &str, help: &str| ui.selectable_label(on, RichText::new(text).size(12.0)).on_hover_text(help).clicked();
+                                if mark(ui, shown, "👁 Shown", "It is on this capture, in this zone (click again to unmark)") {
+                                    draft.hidden_on.retain(|f| f != file);
+                                    if shown { draft.shown_on.retain(|f| f != file) } else { draft.shown_on.push(file.to_owned()) }
+                                }
+                                if mark(ui, hidden, "⊘ Not shown", "It is not on this capture (click again to unmark)") {
+                                    draft.shown_on.retain(|f| f != file);
+                                    if hidden { draft.hidden_on.retain(|f| f != file) } else { draft.hidden_on.push(file.to_owned()) }
                                 }
                             }
-                        })
-                        .response
-                        .on_hover_text(signs.join("\n"));
-                    if let Some((k, on)) = toggled {
-                        let mut g = inputs.clone();
-                        let phase = &mut g.phases[k];
-                        if on {
-                            phase.indicators.push(name.clone());
-                            phase.otherwise = false;
-                        } else {
-                            phase.indicators.retain(|z| z != name);
-                        }
-                        linked = Some(g);
-                    }
-                }
-            });
-            if draft.kind == IndicatorKind::Gauge {
-                ui.horizontal(|ui| {
-                    ui.label("Read by");
-                    ui.selectable_value(&mut draft.by_look, false, "Colors");
-                    ui.selectable_value(&mut draft.by_look, true, "Look");
-                });
-                let why = if draft.by_look {
-                    "Look: for bars a color does not describe — a gradient (red to green), segments, hearts, stripes. \
-                     GameViber learns how the bar looks full and empty along its length, from captures; the bar must stay in place."
-                } else {
-                    "Colors: for a bar of one color over an empty part of another (filled again in another color once \
-                     full: add a tier). It may move inside the zone. For a gradient, segments, hearts or stripes, choose Look."
-                };
-                ui.label(muted(why).size(12.0));
-            }
-            if draft.kind == IndicatorKind::Gauge {
-                read_when(ui, draft, inputs);
-            }
-            if draft.kind == IndicatorKind::Gauge && draft.by_look {
-                let rect = draft.rect();
-                let fits = |draft: &Draft| draft.look.as_ref().is_some_and(|l| l.fits(draft));
-                let moved = rect.is_some() && draft.look.is_some() && !fits(draft);
-                let seen = draft.look.as_ref().filter(|_| fits(draft)).map_or(0.0, |l| indicators::empty_seen(&Zone { empty_look: l.empty.clone(), ..Zone::default() }));
-                // 1. The rectangle.
-                step(ui, 1, rect.is_some(), |ui| {
-                    if draft.traced() {
-                        ui.label("Click the path along the middle of the bar's track, from its empty end to its full end, its thickness \
-                                  that of the track. Leave out its icon and its frame.");
-                    } else {
-                        ui.label("Draw the rectangle exactly on the bar's track, from its empty end to its full end, and set which way it fills. \
-                                  Leave out its icon (a heart before the bar) and its frame.");
-                    }
-                });
-                // 2. The bar full.
-                step(ui, 2, fits(draft), |ui| {
-                    ui.label("Open a capture where the bar is");
-                    ui.label(RichText::new("full").strong());
-                    ui.label("(left column), then");
-                    if ui.add_enabled(rect.is_some(), egui::Button::new("Use it as the full bar")).clicked() {
-                        if let Some(shape) = draft.shape() {
-                            // Empty parts already seen stay when the zone did not change.
-                            let empty = draft.look.as_ref().filter(|_| fits(draft)).map(|l| l.empty.clone()).unwrap_or_default();
-                            let full = indicators::look(&shape, frame);
-                            draft.look = Some(Look { zone: shape, full, empty });
-                        }
-                    }
-                    if moved {
-                        ui.label(RichText::new("The zone moved or turned since: do it again.").color(WARN));
-                    }
-                });
-                // 3. The bar empty.
-                step(ui, 3, seen >= 0.95, |ui| {
-                    ui.label("Open captures where the bar is");
-                    ui.label(RichText::new("low or empty").strong());
-                    ui.label(", then");
-                    let help = "The part of the bar past its end on this capture is how it looks empty. Add captures at \
-                                different levels until all of it is seen.";
-                    if ui.add_enabled(fits(draft), egui::Button::new("Add its empty part")).on_hover_text(help).clicked() {
-                        if let (Some(shape), Some(look)) = (draft.shape(), draft.look.as_mut()) {
-                            let zone = Zone {
-                                tolerance: draft.tolerance,
-                                full_look: look.full.clone(),
-                                empty_look: look.empty.clone(),
-                                ..shape
-                            };
-                            look.empty = indicators::add_empty_look(&zone, frame);
-                        }
-                    }
-                    ui.label(muted(format!("{:.0}% of the bar seen empty", seen * 100.0)));
-                    if seen > 0.0 && ui.small_button("Clear").on_hover_text("Forget how it looks empty").clicked() {
-                        if let Some(look) = draft.look.as_mut() {
-                            look.empty.clear();
-                        }
-                    }
-                });
-                if fits(draft) && seen < 0.95 {
-                    ui.label(
-                        muted("Recommended: until all of it is seen empty, the reading is rougher, and a bar gone from the screen \
-                               (a menu) reads empty instead of unknown (nil).")
-                        .size(12.0),
-                    );
-                }
-                // 4. Checking it.
-                step(ui, 4, false, |ui| {
-                    ui.label("Check it: under the rectangle, green is the part read as full, red as empty; each capture on the left shows its reading.");
-                });
-                ui.horizontal(|ui| {
-                    ui.add(egui::Slider::new(&mut draft.tolerance, 10.0..=150.0).text("tolerance")).on_hover_text(
-                        "How different from its looks the bar may be. Raise it when the bar shines or blinks, lower it when \
-                         its empty part reads full.",
-                    );
-                });
-            } else if draft.kind == IndicatorKind::Gauge {
-                ui.horizontal_wrapped(|ui| {
-                    let mut remove = None;
-                    let first = if draft.tiers.is_empty() { "Full" } else { "Tier 1" };
-                    for (pick, label) in [(Pick::Full, first), (Pick::Empty, "Empty")] {
-                        let colors = if pick == Pick::Full { &draft.full } else { &draft.empty };
-                        ui.label(label);
-                        if colors.is_empty() {
-                            swatch(ui, None);
-                        }
-                        for (k, color) in colors.iter().enumerate() {
-                            if color_button(ui, *color).on_hover_text("Click to remove this color").clicked() {
-                                remove = Some((pick, k));
+                            if !zone.shown_on.is_empty() || !zone.hidden_on.is_empty() {
+                                ui.label(muted(format!("marked: {} shown, {} not", zone.shown_on.len() + zone.capture.is_some() as usize, zone.hidden_on.len())).size(12.0));
+                            }
+                        });
+                        // Where it is shown and where not: the captures marked so (the
+                        // one it was drawn on shown); none marked, those of its phase and of the others.
+                        let marked = !zone.shown_on.is_empty() || !zone.hidden_on.is_empty();
+                        let shown_on = |c: &package::Capture| -> Option<bool> {
+                            if marked {
+                                if zone.capture.as_ref() == Some(&c.file) || zone.shown_on.contains(&c.file) {
+                                    Some(true)
+                                } else {
+                                    zone.hidden_on.contains(&c.file).then_some(false)
+                                }
+                            } else {
+                                let phase = zone.phase.as_ref()?;
+                                (!c.phase.is_empty()).then(|| c.phase == *phase)
+                            }
+                        };
+                        let (mut shown_in, mut others) = (Vec::new(), Vec::new());
+                        let (mut shown_frames, mut other_frames) = (Vec::new(), Vec::new());
+                        for capture in &inputs.captures {
+                            let (Some(shown), Some((capture_frame, _))) = (shown_on(capture), st.captures.get(&capture.file)) else { continue };
+                            let m = indicators::measure(zone, capture_frame).unwrap_or(-1.0);
+                            if shown {
+                                shown_in.push(m);
+                                shown_frames.push(&**capture_frame);
+                            } else {
+                                others.push(m);
+                                other_frames.push(&**capture_frame);
                             }
                         }
-                        let picking = draft.picking == Some(pick);
-                        let help = "Then click on the image. Pick several shades when the bar blinks or changes color. With both \
-                                    colors the bar is found inside the zone (green and red under it): the zone may be larger than \
-                                    the bar, and a bar gone from the screen reads unknown (nil).";
-                        let text = if colors.is_empty() { "🖊 Pick" } else { "🖊 +" };
-                        if ui.selectable_label(picking, text).on_hover_text(help).clicked() {
-                            draft.picking = if picking { None } else { Some(pick) };
-                        }
-                        ui.add_space(8.0);
-                    }
-                    match remove {
-                        Some((Pick::Full, k)) => {
-                            draft.full.remove(k);
-                        }
-                        Some((Pick::Empty, k)) => {
-                            draft.empty.remove(k);
-                        }
-                        _ => {}
-                    }
-                    ui.add(egui::Slider::new(&mut draft.tolerance, 10.0..=150.0).text("tolerance")).on_hover_text("How far from the colors a pixel may be");
-                });
-                // Its next tiers: the bar filled again over itself in other colors.
-                let mut remove_tier = None;
-                for k in 0..draft.tiers.len() {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.label(format!("Tier {}", k + 2));
-                        if draft.tiers[k].is_empty() {
-                            swatch(ui, None);
-                        }
-                        let mut remove = None;
-                        for (c, color) in draft.tiers[k].iter().enumerate() {
-                            if color_button(ui, *color).on_hover_text("Click to remove this color").clicked() {
-                                remove = Some(c);
+                        let (shown_text, hidden_text) = match (&zone.phase, marked) {
+                            (Some(phase), false) => (format!("the {phase} captures"), "those of the other phases".to_owned()),
+                            _ => ("the captures marked shown".to_owned(), "those marked not shown".to_owned()),
+                        };
+                        // Its cells that tell, for an element whose inside changes (a minimap).
+                        ui.horizontal_wrapped(|ui| {
+                            let help = format!(
+                                "For an element whose inside changes (a minimap's map): compares only the parts of the zone that stay the \
+                                 same on {shown_text} and differ on {hidden_text} (its frame). Needs {} captures where it is shown or more, \
+                                 the more varied the better. When it shows in some phases and not others, or a phase mixes screens \
+                                 (cutscenes and menus), mark the captures: 👁 Shown or ⊘ Not shown, above.",
+                                indicators::WEIGHT_CAPTURES
+                            );
+                            if indicators::has_weights(zone) {
+                                let share = indicators::weighted_share(zone) * 100.0;
+                                ui.label(RichText::new(format!("✔ compared on what stays ({share:.0}% of the zone)")).color(OK).size(12.0)).on_hover_text(&help);
+                                if ui.small_button("Learn again").on_hover_text(format!("From the captures as they are marked now\n\n{help}")).clicked() {
+                                    draft.weights = indicators::learn_weights(zone, &shown_frames, &other_frames).map(|w| (zone.rect, w)).or(draft.weights.take());
+                                }
+                                if ui.small_button("Compare it all").on_hover_text("Compare the whole zone again").clicked() {
+                                    draft.weights = None;
+                                }
+                            } else if shown_frames.len() < indicators::WEIGHT_CAPTURES {
+                                let text = format!("Its inside changes? Mark {} captures or more where it is shown to compare only what stays.", indicators::WEIGHT_CAPTURES);
+                                ui.label(muted(text).size(12.0)).on_hover_text(&help);
+                            } else if ui.button("Compare only what stays").on_hover_text(&help).clicked() {
+                                draft.weights = indicators::learn_weights(zone, &shown_frames, &other_frames).map(|w| (zone.rect, w));
                             }
-                        }
-                        if let Some(c) = remove {
-                            draft.tiers[k].remove(c);
-                        }
-                        let picking = draft.picking == Some(Pick::Tier(k));
-                        let text = if draft.tiers[k].is_empty() { "🖊 Pick" } else { "🖊 +" };
-                        if ui.selectable_label(picking, text).on_hover_text("Then click the bar's part in this tier's color on the image").clicked() {
-                            draft.picking = if picking { None } else { Some(Pick::Tier(k)) };
-                        }
-                        if ui.small_button("✕").on_hover_text("Remove this tier").clicked() {
-                            remove_tier = Some(k);
-                        }
-                    });
-                }
-                if let Some(k) = remove_tier {
-                    draft.tiers.remove(k);
-                    draft.picking = None;
-                }
-                ui.horizontal_wrapped(|ui| {
-                    let help = "For a bar filled again over itself in another color once full (green up to half, then yellow over \
-                                the green). Each tier is an equal share of the value: with two, the first color reads 0 to 50%, \
-                                the second 50 to 100%.";
-                    if ui.small_button("+ Tier").on_hover_text(help).clicked() {
-                        draft.tiers.push(Vec::new());
-                        draft.picking = Some(Pick::Tier(draft.tiers.len() - 1));
+                        });
+                        // A threshold telling where it is shown from where it is not.
+                        ui.horizontal(|ui| match indicators::suggest_threshold(&shown_in, &others) {
+                            Some(t) if (t - draft.threshold).abs() > 0.01 => {
+                                if ui.button(format!("Use threshold {t:.2}")).on_hover_text(format!("Tells {shown_text} from {hidden_text}")).clicked() {
+                                    draft.threshold = t;
+                                }
+                            }
+                            Some(_) => {
+                                ui.label(RichText::new(format!("✔ tells {shown_text} from {hidden_text}")).color(OK).size(12.0));
+                            }
+                            None if !shown_in.is_empty() && !others.is_empty() => {
+                                ui.label(RichText::new("No threshold tells them apart: draw it tighter, on fixed parts, or compare only what stays").color(WARN).size(12.0));
+                            }
+                            None => {}
+                        });
                     }
-                    if !draft.tiers.is_empty() {
-                        let share = 100.0 / (draft.tiers.len() + 1) as f32;
-                        ui.label(muted(format!("Each tier is {share:.0}% of the value; under the rectangle, green is the highest tier's part.")).size(12.0));
-                    }
-                });
-                if draft.empty.is_empty() {
-                    ui.label(RichText::new("Pick the empty color too: the bar is then found inside the zone, and reads unknown (nil) when not on screen.").color(WARN).size(12.0));
                 }
-            }
-        }
 
-        // The zone's own settings: its shape, and where it was drawn.
-        if can_draw && (drawn.is_some() || draft.kind == IndicatorKind::Gauge) {
-            let title = match draft.editing.and_then(|i| indicator_zones.iter().position(|&z| z == i)) {
-                Some(n) => format!("Zone {}", n + 1),
-                None if indicator_name.is_some() => "New zone".to_owned(),
-                None => "Zone".to_owned(),
-            };
-            section(ui, &title, "where the game shows it", |ui| {
-                if let Some(i) = draft.editing.filter(|_| indicator_zones.len() > 1) {
-                    if ui.small_button(RichText::new("🗑 Delete this zone").color(DANGER_TEXT)).on_hover_text("Also the Delete key").clicked() {
-                        delete_zone = Some(i);
-                    }
-                }
+                ui.cursor().top() - st.below_image_top
             });
-        }
-        // A gauge's zone: a rectangle, or a path along a curved bar.
-        if can_draw && draft.kind == IndicatorKind::Gauge {
-            ui.horizontal_wrapped(|ui| {
-                ui.label("Shape");
-                let rectangle = ui.selectable_label(!draft.traced(), "▭ Rectangle").on_hover_text("For a straight bar");
-                let path = ui.selectable_label(draft.traced(), "〰 Path").on_hover_text(
-                    "For a curved bar (an arc, a ring): click points along its middle, from the end it fills from to its full end. \
-                     Only the pixels along the path are read, not the scenery around it.",
-                );
-                if rectangle.clicked() && draft.traced() {
-                    draft.tracing = false;
-                    draft.drawn_on = Some(file.to_owned());
-                }
-                if path.clicked() && !draft.traced() {
-                    draft.tracing = true;
-                    draft.drawn_on = Some(file.to_owned());
-                }
-                if draft.traced() {
-                    let height = frame.height.max(1) as f32;
-                    let mut px = (draft.thickness * height).round();
-                    if ui.add(egui::Slider::new(&mut px, 1.0..=20.0).step_by(1.0).text("thickness (px)")).on_hover_text("The bar's thickness on the captures").changed() {
-                        draft.thickness = px / height;
-                        draft.drawn_on = Some(file.to_owned());
-                    }
-                    if draft.path.len() >= 2 && ui.small_button("⇄ Reverse").on_hover_text("It fills from the other end").clicked() {
-                        draft.path.reverse();
-                        draft.drawn_on = Some(file.to_owned());
-                    }
-                    if !draft.path.is_empty() && ui.small_button("Clear").on_hover_text("Click the path again").clicked() {
-                        draft.path.clear();
-                    }
-                }
-            });
-        }
-        if drawn.is_some() {
-            let saved = draft.editing.and_then(|i| inputs.zones.get(i));
-            ui.horizontal_wrapped(|ui| {
-                if draft.kind == IndicatorKind::Visibility {
-                    ui.add(egui::Slider::new(&mut draft.threshold, 0.1..=0.95).text("threshold"))
-                        .on_hover_text("Similarity with its look (where it was drawn) above which it counts as shown");
-                }
-                match saved.and_then(|z| z.capture.as_ref()) {
-                    Some(capture) if capture == file => {
-                        ui.label(RichText::new("📍 drawn on this capture").color(OK).size(12.0));
-                    }
-                    Some(capture) if st.captures.contains_key(capture) && ui.small_button("Show the capture it was drawn on").clicked() => {
-                        show_capture = Some(capture.clone());
-                    }
-                    _ => {}
-                }
-            });
-            if draft.kind == IndicatorKind::Visibility {
-                if draft.editing.is_some() && draft.drawn_on.is_some() {
-                    ui.label(muted("Its look is taken again from this capture.").size(12.0));
-                } else if saved.is_some_and(|z| indicators::measure(z, frame).is_none_or(|m| m < z.threshold)) {
-                    ui.label(
-                        RichText::new("Hidden on this capture: moving it here would take its look from an image without it.").color(WARN).size(12.0),
-                    );
-                }
-            }
-            if let Some(zone) = tested.as_ref().filter(|z| z.kind == IndicatorKind::Visibility) {
-                // Whether it shows on this capture, marked by the player.
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(muted("On this capture:").size(12.0));
-                    if zone.capture.as_deref() == Some(file) {
-                        ui.label(RichText::new("👁 shown (drawn here)").color(OK).size(12.0));
-                    } else {
-                        let (shown, hidden) = (draft.shown_on.iter().any(|f| f == file), draft.hidden_on.iter().any(|f| f == file));
-                        let mark = |ui: &mut egui::Ui, on: bool, text: &str, help: &str| ui.selectable_label(on, RichText::new(text).size(12.0)).on_hover_text(help).clicked();
-                        if mark(ui, shown, "👁 Shown", "It is on this capture, in this zone (click again to unmark)") {
-                            draft.hidden_on.retain(|f| f != file);
-                            if shown { draft.shown_on.retain(|f| f != file) } else { draft.shown_on.push(file.to_owned()) }
-                        }
-                        if mark(ui, hidden, "⊘ Not shown", "It is not on this capture (click again to unmark)") {
-                            draft.shown_on.retain(|f| f != file);
-                            if hidden { draft.hidden_on.retain(|f| f != file) } else { draft.hidden_on.push(file.to_owned()) }
-                        }
-                    }
-                    if !zone.shown_on.is_empty() || !zone.hidden_on.is_empty() {
-                        ui.label(muted(format!("marked: {} shown, {} not", zone.shown_on.len() + zone.capture.is_some() as usize, zone.hidden_on.len())).size(12.0));
-                    }
-                });
-                // Where it is shown and where not: the captures marked so (the
-                // one it was drawn on shown); none marked, those of its phase and of the others.
-                let marked = !zone.shown_on.is_empty() || !zone.hidden_on.is_empty();
-                let shown_on = |c: &package::Capture| -> Option<bool> {
-                    if marked {
-                        if zone.capture.as_ref() == Some(&c.file) || zone.shown_on.contains(&c.file) {
-                            Some(true)
-                        } else {
-                            zone.hidden_on.contains(&c.file).then_some(false)
-                        }
-                    } else {
-                        let phase = zone.phase.as_ref()?;
-                        (!c.phase.is_empty()).then(|| c.phase == *phase)
-                    }
-                };
-                let (mut shown_in, mut others) = (Vec::new(), Vec::new());
-                let (mut shown_frames, mut other_frames) = (Vec::new(), Vec::new());
-                for capture in &inputs.captures {
-                    let (Some(shown), Some((capture_frame, _))) = (shown_on(capture), st.captures.get(&capture.file)) else { continue };
-                    let m = indicators::measure(zone, capture_frame).unwrap_or(-1.0);
-                    if shown {
-                        shown_in.push(m);
-                        shown_frames.push(&**capture_frame);
-                    } else {
-                        others.push(m);
-                        other_frames.push(&**capture_frame);
-                    }
-                }
-                let (shown_text, hidden_text) = match (&zone.phase, marked) {
-                    (Some(phase), false) => (format!("the {phase} captures"), "those of the other phases".to_owned()),
-                    _ => ("the captures marked shown".to_owned(), "those marked not shown".to_owned()),
-                };
-                // Its cells that tell, for an element whose inside changes (a minimap).
-                ui.horizontal_wrapped(|ui| {
-                    let help = format!(
-                        "For an element whose inside changes (a minimap's map): compares only the parts of the zone that stay the \
-                         same on {shown_text} and differ on {hidden_text} (its frame). Needs {} captures where it is shown or more, \
-                         the more varied the better. When it shows in some phases and not others, or a phase mixes screens \
-                         (cutscenes and menus), mark the captures: 👁 Shown or ⊘ Not shown, above.",
-                        indicators::WEIGHT_CAPTURES
-                    );
-                    if indicators::has_weights(zone) {
-                        let share = indicators::weighted_share(zone) * 100.0;
-                        ui.label(RichText::new(format!("✔ compared on what stays ({share:.0}% of the zone)")).color(OK).size(12.0)).on_hover_text(&help);
-                        if ui.small_button("Learn again").on_hover_text(format!("From the captures as they are marked now\n\n{help}")).clicked() {
-                            draft.weights = indicators::learn_weights(zone, &shown_frames, &other_frames).map(|w| (zone.rect, w)).or(draft.weights.take());
-                        }
-                        if ui.small_button("Compare it all").on_hover_text("Compare the whole zone again").clicked() {
-                            draft.weights = None;
-                        }
-                    } else if shown_frames.len() < indicators::WEIGHT_CAPTURES {
-                        let text = format!("Its inside changes? Mark {} captures or more where it is shown to compare only what stays.", indicators::WEIGHT_CAPTURES);
-                        ui.label(muted(text).size(12.0)).on_hover_text(&help);
-                    } else if ui.button("Compare only what stays").on_hover_text(&help).clicked() {
-                        draft.weights = indicators::learn_weights(zone, &shown_frames, &other_frames).map(|w| (zone.rect, w));
-                    }
-                });
-                // A threshold telling where it is shown from where it is not.
-                ui.horizontal(|ui| match indicators::suggest_threshold(&shown_in, &others) {
-                    Some(t) if (t - draft.threshold).abs() > 0.01 => {
-                        if ui.button(format!("Use threshold {t:.2}")).on_hover_text(format!("Tells {shown_text} from {hidden_text}")).clicked() {
-                            draft.threshold = t;
-                        }
-                    }
-                    Some(_) => {
-                        ui.label(RichText::new(format!("✔ tells {shown_text} from {hidden_text}")).color(OK).size(12.0));
-                    }
-                    None if !shown_in.is_empty() && !others.is_empty() => {
-                        ui.label(RichText::new("No threshold tells them apart: draw it tighter, on fixed parts, or compare only what stays").color(WARN).size(12.0));
-                    }
-                    None => {}
-                });
-            }
-        }
-
+        let below = scrolled.inner;
         // Where things stand, and the actions.
         ui.add_space(2.0);
+        let actions_top = ui.cursor().top();
         ui.horizontal_wrapped(|ui| {
             match problem {
-                Some(problem) if dirty || drawn.is_some() => {
+                Some(problem) if dirty || draft.rect().is_some() => {
                     ui.label(RichText::new(problem).color(WARN).size(12.5));
                 }
                 _ if dirty => {
@@ -2244,6 +2258,13 @@ impl App {
                 }
             });
         });
+        // What the image leaves room for next frame, kept while a zone is
+        // dragged so that the image does not change under the pointer.
+        let actions_height = ui.cursor().top() - actions_top;
+        if draft.grab.is_none() && draft.point.is_none() && ((below - st.editor_below).abs() > 0.5 || (actions_height - st.actions_height).abs() > 0.5) {
+            (st.editor_below, st.actions_height) = (below, actions_height);
+            ui.ctx().request_repaint();
+        }
 
         if let Some(capture) = show_capture {
             st.selected = Some(capture);
