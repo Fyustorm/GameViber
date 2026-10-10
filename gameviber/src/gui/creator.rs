@@ -1,12 +1,11 @@
 //! Creator page: the active mode's workspace, in tabs that can be visited in
 //! any order — the AI assistant (the game's phases proposed, the script
-//! written), its phases, captures and indicators, values from other programs,
-//! its script (started from a built-in mode, or written by hand), sessions and a simulator to try it without the game,
-//! logs — and how a mode works one click away. What the mode does while
+//! written), its phases, sessions (recorded playing through them, the images
+//! to draw indicators on picked in their replay), captures and indicators, values from other programs,
+//! its script (started from a built-in mode, or written by hand), logs — and
+//! how a mode works one click away. What the mode does while
 //! playing is on the Live page.
 
-use std::collections::BTreeSet;
-use std::time::{Duration, Instant};
 
 use eframe::egui::text::LayoutJob;
 use eframe::egui::{self, Margin, RichText};
@@ -18,9 +17,7 @@ use super::theme::*;
 use super::{main_of, App, Page, Route};
 use crate::config::{self, ModeEntry, NEW_MODE_TEMPLATE};
 use crate::engine::{Command, Shared};
-use crate::gamepad::BUTTONS;
 
-const SIM_HIT: Duration = Duration::from_millis(300);
 /// From this width the header's buttons sit on its first line, on the right.
 const WIDE_HEADER: f32 = 860.0;
 
@@ -31,6 +28,8 @@ pub(super) enum Tab {
     #[default]
     Assistant,
     Phases,
+    /// Recorded sessions, replayed: where captures are best picked.
+    Sessions,
     /// Captures and indicators.
     Screen,
     /// Values from other programs.
@@ -38,7 +37,6 @@ pub(super) enum Tab {
     /// Motions for strokers.
     Funscripts,
     Script,
-    Sessions,
     Logs,
 }
 
@@ -76,31 +74,6 @@ pub(super) struct Editor {
     goto: Option<usize>,
 }
 
-/// Fake game rumble and button presses, to test modes without a game.
-#[derive(Default)]
-pub struct Simulator {
-    strong: f64,
-    weak: f64,
-    hit_until: Option<Instant>,
-    sent: (f64, f64),
-    held: BTreeSet<&'static str>,
-}
-
-impl Simulator {
-    /// The rumble command to send when the simulated levels changed (sliders or an expiring hit).
-    pub fn update(&mut self) -> Option<Command> {
-        let hit = self.hit_until.is_some_and(|t| Instant::now() < t);
-        if !hit {
-            self.hit_until = None;
-        }
-        let wanted = if hit { (1.0, 1.0) } else { (self.strong, self.weak) };
-        (wanted != self.sent).then(|| {
-            self.sent = wanted;
-            Command::SimRumble { strong: wanted.0, weak: wanted.1 }
-        })
-    }
-}
-
 #[derive(Default)]
 pub struct State {
     pub(super) tab: Tab,
@@ -109,7 +82,6 @@ pub struct State {
     /// How the Script tab gets the script; None: as fits the script.
     pub(super) way: Option<Way>,
     pub(super) editor: Editor,
-    pub sim: Simulator,
     only_mode_logs: bool,
     pub(super) sessions: super::sessions::State,
 }
@@ -266,6 +238,14 @@ impl App {
         } else {
             ("loads", OK)
         };
+        // Recordings of the game: once its phases are set up, the way to its captures.
+        let game = mode_game(s);
+        let recorded = game.map_or(0, |g| super::sessions::game_recordings(s, &g.name).count());
+        let sessions = match (s.recording, recorded) {
+            (Some(secs), _) => (format!("⏺ {:.0} s", secs), DANGER_TEXT),
+            (None, 0) if game.is_some() => ("record one".to_owned(), if phases > 0 { GAME } else { MUTED }),
+            (None, n) => (count(n, ""), MUTED),
+        };
         ui.add_space(8.0);
         let asked = inputs.is_some_and(|i| i.wishes.is_some());
         let assistant = if asked || !is_draft(&self.creator.editor.text) { ("", MUTED) } else { ("start here", GAME) };
@@ -286,12 +266,12 @@ impl App {
             tab(ui, Tab::Assistant, "✨ AI assistant", assistant.0.to_owned(), assistant.1);
             ui.label(muted("|"));
             tab(ui, Tab::Phases, "Phases", count(phases, "recommended"), if phases > 0 { OK } else { GAME });
+            tab(ui, Tab::Sessions, "Sessions", sessions.0, sessions.1);
             tab(ui, Tab::Screen, "Captures & indicators", count(screen, "optional"), MUTED);
             tab(ui, Tab::Programs, "Other programs", count(programs, "optional"), MUTED);
             tab(ui, Tab::Funscripts, "Funscripts", count(s.funscripts.len(), "optional"), MUTED);
             tab(ui, Tab::Script, "Script", script.0.to_owned(), script.1);
             ui.label(muted("|"));
-            tab(ui, Tab::Sessions, "Sessions", String::new(), MUTED);
             tab(ui, Tab::Logs, "Logs", String::new(), MUTED);
         });
         ui.separator();
@@ -401,41 +381,6 @@ impl App {
         }
         if duplicate {
             self.duplicate_mode(&editing.id);
-        }
-    }
-
-    pub(super) fn simulator(&mut self, ui: &mut egui::Ui) {
-        let sim = &mut self.creator.sim;
-        ui.label(muted("Fake game rumble and button presses.").size(12.5));
-        ui.spacing_mut().slider_width = 260.0;
-        ui.add(egui::Slider::new(&mut sim.strong, 0.0..=1.0).text("strong motor"));
-        ui.add(egui::Slider::new(&mut sim.weak, 0.0..=1.0).text("weak motor"));
-        ui.horizontal(|ui| {
-            if ui.button("Hit").on_hover_text("0.3 s at full strength").clicked() {
-                sim.hit_until = Some(Instant::now() + SIM_HIT);
-            }
-            if ui.button("Reset").clicked() {
-                sim.strong = 0.0;
-                sim.weak = 0.0;
-            }
-        });
-        ui.label(muted("Buttons (hold with the mouse):").size(12.5));
-        let mut changes = Vec::new();
-        ui.horizontal_wrapped(|ui| {
-            for name in BUTTONS {
-                let down = ui.button(name).is_pointer_button_down_on();
-                if down != sim.held.contains(name) {
-                    if down {
-                        sim.held.insert(name);
-                    } else {
-                        sim.held.remove(name);
-                    }
-                    changes.push(Command::SimButton { name: name.to_owned(), pressed: down });
-                }
-            }
-        });
-        for command in changes {
-            self.send(command);
         }
     }
 

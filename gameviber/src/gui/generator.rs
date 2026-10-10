@@ -10,6 +10,7 @@
 use eframe::egui::{self, Margin, RichText};
 
 use super::creator::{is_draft, with_name, Tab, Way};
+use super::sessions::{clock, game_recordings, situations};
 use super::theme::*;
 use super::{App, Page, Route};
 use crate::config::{self, ModeEntry};
@@ -103,16 +104,18 @@ impl App {
         self.take_dropped_file(ui.ctx());
         let inputs = s.mode_inputs.clone().unwrap_or_default();
         let analysis = self.wishes(s, &inputs).phases_first;
-        progress_bar(ui, s, &inputs, analysis, draft);
+        progress_bar(ui, s, game, &inputs, analysis, draft);
         ui.add_space(10.0);
         self.wishes_card(ui, s, &inputs);
         ui.add_space(10.0);
         if analysis {
             self.analysis_card(ui, s, game, &inputs);
             ui.add_space(10.0);
-            self.rest_card(ui, &inputs);
+            self.record_card(ui, s, game, &inputs);
             ui.add_space(10.0);
-            self.script_card(ui, s, game, &inputs, draft, 3, Step::AfterAnalysis);
+            self.rest_card(ui, s, game, &inputs);
+            ui.add_space(10.0);
+            self.script_card(ui, s, game, &inputs, draft, 4, Step::AfterAnalysis);
         } else {
             self.script_card(ui, s, game, &inputs, draft, 1, Step::Script);
         }
@@ -327,20 +330,57 @@ impl App {
         }
     }
 
-    /// Step 2 of an analysis: the indicators it proposed, to draw; done once drawn.
-    fn rest_card(&mut self, ui: &mut egui::Ui, inputs: &Inputs) {
-        let to_draw: Vec<_> = inputs.to_draw().cloned().collect();
+    /// Step 2 of an analysis: a session recorded playing through the phases,
+    /// its images to draw the indicators on; done once the game has one (or
+    /// captures got otherwise).
+    fn record_card(&mut self, ui: &mut egui::Ui, s: &Shared, game: &Game, inputs: &Inputs) {
+        let latest = game_recordings(s, &game.name).next().cloned();
+        let mut watch = false;
         card(PANEL).inner_margin(Margin::symmetric(18, 14)).show(ui, |ui| {
             ui.set_width(ui.available_width());
-            step(ui, 2, "Draw the indicators, take captures", inputs.analysed && to_draw.is_empty());
+            step(ui, 2, "Record a session", recorded(s, game, inputs));
+            ui.label(muted(format!(
+                "Record yourself playing {} until you have been through every situation, then stop: its replay gives the \
+                 images to draw the indicators on, and shows whether the phases are recognized at the right moments.",
+                game.name
+            )));
+            ui.add_space(4.0);
+            situations(ui, inputs);
+            ui.add_space(4.0);
+            self.record_controls(ui, s);
+            if let Some(info) = &latest {
+                ui.add_space(4.0);
+                ui.horizontal_wrapped(|ui| {
+                    watch = ui.add(primary("▶ Watch the last one")).clicked();
+                    ui.label(muted(format!("{} · {} · {} images", info.header.started, clock(info.header.duration), info.header.frames)).size(12.0));
+                });
+            }
+            ui.label(muted("Images of the game are recorded while it shows the in-game overlay. Captures taken in game or from files do too (Captures & indicators).").size(12.0));
+        });
+        if let Some(info) = latest.filter(|_| watch) {
+            self.watch(info);
+        }
+    }
+
+    /// Step 3 of an analysis: images picked in the session, the indicators it proposed drawn on them; done once drawn.
+    fn rest_card(&mut self, ui: &mut egui::Ui, s: &Shared, game: &Game, inputs: &Inputs) {
+        let to_draw: Vec<_> = inputs.to_draw().cloned().collect();
+        let latest = game_recordings(s, &game.name).next().cloned();
+        let mut watch = false;
+        card(PANEL).inner_margin(Margin::symmetric(18, 14)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            step(ui, 3, "Pick images, draw the indicators", inputs.analysed && to_draw.is_empty());
             if !inputs.analysed {
                 ui.label(muted("Once the analysis is set up: the indicators it proposes are listed here."));
                 return;
             }
+            ui.label(muted(
+                "In the session's replay, pick a few images of each phase (P on the image shown, A to add them) under their \
+                 phase, and images where each indicator shows; draw the indicators on them in Captures & indicators.",
+            ));
             if to_draw.is_empty() {
                 ui.label(muted("Every indicator proposed is drawn. A few captures of each phase make the image recognition more reliable."));
             } else {
-                ui.label(muted("Take a capture where each one shows, then draw it on it."));
                 for planned in &to_draw {
                     ui.horizontal_wrapped(|ui| {
                         ui.label(RichText::new(&planned.name).monospace());
@@ -350,7 +390,10 @@ impl App {
                 }
             }
             ui.horizontal(|ui| {
-                if ui.link("Captures & indicators ›").on_hover_text("Take a few captures of each phase, and draw the indicators on them").clicked() {
+                if latest.is_some() {
+                    watch = ui.button("▶ Watch the session").on_hover_text("Pick its images; check the phases it shows follow the game").clicked();
+                }
+                if ui.link("Captures & indicators ›").on_hover_text("Draw the indicators on the captures").clicked() {
                     self.creator.tab = Tab::Screen;
                 }
                 if ui.link("Phases ›").clicked() {
@@ -358,6 +401,9 @@ impl App {
                 }
             });
         });
+        if let Some(info) = latest.filter(|_| watch) {
+            self.watch(info);
+        }
     }
 
     /// The script's step: its request and the answer pasted back, checked before
@@ -380,7 +426,7 @@ impl App {
                 match (&s.mode.error, &self.generator.note) {
                     (Some(_), _) => ui.label(RichText::new("The script does not load: see Logs, or ask again.").color(DANGER_TEXT)),
                     (None, Some(note)) => ui.label(RichText::new(note).color(OK)),
-                    (None, None) => ui.label(muted("The mode has its script: play to try it, or use the simulator (Sessions).")),
+                    (None, None) => ui.label(muted("The mode has its script: play to try it, or watch a recorded session (Sessions).")),
                 };
                 return;
             }
@@ -436,7 +482,7 @@ impl App {
                     if self.replace_script(s, &script, draft) {
                         self.generator.answer.clear();
                         self.generator.redo_script = None;
-                        self.generator.note = Some("✔ The script loads and runs now: play to try it, or use the simulator (Sessions).".to_owned());
+                        self.generator.note = Some("✔ The script loads and runs now: play to try it, or watch a recorded session (Sessions).".to_owned());
                     }
                 }
                 Err(e) => {
@@ -616,6 +662,11 @@ fn summary(w: &Wishes, instructions: &str) -> String {
     parts.join(" · ")
 }
 
+/// The game has a recording with its images, or captures got otherwise.
+fn recorded(s: &Shared, game: &Game, inputs: &Inputs) -> bool {
+    game_recordings(s, &game.name).next().is_some() || !inputs.captures.is_empty()
+}
+
 /// A step's number (✔ once done) and title.
 fn step(ui: &mut egui::Ui, n: usize, text: &str, done: bool) {
     ui.horizontal(|ui| {
@@ -632,7 +683,7 @@ fn step(ui: &mut egui::Ui, n: usize, text: &str, done: bool) {
 }
 
 /// Where the player is: each step, done, current or to come, and what it gave.
-fn progress_bar(ui: &mut egui::Ui, s: &Shared, inputs: &Inputs, analysis: bool, draft: bool) {
+fn progress_bar(ui: &mut egui::Ui, s: &Shared, game: &Game, inputs: &Inputs, analysis: bool, draft: bool) {
     let to_draw = inputs.to_draw().count();
     let script = match (draft, &s.mode.error) {
         (true, _) => (false, "to paste".to_owned()),
@@ -649,8 +700,16 @@ fn progress_bar(ui: &mut egui::Ui, s: &Shared, inputs: &Inputs, analysis: bool, 
             (true, 0) => "all drawn".to_owned(),
             (true, n) => format!("{n} indicator(s) to draw"),
         };
+        let sessions = game_recordings(s, &game.name).count();
+        let session = match (s.recording, sessions) {
+            (Some(secs), _) => format!("recording {:.0} s", secs),
+            (None, 0) if !inputs.captures.is_empty() => "captures taken".to_owned(),
+            (None, 0) => "to play".to_owned(),
+            (None, n) => format!("{n} recorded"),
+        };
         vec![
             ("Phases and indicators", inputs.analysed, phases),
+            ("Record a session", recorded(s, game, inputs), session),
             ("Draw the indicators", inputs.analysed && to_draw == 0, drawn),
             ("Script", script.0, script.1),
         ]

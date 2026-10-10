@@ -17,7 +17,7 @@ intensity and **STOP ALL**.
 | **Toys** | The connection to Intiface Central (disconnect, reconnect, start or stop its scan for toys, its address), the toys it found, a test buzz, and how each toy plays: which mode channels, weakest and strongest intensity, response curve, and for strokers what they can do (see Strokers). |
 | **Setup** | What does not depend on the game: the gamepad and how it is captured, the shortcuts (panic stop, mark a moment, capture the screen) on the gamepad or the keyboard, the in-game overlay, the sound listened to by default, other programs. |
 | **Settings** | The language AI assistants answer in, the requests sent to them (editable). |
-| **Creator** | The workspace of the mode being played, in tabs to visit in any order: the **✨ AI assistant** (what you ask of it: the game's phases and indicators proposed, the script written), **Phases**, **Captures & indicators**, **Other programs** (see A mode's inputs), its **Script** (started from a built-in mode, or written by hand, with hot reload), **Sessions** (recorded sessions to watch again like a video, replayed into the mode as it is now (its script, settings, phases, captures and indicators: change one, in any tab, and the player offers to apply it: it pauses while the session is replayed again, then plays on; indicators drawn or moved since the recording are read from its images) — the game's images, its rumble, your buttons, the phases, what the mode's inputs said and what it sent to the toys, at any moment — while the toys play it; images to add to the captures, picked with the keyboard too (**⌨ Shortcuts** under the timeline lists the keys); one indicator to follow in the timeline, chosen under it (a gauge as a line, a visibility as the background where it is shown); and a simulator to try the mode without the game). A recorded session keeps 1 to 10 images of the game a second (2 by default, about 250 MB an hour, written to disk as they come; a recording stops after an hour); the last 2 minutes, always kept in memory, keep 2 a second and **Logs**. The mode runs while you edit it: every change can be felt at once, and **Live ›** shows what it does; **? How a mode works** shows how the parts fit. |
+| **Creator** | The workspace of the mode being played, in tabs to visit in any order: the **✨ AI assistant** (what you ask of it: the game's phases and indicators proposed, the script written), **Phases**, **Sessions** (the easiest way to get captures: record yourself playing through every phase and situation, then work from its replay; recorded sessions to watch again like a video, replayed into the mode as it is now (its script, settings, phases, captures and indicators: change one, in any tab, and the player offers to apply it: it pauses while the session is replayed again, then plays on; indicators drawn or moved since the recording are read from its images) — the game's images, its rumble, your buttons, the phases, what the mode's inputs said and what it sent to the toys, at any moment — while the toys play it; images to add to the captures, picked with the keyboard too (**⌨ Shortcuts** under the timeline lists the keys); one indicator to follow in the timeline, chosen under it (a gauge as a line, a visibility as the background where it is shown)), **Captures & indicators**, **Other programs** (see A mode's inputs), its **Script** (started from a built-in mode, or written by hand, with hot reload) and **Logs**. A recorded session keeps 1 to 10 images of the game a second (2 by default, about 250 MB an hour, written to disk as they come; a recording stops after an hour); the last 2 minutes, always kept in memory, keep 2 a second. The mode runs while you edit it: every change can be felt at once, and **Live ›** shows what it does; **? How a mode works** shows how the parts fit. |
 
 A mode's own page shows its explanation, its main
 settings, all its settings and named **presets**, and its **variants**: other scripts of the same mode
@@ -44,7 +44,7 @@ button when it stops following; GameViber keeps a margin. Or set them on its car
 
 When the mode sends several feelings, **Length** on its card can give its stroke
 length to one of them: the feelings it plays then set only their speed. Where it
-is sent shows on its card, on Live, in the simulator and in the session player,
+is sent shows on its card, on Live and in the session player,
 to check a mode without watching the toy. A mode can also say what the strokes
 should be, add single strokes for its big moments (`stroke()` and `thrust()`), and
 play funscripts on an event: add `.funscript` files to it in Creator › **Funscripts**
@@ -96,8 +96,12 @@ The best experience is a mode written for the game you play. In the
    mode: **Change** in the Creator's **✨ AI assistant** tab ticks it again.
 3. **Open the Creator**: its **✨ AI assistant** tab shows the request to copy
    and paste into a new conversation, and the steps: its answer pasted
-   under its request sets the phases up, then the indicators to draw, then the
-   script request and its answer. The bar on top shows where you are; a step
+   under its request sets the phases up; then **Record a session**: play
+   until you have been through every phase and situation (full and low
+   health, dying, menus, story, bosses, exploring), and stop; then pick
+   images of each in its replay and draw the indicators on them (the replay
+   also shows whether the phases are recognized at the right moments); then
+   the script request and its answer. The bar on top shows where you are; a step
    done folds up, and **↺ Ask again** opens it again. An assistant with web search can
    check the game's default controls. Indicators or values from other
    programs make it an advanced request, which uses them. You can also write
@@ -199,12 +203,13 @@ to set some up.
   image's flashes, for a menu whose clicks and music the mode would take for
   hits: exact when the phase has a sure sign (an indicator), else a few seconds
   late.
-- **Captures**: while the game shows a battle, a dialogue..., hold **BACK + LS**
+- **Captures**: the easiest is **From a session**: record a session playing
+  through every phase, then pick images in its replay (**P** on the image
+  shown, **A** to add them under a phase). Or, while the game shows a battle, a dialogue..., hold **BACK + LS**
   on the gamepad (or press the capture key, Ctrl + Alt + C suggested). The image
   is captured without leaving the game. A few captures per phase make the
   recognition much more reliable. Needs the in-game overlay. Screenshots on
-  your computer can be added too (**From files...** under the captures), and
-  images of a recorded session (**From a session**).
+  your computer can be added too (**From files...** under the captures).
 - **Indicators**: on a capture, draw a zone (a rectangle) around something
   shown only at times (the battle interface: a visibility indicator) or around
   a bar (health: a gauge). Modes read whether it is shown, or how full the bar

@@ -472,54 +472,17 @@ impl App {
 
     /// Recording sessions, and the recordings.
     fn recordings(&mut self, ui: &mut egui::Ui, s: &Shared) {
-        card(PANEL).inner_margin(Margin::symmetric(16, 12)).show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.label(RichText::new("Without the game").strong().size(15.0));
-            self.simulator(ui);
-            super::toys::strokers(ui, s);
-        });
-        ui.add_space(10.0);
         ui.label(muted(
-            "Record the game's rumble, your buttons, what the mode's inputs say and images of the game while you \
-             play, then watch it again here, replayed into the mode as it is now: tune it on a real fight without \
-             playing it again, and pick images for its captures.",
+            "The easiest way to show a mode your game: record a session and play through every situation it should \
+             tell apart, then stop and watch it here, replayed into the mode as it is now. Pick images for its captures \
+             and draw its indicators on them, check the phases are recognized at the right moments, and tune it on a \
+             real fight without playing it again.",
         ));
         ui.add_space(4.0);
-        if let Some(secs) = s.recording {
-            ui.horizontal(|ui| {
-                ui.label(RichText::new(format!("⏺ Recording {}", clock(secs))).strong().color(DANGER_TEXT));
-                if ui.add(primary("⏹ Stop and save")).clicked() {
-                    self.send(Command::StopRecording);
-                }
-            });
-        } else {
-            ui.horizontal(|ui| {
-                if ui.add(primary("⏺ Record a session")).on_hover_text("Start it, then play the game").clicked() {
-                    self.send(Command::StartRecording);
-                }
-                let mut images = s.settings.recording_images;
-                egui::ComboBox::from_id_salt("recording-images").width(80.0).selected_text(format!("{images} images/s")).show_ui(ui, |ui| {
-                    for rate in FRAME_RATES {
-                        ui.selectable_value(&mut images, rate, format!("{rate} images/s"));
-                    }
-                });
-                if images != s.settings.recording_images {
-                    self.send(Command::SetRecordingImages(images));
-                }
-                ui.label(muted(format!("about {} an hour", bytes(images * IMAGE_BYTES * 3600.0))).size(12.0))
-                    .on_hover_text("Images are written to disk as they come, never kept in memory; a recording stops after an hour");
-                let save = egui::Button::new(format!("Save the last {:.0} min", RECENT_SECS / 60.0));
-                if ui.add(save).on_hover_text("GameViber always keeps the last minutes of play in memory").clicked() {
-                    self.send(Command::SaveRecent);
-                }
-            });
-            if !s.settings.screen {
-                ui.label(
-                    muted("Images of the game are recorded while it shows the in-game overlay; the last minutes keep them only while modes see the image.")
-                        .size(12.0),
-                );
-            }
+        if let Some(inputs) = s.mode_inputs.as_ref() {
+            situations(ui, inputs);
         }
+        self.record_controls(ui, s);
         ui.separator();
         eyebrow(ui, "Recordings");
         if s.recordings.is_empty() {
@@ -566,9 +529,54 @@ impl App {
             self.send(command);
         }
         if let Some(info) = open {
-            let indicator = self.creator.sessions.indicator.clone();
-            self.creator.sessions.player = Some(Player::open(info, indicator));
+            self.watch(info);
         }
+    }
+
+    /// Starting and stopping a recording, and how many images it keeps.
+    pub(super) fn record_controls(&mut self, ui: &mut egui::Ui, s: &Shared) {
+        if let Some(secs) = s.recording {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(format!("⏺ Recording {}", clock(secs))).strong().color(DANGER_TEXT));
+                if ui.add(primary("⏹ Stop and save")).clicked() {
+                    self.send(Command::StopRecording);
+                }
+            });
+            return;
+        }
+        ui.horizontal(|ui| {
+            if ui.add(primary("⏺ Record a session")).on_hover_text("Start it, then play the game").clicked() {
+                self.send(Command::StartRecording);
+            }
+            let mut images = s.settings.recording_images;
+            egui::ComboBox::from_id_salt("recording-images").width(80.0).selected_text(format!("{images} images/s")).show_ui(ui, |ui| {
+                for rate in FRAME_RATES {
+                    ui.selectable_value(&mut images, rate, format!("{rate} images/s"));
+                }
+            });
+            if images != s.settings.recording_images {
+                self.send(Command::SetRecordingImages(images));
+            }
+            ui.label(muted(format!("about {} an hour", bytes(images * IMAGE_BYTES * 3600.0))).size(12.0))
+                .on_hover_text("Images are written to disk as they come, never kept in memory; a recording stops after an hour");
+            let save = egui::Button::new(format!("Save the last {:.0} min", RECENT_SECS / 60.0));
+            if ui.add(save).on_hover_text("GameViber always keeps the last minutes of play in memory").clicked() {
+                self.send(Command::SaveRecent);
+            }
+        });
+        if !s.settings.screen {
+            ui.label(
+                muted("Images of the game are recorded while it shows the in-game overlay; the last minutes keep them only while modes see the image.")
+                    .size(12.0),
+            );
+        }
+    }
+
+    /// Opens a recording in the player, on the Sessions tab.
+    pub(super) fn watch(&mut self, info: RecordingInfo) {
+        let indicator = self.creator.sessions.indicator.clone();
+        self.creator.sessions.player = Some(Player::open(info, indicator));
+        self.creator.tab = super::creator::Tab::Sessions;
     }
 
     /// Every frame, whatever the page shown: replays the recording open into
@@ -1450,6 +1458,33 @@ fn legend(ui: &mut egui::Ui, color: egui::Color32, text: &str) {
     ui.label(muted(text).size(11.0));
 }
 
+/// The recordings of `game` with images of it, newest first.
+pub(super) fn game_recordings<'a>(s: &'a Shared, game: &'a str) -> impl Iterator<Item = &'a RecordingInfo> {
+    s.recordings.iter().filter(move |r| r.header.frames > 0 && r.header.game.as_deref() == Some(game))
+}
+
+/// The situations a recording should go through: each phase, each indicator shown and not, full and low.
+pub(super) fn situations(ui: &mut egui::Ui, inputs: &Inputs) {
+    let phases: Vec<&str> = inputs.phases.iter().map(|p| p.name.as_str()).collect();
+    let mut indicators: Vec<&str> = inputs.planned.iter().map(|p| p.name.as_str()).collect();
+    for zone in &inputs.zones {
+        if !indicators.contains(&zone.indicator.as_str()) {
+            indicators.push(&zone.indicator);
+        }
+    }
+    let mut lines = Vec::new();
+    if !phases.is_empty() {
+        lines.push(format!("every phase: {}", phases.join(", ")));
+    }
+    if !indicators.is_empty() {
+        lines.push(format!("every indicator shown and hidden, gauges full and low: {}", indicators.join(", ")));
+    }
+    if lines.is_empty() {
+        lines.push("fights, exploring, cutscenes, menus, full and low health, dying".to_owned());
+    }
+    ui.label(RichText::new(format!("Go through {}.", lines.join("; "))).size(12.5));
+}
+
 /// The game a recording comes from, else its mode.
 fn title(info: &RecordingInfo) -> &str {
     info.header.game.as_deref().unwrap_or(&info.header.mode)
@@ -1465,7 +1500,7 @@ fn bytes(n: f64) -> String {
 }
 
 /// "1:05"
-fn clock(secs: f64) -> String {
+pub(super) fn clock(secs: f64) -> String {
     let secs = secs.max(0.0) as u64;
     format!("{}:{:02}", secs / 60, secs % 60)
 }

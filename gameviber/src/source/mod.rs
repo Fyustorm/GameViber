@@ -71,7 +71,7 @@ pub type EventSender = UnboundedSender<SourceEvent>;
 /// Whether a source is capturing, in terms the GUI can show to players.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub enum SourceHealth {
-    /// No source selected (simulator only).
+    /// No source selected.
     #[default]
     Off,
     /// Starting up, e.g. waiting for the user's password.

@@ -62,7 +62,7 @@ pub enum SourceChoice {
     Proxy,
     /// Passive observation through an eBPF probe (root, through the helper; games see the real gamepad)
     Ebpf,
-    /// No interception, simulator only
+    /// No interception
     None,
 }
 

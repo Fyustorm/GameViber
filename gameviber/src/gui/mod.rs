@@ -5,7 +5,7 @@
 //! for a game), Toys (with Intiface Central), Setup (gamepad, combos, overlay,
 //! default sound, other programs: what does not depend on the game) and
 //! Creator (the active mode's workspace: its phases, captures, indicators,
-//! values from other programs and script, sessions and a simulator).
+//! values from other programs and script, sessions).
 //! Players get a mode written by an AI assistant from the Creator, and get
 //! one fixed when it does not feel right; modes are shared with their game
 //! as files.
@@ -300,7 +300,6 @@ impl eframe::App for App {
             self.stats_consent(ui.ctx(), &s);
         }
         self.run_player(ui.ctx(), &s);
-        self.update_simulated_rumble();
         // The overlay copies the game's image while it is looked at, even when modes do not see it.
         let watching = self.page == Page::Creator && self.creator.watches_screen();
         if watching != self.watching_screen {
@@ -431,13 +430,6 @@ impl App {
             }
         });
         ui.add_space(4.0);
-    }
-
-    /// Sends the simulated rumble whenever it changes (sliders or an expiring hit).
-    fn update_simulated_rumble(&mut self) {
-        if let Some(command) = self.creator.sim.update() {
-            self.send(command);
-        }
     }
 }
 

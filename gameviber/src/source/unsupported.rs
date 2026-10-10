@@ -1,4 +1,4 @@
-//! Systems without a source backend yet: only the simulator and replays drive modes.
+//! Systems without a source backend yet: only replays drive modes.
 
 use super::{ActiveSource, EventSender, HideOption, Method, SourceOptions};
 use crate::config::SourceChoice;

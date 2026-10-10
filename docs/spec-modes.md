@@ -14,7 +14,7 @@ Modes are created and edited on the fly from the built-in editor, without recomp
 - A single active mode at a time.
 - A single intercepted gamepad.
 - Scalar Buttplug outputs: `Vibrate`, `Rotate`, `Oscillate`.
-- Hot reload, parameters adjustable from the GUI, debug graphs, simulator.
+- Hot reload, parameters adjustable from the GUI, debug graphs, recorded sessions replayed into the mode.
 - What GameViber makes of the game's sound and image: phases, impacts, intensity (§6.3);
   their raw measures (§6.4); indicators read on the screen, example images and values
   other programs send (external inputs), set up by the player for a mode (§6.5).

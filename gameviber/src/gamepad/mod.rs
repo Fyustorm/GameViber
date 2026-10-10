@@ -298,7 +298,7 @@ impl PadState {
         self.button(button_name(code)?, pressed, time)
     }
 
-    /// Named button (from a key code or the simulator). Returns an event on state change.
+    /// Named button (from a key code). Returns an event on state change.
     pub fn button(&mut self, name: &'static str, pressed: bool, time: f64) -> Option<ButtonEvent> {
         let changed = if pressed { self.held.insert(name) } else { self.held.remove(name) };
         if !changed {

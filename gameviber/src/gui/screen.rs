@@ -985,7 +985,7 @@ impl App {
             let height = (ui.available_height() - self.screen.captures_below).max(60.0);
             if inputs.captures.is_empty() {
                 ui.allocate_ui(Vec2::new(ui.available_width(), height), |ui| {
-                    ui.label(muted("No capture yet: capture each phase a few times, in different spots."));
+                    ui.label(muted("No capture yet: record a session playing through every phase, then pick a few images of each in its replay (From a session)."));
                 });
             } else {
                 egui::ScrollArea::vertical().id_salt("captures").auto_shrink([false, false]).max_height(height).min_scrolled_height(height).show(ui, |ui| {
@@ -1129,8 +1129,14 @@ impl App {
                     });
                 }
             });
+            ui.horizontal_wrapped(|ui| {
+                if ui.add(primary("🎞 From a session")).on_hover_text("Pick images in the replay of a session you recorded playing through every phase").clicked() {
+                    self.creator.show_sessions();
+                }
+                ui.label(muted("the easiest: record one playing through every phase").size(12.0));
+            });
             if playing {
-                ui.label(muted(format!("Hold {} in game, or from here:", crate::gamepad::combo_text(&s.settings.capture_combo))).size(12.5))
+                ui.label(muted(format!("Or hold {} in game, or from here:", crate::gamepad::combo_text(&s.settings.capture_combo))).size(12.5))
                     .on_hover_text("Captured in game, the image keeps the game's gamepad prompts");
                 if view.frame.is_none() {
                     let hint = if s.overlay_unavailable {
@@ -1143,7 +1149,7 @@ impl App {
                     ui.label(RichText::new(hint).color(WARN).size(12.0));
                 }
             } else {
-                ui.label(muted(format!("Images of the game from your computer (screenshots), or play {} to capture it.", game.name)).size(12.5));
+                ui.label(muted(format!("Or images of the game from your computer (screenshots), or play {} to capture it.", game.name)).size(12.5));
             }
             let phases = inputs.phase_names();
             let current = s.capture_phase.clone();
@@ -1168,9 +1174,6 @@ impl App {
                     .add_enabled(!busy, egui::Button::new(if busy { "Importing..." } else { "🖼 From files..." }))
                     .on_hover_text("Add images from your computer: screenshots of the game (PNG, JPEG, WebP, BMP)")
                     .clicked();
-                if ui.button("🎞 From a session").on_hover_text("Pick images among those recorded with your play sessions").clicked() {
-                    self.creator.show_sessions();
-                }
             });
             if let Some((ok, message)) = &self.screen.import_message {
                 ui.label(RichText::new(message).color(if *ok { OK } else { WARN }).size(12.0));

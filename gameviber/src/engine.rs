@@ -15,7 +15,7 @@ use tokio::sync::mpsc;
 use crate::audio::{self, Audio, AudioHit, AudioLevels, Embedding};
 pub use crate::config::SourceChoice;
 use crate::config::{self, AudioSource, ModeEntry, OverlaySettings, Presets, Settings, ToySettings};
-use crate::gamepad::{self, PadState, BUTTONS};
+use crate::gamepad::{self, PadState};
 use crate::external::{self, ExternalInputs, ExternalView};
 use crate::intiface::{self, Intiface, IntifaceStatus, Toy, ToyOutput, ToyOutputs};
 use crate::mode::rumble_events::RumbleLevels;
@@ -140,8 +140,6 @@ pub enum Command {
     /// First-launch setup done (or skipped).
     SetOnboarded(bool),
     SetOverlay(OverlaySettings),
-    SimRumble { strong: f64, weak: f64 },
-    SimButton { name: String, pressed: bool },
     /// Records the game's rumble and the player's inputs until `StopRecording`.
     StartRecording,
     StopRecording,
@@ -292,7 +290,7 @@ pub struct Shared {
     pub pad: Option<PadInfo>,
     /// What players should know about their gamepads (one that cannot vibrate...).
     pub source_hint: Option<String>,
-    /// Engine time of the last rumble from a game (simulator excluded).
+    /// Engine time of the last rumble from a game.
     pub last_rumble: Option<f64>,
     /// A real gamepad button or axis was received.
     pub buttons_seen: bool,
@@ -371,7 +369,7 @@ impl Source {
         match self {
             Source::Running(s) => s.status(),
             Source::Failed(e) => format!("source error: {e}"),
-            Source::None => "no source (simulator only)".into(),
+            Source::None => "no source".into(),
         }
     }
 
@@ -428,7 +426,6 @@ struct Engine {
     source_tx: EventSender,
     sources: Sources,
     states: HashMap<String, RumbleState>,
-    sim: RumbleLevels,
     pad: PadState,
     events: Vec<ModeEvent>,
     mode: Option<ActiveMode>,
@@ -555,7 +552,6 @@ async fn run_async(
         source_tx,
         sources: Sources::new(),
         states: HashMap::new(),
-        sim: RumbleLevels::default(),
         pad: PadState::default(),
         events: Vec::new(),
         mode: None,
@@ -947,17 +943,6 @@ impl Engine {
             Command::SetOnboarded(done) => {
                 self.settings.onboarded = done;
                 self.settings.save();
-            }
-            Command::SimRumble { strong, weak } => {
-                self.sim = RumbleLevels { strong: strong.clamp(0.0, 1.0), weak: weak.clamp(0.0, 1.0) }
-            }
-            Command::SimButton { name, pressed } => {
-                let time = self.time();
-                if let Some(name) = BUTTONS.iter().find(|b| **b == name) {
-                    if let Some(b) = self.pad.button(name, pressed, time) {
-                        self.events.push(ModeEvent::Button(b));
-                    }
-                }
             }
             Command::StartRecording => self.start_recording(),
             Command::StopRecording => self.stop_recording(),
@@ -1447,8 +1432,7 @@ impl Engine {
         if strong > 0 || weak > 0 {
             self.last_rumble = Some(time);
         }
-        let game = RumbleLevels { strong: strong as f64 / 65535.0, weak: weak as f64 / 65535.0 };
-        let levels = RumbleLevels { strong: game.strong.max(self.sim.strong), weak: game.weak.max(self.sim.weak) };
+        let levels = RumbleLevels { strong: strong as f64 / 65535.0, weak: weak as f64 / 65535.0 };
         let buttons: Vec<_> =
             self.events.iter().filter_map(|e| if let ModeEvent::Button(b) = e { Some(b.clone()) } else { None }).collect();
         let senses = Senses { audio: audio_levels, screen: self.screen_levels };

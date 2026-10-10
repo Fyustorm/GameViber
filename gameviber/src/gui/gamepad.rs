@@ -224,7 +224,7 @@ pub(super) fn capture_methods(ui: &mut egui::Ui, s: &Shared) -> Option<Command> 
         background.on_hover_cursor(egui::CursorIcon::PointingHand);
     });
     if source == SourceChoice::None {
-        ui.label(muted("Capture is off: only the simulator in Creator drives the mode."));
+        ui.label(muted("Capture is off: only replayed sessions drive the mode."));
     }
     command
 }
