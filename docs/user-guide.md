@@ -361,7 +361,7 @@ how you installed GameViber:
 
 Then **Restart GameViber now**: toys stop during the restart, and running
 games keep the old overlay until you restart them. Your settings, games and
-modes are kept. While GameViber is an alpha, alpha versions are offered too.
+modes are kept. While GameViber is in alpha or beta, those versions are offered too.
 
 ## Where things are saved
 

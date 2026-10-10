@@ -23,7 +23,7 @@ interface Release {
   assets: Asset[]
 }
 
-// The newest release, alpha ones included (only those exist yet), as the app's updater sees them.
+// The newest release, prereleases included (alpha, beta: only those exist yet), as the app's updater sees them.
 const release = useLoad(async () => {
   const response = await fetch(`https://api.github.com/repos/${REPOSITORY}/releases?per_page=10`)
   if (!response.ok) throw new Error(response.statusText)

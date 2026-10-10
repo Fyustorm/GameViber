@@ -193,11 +193,11 @@ On GitHub, the **CI** workflow runs the tests on Linux and Windows and the
 Windows check; the **Packages** workflow builds the Linux packages on Ubuntu
 24.04 (glibc 2.39, the oldest the prebuilt ONNX Runtime links with) and the
 Windows files on Windows, and lists them all in `SHA256SUMS`. To release, set the version in
-`gameviber/Cargo.toml` and `gameviber-overlay/Cargo.toml` (`0.1.0-alpha.1`
-while in alpha), then push a matching tag:
+`gameviber/Cargo.toml` and `gameviber-overlay/Cargo.toml` (`0.1.0-beta.1`
+while in beta), then push a matching tag:
 
 ```sh
-git tag v0.1.0-alpha.1 && git push origin v0.1.0-alpha.1
+git tag v0.1.0-beta.1 && git push origin v0.1.0-beta.1
 ```
 
 The packages are attached to a draft release, published by hand.

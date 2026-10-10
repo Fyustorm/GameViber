@@ -133,8 +133,8 @@ Run `cargo test` after any change to the runtime or to a mode.
   `packaging/third-party/licenses.sh`. The Settings
   page shows the GPL notice (`gui/settings.rs`, `about`).
 - **Releases**: the version is in `gameviber/Cargo.toml` (and
-  `gameviber-overlay/Cargo.toml`), semver with a prerelease while in alpha
-  (`0.1.0-alpha.1`); tag `v<version>` to build the packages. Nothing is
+  `gameviber-overlay/Cargo.toml`), semver with a prerelease while in alpha or beta
+  (`0.1.0-alpha.1`, `0.1.0-beta.1`); tag `v<version>` to build the packages. Nothing is
   published to stores or package repositories yet.
 - **Privileges**: the GUI and the main process must never run as root. Root-only work
   (eBPF probe, hiding gamepad nodes) goes through the helper, whose scope must stay
