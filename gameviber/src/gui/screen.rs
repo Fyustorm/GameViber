@@ -1439,7 +1439,7 @@ impl App {
             ui.label(muted(format!("Capture: {}", phase.unwrap_or(file))).size(12.5)).on_hover_text("Pick another in the left column");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.add(egui::Slider::new(&mut draft.zoom, 1.0..=MAX_ZOOM).logarithmic(true).suffix("x").show_value(true))
-                    .on_hover_text("Also Ctrl + wheel over the image");
+                    .on_hover_text("Also Ctrl + wheel over the image; drag with the middle button to move around");
                 ui.label(muted("Zoom"));
                 ui.add_space(8.0);
                 ui.toggle_value(&mut st.hide_zones, "Hide zones").on_hover_text("Hide every zone drawn, to see the image (also H)");
@@ -1492,7 +1492,12 @@ impl App {
             }
             // The zone of the indicator selected under a point, when none is being edited.
             let zone_at = |p: Pos2| indicator_zones.iter().copied().find(|&i| on_image(area, inputs.zones[i].rect).expand(3.0).contains(p));
-            if let Some(pick) = draft.picking {
+            // Dragging with the middle button moves the view (nothing else).
+            if response.dragged_by(egui::PointerButton::Middle) {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                let delta = ui.input(|i| i.pointer.delta());
+                st.scroll_to = Some(ui.clip_rect().min - outer.min - delta);
+            } else if let Some(pick) = draft.picking {
                 if hover.is_some() {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
                 }
