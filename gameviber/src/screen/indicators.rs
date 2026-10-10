@@ -1,8 +1,9 @@
 //! Indicators of the game's screen set up for a mode (`package::Zone`), each
 //! read in one or more zones: whether an element is shown (its look compared
-//! with a reference taken when the zone was drawn; for an element whose inside
-//! changes, a minimap, only on the parts of it that stay the same, learned
-//! from captures) and how full a gauge's bar
+//! with a reference taken when the zone was drawn, in brightness or in color;
+//! for an element whose inside changes, a minimap, only on the parts of it
+//! that stay the same, learned from captures; in one of its zones or in all of
+//! them) and how full a gauge's bar
 //! is (the share of it in the bar's full color rather than its empty one;
 //! with both colors known, the bar is the longest run of them in the zone,
 //! wherever it is; a bar filled again over itself in other colors reads
@@ -18,12 +19,13 @@ use super::Frame;
 use crate::mode::IndicatorValue;
 use crate::package::{Condition, Direction, Zone, IndicatorKind};
 
-/// References are compared on a grayscale grid of this size.
+/// References are compared on a grid of this size.
 pub const REF_WIDTH: usize = 32;
 pub const REF_HEIGHT: usize = 24;
 /// A shown element is hidden once its similarity drops this far below the threshold.
 const HYSTERESIS: f32 = 0.05;
-/// A cell matches the reference less the further its luma is from it, not at all from this far.
+/// A cell matches the reference less the further its luma is from it, not at
+/// all from this far (its color: as far as a gray this much lighter).
 const CELL_MATCH: f32 = 32.0;
 /// Cells mattering less than this (0..1) are left out of a zone's weights.
 const LEAST_WEIGHT: f32 = 0.2;
@@ -64,21 +66,33 @@ fn pixel(frame: &Frame, x: usize, y: usize) -> [u8; 3] {
     [frame.pixels[i], frame.pixels[i + 1], frame.pixels[i + 2]]
 }
 
-/// The zone's look: luma averaged on a `REF_WIDTH` x `REF_HEIGHT` grid.
+/// The zone's look: luma averaged on a `REF_WIDTH` x `REF_HEIGHT` grid...
 pub fn reference(frame: &Frame, rect: [f32; 4]) -> Vec<u8> {
-    gray(frame, rect).iter().map(|v| v.round().clamp(0.0, 255.0) as u8).collect()
+    cells(frame, rect).into_iter().map(|c| luma(c).round().clamp(0.0, 255.0) as u8).collect()
 }
 
-fn gray(frame: &Frame, rect: [f32; 4]) -> Vec<f32> {
+/// ...and its colors (`Zone::reference_colors`).
+pub fn reference_colors(frame: &Frame, rect: [f32; 4]) -> Vec<[u8; 3]> {
+    cells(frame, rect).into_iter().map(|c| c.map(|v| v.round().clamp(0.0, 255.0) as u8)).collect()
+}
+
+fn luma([r, g, b]: [f32; 3]) -> f32 {
+    0.299 * r + 0.587 * g + 0.114 * b
+}
+
+/// The zone's colors averaged on the reference's grid.
+fn cells(frame: &Frame, rect: [f32; 4]) -> Vec<[f32; 3]> {
     let (x0, y0, x1, y1) = bounds(frame, rect);
-    let mut sums = vec![0f32; REF_WIDTH * REF_HEIGHT];
+    let mut sums = vec![[0f32; 3]; REF_WIDTH * REF_HEIGHT];
     let mut counts = vec![0u32; REF_WIDTH * REF_HEIGHT];
     for y in y0..y1 {
         let gy = (y - y0) * REF_HEIGHT / (y1 - y0);
         for x in x0..x1 {
             let gx = (x - x0) * REF_WIDTH / (x1 - x0);
-            let [r, g, b] = pixel(frame, x, y);
-            sums[gy * REF_WIDTH + gx] += 0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32;
+            let cell = &mut sums[gy * REF_WIDTH + gx];
+            for (sum, v) in cell.iter_mut().zip(pixel(frame, x, y)) {
+                *sum += v as f32;
+            }
             counts[gy * REF_WIDTH + gx] += 1;
         }
     }
@@ -88,11 +102,17 @@ fn gray(frame: &Frame, rect: [f32; 4]) -> Vec<f32> {
             sums[i] = sums[i - 1];
             counts[i] = 1;
         } else {
-            sums[i] /= counts[i].max(1) as f32;
+            let n = counts[i].max(1) as f32;
+            sums[i] = sums[i].map(|v| v / n);
             counts[i] = 1;
         }
     }
     sums
+}
+
+/// Whether the zone is compared in color (`Zone::compare_colors`, its colors known).
+pub fn in_color(zone: &Zone) -> bool {
+    zone.compare_colors && zone.reference_colors.len() == REF_WIDTH * REF_HEIGHT
 }
 
 /// Normalized correlation of two grids, -1..1 (0 when either is flat).
@@ -112,9 +132,18 @@ fn correlation(a: &[f32], b: &[f32]) -> f32 {
     ab / (aa * bb).sqrt()
 }
 
-/// How far each cell of `grid` is from the reference's, 0 (the same) to 1 (`CELL_MATCH` or more).
-fn cell_distances<'a>(grid: &'a [f32], reference: &'a [u8]) -> impl Iterator<Item = f32> + 'a {
-    grid.iter().zip(reference).map(|(g, &r)| ((g - r as f32).abs() / CELL_MATCH).min(1.0))
+/// How far each cell of `grid` (`cells`) is from the zone's reference, 0 (the
+/// same) to 1 (`CELL_MATCH` or more): in luma, or in color.
+fn cell_distances(zone: &Zone, grid: &[[f32; 3]]) -> Vec<f32> {
+    if in_color(zone) {
+        let far = CELL_MATCH * 3f32.sqrt();
+        grid.iter()
+            .zip(&zone.reference_colors)
+            .map(|(g, r)| (g.iter().zip(r).map(|(a, &b)| (a - b as f32).powi(2)).sum::<f32>().sqrt() / far).min(1.0))
+            .collect()
+    } else {
+        grid.iter().zip(&zone.reference).map(|(&g, &r)| ((luma(g) - r as f32).abs() / CELL_MATCH).min(1.0)).collect()
+    }
 }
 
 /// Which cells of a visibility zone tell whether its element is shown
@@ -129,7 +158,7 @@ pub fn learn_weights(zone: &Zone, shown: &[&Frame], hidden: &[&Frame]) -> Option
         return None;
     }
     let distances = |frames: &[&Frame]| -> Vec<Vec<f32>> {
-        frames.iter().map(|f| cell_distances(&gray(f, zone.rect), &zone.reference).collect()).collect()
+        frames.iter().map(|f| cell_distances(zone, &cells(f, zone.rect))).collect()
     };
     let median = |all: &[Vec<f32>], cell: usize| {
         let mut v: Vec<f32> = all.iter().map(|d| d[cell]).collect();
@@ -195,8 +224,8 @@ pub fn suggest_threshold(shown: &[f32], hidden: &[f32]) -> Option<f32> {
 }
 
 /// What a zone reads on `frame`: the similarity with its reference for a
-/// visibility indicator's zone (-1..1; with weights, 0..1: how near the cells
-/// they keep are, weighed), how full its bar is (0..1) for a gauge's; None when the bar is
+/// visibility indicator's zone (-1..1, of its luma or of its colors; with
+/// weights, 0..1: how near the cells they keep are, weighed), how full its bar is (0..1) for a gauge's; None when the bar is
 /// not on screen (too little of its colors in the zone, which needs its empty
 /// color to be told from an empty bar).
 pub fn measure(zone: &Zone, frame: &Frame) -> Option<f32> {
@@ -205,15 +234,22 @@ pub fn measure(zone: &Zone, frame: &Frame) -> Option<f32> {
             if zone.reference.len() != REF_WIDTH * REF_HEIGHT {
                 return Some(0.0);
             }
-            let grid = gray(frame, zone.rect);
+            let grid = cells(frame, zone.rect);
             if has_weights(zone) {
                 let (mut near, mut total) = (0.0, 0.0);
-                for (d, &w) in cell_distances(&grid, &zone.reference).zip(&zone.weights) {
+                for (d, &w) in cell_distances(zone, &grid).into_iter().zip(&zone.weights) {
                     near += (1.0 - d) * w as f32;
                     total += w as f32;
                 }
                 return Some(if total > 0.0 { near / total } else { 0.0 });
             }
+            if in_color(zone) {
+                // The three channels together: a hue change is a change of shape there.
+                let grid: Vec<f32> = grid.into_iter().flatten().collect();
+                let reference: Vec<f32> = zone.reference_colors.iter().flatten().map(|&v| v as f32).collect();
+                return Some(correlation(&grid, &reference));
+            }
+            let grid: Vec<f32> = grid.into_iter().map(luma).collect();
             let reference: Vec<f32> = zone.reference.iter().map(|&v| v as f32).collect();
             Some(correlation(&grid, &reference))
         }
@@ -235,15 +271,19 @@ fn bar_reading(zone: &Zone, frame: &Frame) -> Option<(f32, f32)> {
     (found >= FOUND_SHARE && !too_long).then_some((bar.fill, found.min(1.0)))
 }
 
-/// An indicator read in several zones (the health bar in battle and out of
-/// it) is shown when one of them shows it; `was_shown`
-/// lowers the thresholds a little (hysteresis). Also returns the best similarity.
-pub fn shown_anywhere(zones: &[&Zone], frame: &Frame, was_shown: bool) -> (bool, f32) {
+/// An indicator read in several zones is shown when one of them shows it (the
+/// health bar in battle and out of it), or with `Zone::all_zones` when they
+/// all do (the button prompts of a battle interface); `was_shown` lowers the
+/// thresholds a little (hysteresis). Also returns the similarity that
+/// decided: the best one, or the worst one when all zones must show it.
+pub fn is_shown(zones: &[&Zone], frame: &Frame, was_shown: bool) -> (bool, f32) {
     let margin = if was_shown { HYSTERESIS } else { 0.0 };
-    zones.iter().fold((false, -1.0), |(shown, best), zone| {
-        let m = measure(zone, frame).unwrap_or(0.0);
-        (shown || m >= zone.threshold - margin, best.max(m))
-    })
+    let measures = zones.iter().map(|zone| (measure(zone, frame).unwrap_or(0.0), zone.threshold - margin));
+    if zones.first().is_some_and(|z| z.all_zones) {
+        measures.fold((true, 1.0), |(shown, worst), (m, threshold)| (shown && m >= threshold, f32::min(worst, m)))
+    } else {
+        measures.fold((false, -1.0), |(shown, best), (m, threshold)| (shown || m >= threshold, f32::max(best, m)))
+    }
 }
 
 /// A gauge read in several zones reads where its bar is found (the most
@@ -266,7 +306,7 @@ pub fn unmet(zone: &Zone, shown: impl Fn(&str) -> Option<bool>) -> Option<&Condi
 /// Whether the visibility indicator `name` is shown on `frame` (None: no such indicator in `zones`).
 pub fn shown_on(name: &str, zones: &[Zone], frame: &Frame) -> Option<bool> {
     let of: Vec<&Zone> = zones.iter().filter(|z| z.indicator == name && z.kind == IndicatorKind::Visibility).collect();
-    (!of.is_empty()).then(|| shown_anywhere(&of, frame, false).0)
+    (!of.is_empty()).then(|| is_shown(&of, frame, false).0)
 }
 
 /// Share of the zone's length a bar covers on `frame` (to save with a zone being drawn).
@@ -660,7 +700,7 @@ impl IndicatorReader {
             let previous = self.values.get(name).copied();
             let (measure, value) = match of_indicator[0].kind {
                 IndicatorKind::Visibility => {
-                    let (shown, best) = shown_anywhere(&of_indicator, frame, previous == Some(IndicatorValue::Visibility(true)));
+                    let (shown, best) = is_shown(&of_indicator, frame, previous == Some(IndicatorValue::Visibility(true)));
                     (Some(best), IndicatorValue::Visibility(shown))
                 }
                 IndicatorKind::Gauge => {
@@ -747,6 +787,77 @@ mod tests {
         assert_eq!(reader.update(&zones, &with_hud(true, 0)), vec![("battle_hud".to_owned(), IndicatorValue::Visibility(true))]);
         assert_eq!(reader.update(&zones, &with_hud(true, 10)), vec![], "no change, nothing reported");
         assert_eq!(reader.update(&zones, &with_hud(false, 10)), vec![("battle_hud".to_owned(), IndicatorValue::Visibility(false))]);
+    }
+
+    /// Button prompts in the bottom right corner, over scenery: `shown` says
+    /// which of the three are, `color` their ring's (red and green have about the same luma).
+    fn prompts(shown: [bool; 3], color: [u8; 3]) -> Frame {
+        frame(move |x, y| {
+            for (k, &on) in shown.iter().enumerate() {
+                let (dx, dy) = (x as f32 - (100.0 + 20.0 * k as f32), y as f32 - 75.0);
+                let d = (dx * dx + dy * dy).sqrt();
+                if on && d < 3.0 {
+                    return [250, 250, 250];
+                }
+                if on && d < 8.0 {
+                    return color;
+                }
+            }
+            [(x * 3 % 120) as u8 + 40, 70, ((y * 5) % 100) as u8 + 30]
+        })
+    }
+
+    const RED: [u8; 3] = [220, 40, 40];
+    const GREEN: [u8; 3] = [40, 125, 50];
+
+    fn prompt_zone(k: usize, frame: &Frame) -> Zone {
+        let rect = [(90.0 + 20.0 * k as f32) / 160.0, 65.0 / 90.0, 20.0 / 160.0, 20.0 / 90.0];
+        Zone {
+            indicator: "battle_hud".into(),
+            rect,
+            reference: reference(frame, rect),
+            reference_colors: reference_colors(frame, rect),
+            ..Zone::default()
+        }
+    }
+
+    #[test]
+    fn an_indicator_can_need_all_its_zones() {
+        let battle = prompts([true; 3], RED);
+        let mut zones: Vec<Zone> = (0..3).map(|k| prompt_zone(k, &battle)).collect();
+        let one_missing = prompts([true, false, true], RED);
+        fn of(zones: &[Zone]) -> Vec<&Zone> {
+            zones.iter().collect()
+        }
+        assert!(is_shown(&of(&zones), &one_missing, false).0, "one of its zones is enough");
+        zones.iter_mut().for_each(|z| z.all_zones = true);
+        assert!(is_shown(&of(&zones), &battle, false).0);
+        assert!(!is_shown(&of(&zones), &one_missing, false).0, "all its zones are needed");
+
+        let mut reader = IndicatorReader::default();
+        assert_eq!(reader.update(&zones, &battle), vec![("battle_hud".to_owned(), IndicatorValue::Visibility(true))]);
+        assert_eq!(reader.update(&zones, &one_missing), vec![("battle_hud".to_owned(), IndicatorValue::Visibility(false))]);
+    }
+
+    #[test]
+    fn prompts_of_another_color_are_told_apart_in_color() {
+        let (battle, exploration) = (prompts([true; 3], RED), prompts([true; 3], GREEN));
+        let mut zone = prompt_zone(0, &battle);
+        let in_brightness = measure(&zone, &exploration).unwrap();
+        assert!(in_brightness > zone.threshold, "the same in brightness: {in_brightness}");
+        zone.compare_colors = true;
+        let shown = measure(&zone, &battle).unwrap();
+        let other = measure(&zone, &exploration).unwrap();
+        assert!(shown > 0.99, "{shown}");
+        assert!(other < zone.threshold, "another color: {other}");
+        assert!(measure(&zone, &prompts([false; 3], RED)).unwrap() < zone.threshold);
+
+        // Compared on what stays: the cells of the ring tell, in color.
+        let shown: Vec<Frame> = (0..3).map(|_| prompts([true; 3], RED)).collect();
+        let weights = learn_weights(&zone, &shown.iter().collect::<Vec<_>>(), &[&exploration]).expect("cells that tell");
+        let zone = Zone { weights, ..zone };
+        assert!(measure(&zone, &battle).unwrap() > 0.9);
+        assert!(measure(&zone, &exploration).unwrap() < 0.5);
     }
 
     /// A minimap: a ring whose inside, the map, changes all the time, over

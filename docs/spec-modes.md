@@ -419,7 +419,9 @@ recognized with, and indicators are drawn on them.
 them; an indicator shown in several places has a zone for each).
 
 - A **visibility** indicator (the battle interface, a warning) reads `true` while
-  the screen there looks like when it was drawn, `false` otherwise.
+  the screen there looks like when it was drawn (in brightness, or in color when the
+  player asked), `false` otherwise; with several zones, while one of them does, or
+  all of them (an interface told by several elements together) as the player set it.
 - A **gauge** (health, stamina) reads how full its bar is, 0..1, measured with the colors of
   its full and empty parts (or with how it looks full and empty along its length:
   gradients, segments, hearts), each color an equal share for a bar filled again over itself

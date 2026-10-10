@@ -217,7 +217,12 @@ to set some up.
   shown only at times (the battle interface: a visibility indicator) or around
   a bar (health: a gauge). Modes read whether it is shown, or how full the bar
   is, ten times a second; an indicator shown in several places has a zone for
-  each. Whether a visibility indicator shows on a capture is guessed from the
+  each. A visibility indicator with several zones is shown in **one of its
+  zones** (an element shown in several places) or only in **all its zones**
+  (an interface told by several elements together: three button prompts, a
+  zone each). Zones are compared in brightness; **Compare colors** tells an
+  element from another in the same place in another color (button prompts red
+  in battles, white out of them): set the threshold again after it. Whether a visibility indicator shows on a capture is guessed from the
   phases (shown in the phase of the capture it was drawn on); when it shows in
   several phases, or a phase mixes screens (cutscenes and menus), mark the
   captures **👁 Shown** or **⊘ Not shown** (under the zone's threshold, or

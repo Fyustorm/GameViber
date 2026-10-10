@@ -157,8 +157,21 @@ pub struct Zone {
     pub kind: IndicatorKind,
     /// Left, top, width, height, as fractions of the screen.
     pub rect: [f32; 4],
-    /// Visibility: grayscale look of the zone when it was drawn (`screen::indicators`).
+    /// Visibility: grayscale look of the zone when it was drawn (`screen::indicators`)...
     pub reference: Vec<u8>,
+    /// ...and in color, compared instead with `compare_colors` (empty in zones
+    /// drawn before it was kept: taken again from their capture).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub reference_colors: Vec<[u8; 3]>,
+    /// Visibility: the zones are compared in color, not only in brightness: an
+    /// element shown elsewhere in another color (a button prompt red in battles,
+    /// white out of them) is not taken for it.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub compare_colors: bool,
+    /// Visibility: the indicator is shown when all its zones show it (three
+    /// button prompts of a battle interface), rather than one of them.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub all_zones: bool,
     /// Visibility: how much each cell of the reference tells whether the
     /// element is shown (0..255), learned from captures: an element whose
     /// inside changes (a minimap) is compared on its frame only. Empty: every
@@ -235,6 +248,9 @@ impl Default for Zone {
             kind: IndicatorKind::Visibility,
             rect: [0.0, 0.0, 0.1, 0.1],
             reference: Vec::new(),
+            reference_colors: Vec::new(),
+            compare_colors: false,
+            all_zones: false,
             weights: Vec::new(),
             threshold: 0.6,
             shown_on: Vec::new(),

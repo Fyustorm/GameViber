@@ -264,6 +264,7 @@ impl State {
             IndicatorKind::Visibility => {
                 if let Some(frame) = drawn {
                     zone.reference = indicators::reference(frame, rect);
+                    zone.reference_colors = indicators::reference_colors(frame, rect);
                 }
                 zone.weights = match &d.weights {
                     Some((at, weights)) if at.iter().zip(rect).all(|(a, b)| (a - b).abs() < 1e-5) => weights.clone(),
@@ -273,6 +274,7 @@ impl State {
             }
             IndicatorKind::Gauge => {
                 zone.reference.clear();
+                zone.reference_colors.clear();
                 zone.weights.clear();
                 (zone.shown_on, zone.hidden_on) = (Vec::new(), Vec::new());
                 if d.full.is_empty() {
@@ -309,6 +311,15 @@ impl State {
             zone.more_empty = d.empty.iter().skip(1).copied().collect();
             zone.tiers = d.tiers.iter().filter(|t| !t.is_empty()).cloned().collect();
             zone.read_when = d.read_when.clone();
+        } else {
+            zone.all_zones = d.all_zones;
+            zone.compare_colors = d.compare_colors;
+            // Drawn before its colors were kept: from the capture it was drawn on.
+            if zone.reference_colors.is_empty() {
+                if let Some((frame, _)) = zone.capture.as_ref().and_then(|f| self.captures.get(f)) {
+                    zone.reference_colors = indicators::reference_colors(frame, zone.rect);
+                }
+            }
         }
     }
 
@@ -470,6 +481,10 @@ struct Draft {
     tiers: Vec<Vec<[u8; 3]>>,
     /// The visibility indicators it is read under (`Zone::read_when`).
     read_when: Vec<Condition>,
+    /// Visibility: shown in all its zones rather than one (`Zone::all_zones`)...
+    all_zones: bool,
+    /// ...compared in color (`Zone::compare_colors`).
+    compare_colors: bool,
     /// The bar read by its look rather than its colors...
     by_look: bool,
     /// ...taken on captures.
@@ -541,6 +556,8 @@ impl Default for Draft {
             empty: Vec::new(),
             tiers: Vec::new(),
             read_when: Vec::new(),
+            all_zones: false,
+            compare_colors: false,
             by_look: false,
             look: None,
             weights: None,
@@ -572,6 +589,8 @@ impl Draft {
             || self.empty != o.empty
             || self.tiers != o.tiers
             || self.read_when != o.read_when
+            || self.all_zones != o.all_zones
+            || self.compare_colors != o.compare_colors
             || self.by_look != o.by_look
             || self.look != o.look
             || self.weights != o.weights
@@ -604,6 +623,8 @@ impl Draft {
         self.empty = zone.empty_color.into_iter().chain(zone.more_empty.iter().copied()).collect();
         self.tiers = if zone.kind == IndicatorKind::Gauge { zone.tiers.clone() } else { Vec::new() };
         self.read_when = if zone.kind == IndicatorKind::Gauge { zone.read_when.clone() } else { Vec::new() };
+        self.all_zones = zone.kind == IndicatorKind::Visibility && zone.all_zones;
+        self.compare_colors = zone.kind == IndicatorKind::Visibility && zone.compare_colors;
     }
 
     /// The zone's own settings.
@@ -883,7 +904,7 @@ fn reading_zones(indicator_zones: &[&Zone], all: &[Zone], frame: &Frame) -> (Str
     let Some(first) = indicator_zones.first() else { return (String::new(), MUTED) };
     match first.kind {
         IndicatorKind::Visibility => {
-            let (shown, best) = indicators::shown_anywhere(indicator_zones, frame, false);
+            let (shown, best) = indicators::is_shown(indicator_zones, frame, false);
             if shown { (format!("shown {best:.2}"), ACCENT_TEXT) } else { (format!("hidden {best:.2}"), MUTED) }
         }
         IndicatorKind::Gauge if unmet_on(first, all, frame).is_some() => reading(first, None),
@@ -932,8 +953,19 @@ impl App {
         let st = &mut self.screen;
         let tested = st.draft_zone(inputs);
         let d = &st.draft;
-        let mut indicator_zones: Vec<&Zone> =
-            inputs.zones.iter().enumerate().filter(|(i, z)| d.indicator.as_ref() == Some(&z.indicator) && Some(*i) != d.editing).map(|(_, z)| z).collect();
+        // Its other zones with the indicator's settings as edited.
+        let others: Vec<Zone> = inputs
+            .zones
+            .iter()
+            .enumerate()
+            .filter(|(i, z)| d.indicator.as_ref() == Some(&z.indicator) && Some(*i) != d.editing)
+            .map(|(_, z)| {
+                let mut zone = z.clone();
+                st.shared(&mut zone);
+                zone
+            })
+            .collect();
+        let mut indicator_zones: Vec<&Zone> = others.iter().collect();
         indicator_zones.extend(tested.as_ref());
         let readings = st.readings.get(ui.ctx(), &indicator_zones, &inputs.zones, &st.captures).clone();
         let d = &st.draft;
@@ -1773,13 +1805,34 @@ impl App {
                         }
                     });
                 }
+                if draft.kind == IndicatorKind::Visibility {
+                    // Several zones: one of them, or all.
+                    if indicator_name.is_some() {
+                        let label = |all: bool| if all { "Shown in all its zones" } else { "Shown in one of its zones" };
+                        egui::ComboBox::from_id_salt("zone-all").selected_text(label(draft.all_zones)).show_ui(ui, |ui| {
+                            ui.selectable_value(&mut draft.all_zones, false, label(false))
+                                .on_hover_text("An element the game shows in several places (a bar in battle and out of it): a zone for each place.");
+                            ui.selectable_value(&mut draft.all_zones, true, label(true))
+                                .on_hover_text("An interface told by several elements together (three button prompts): a zone for each element.");
+                        });
+                    }
+                    ui.checkbox(&mut draft.compare_colors, "Compare colors").on_hover_text(
+                        "Compares the zones in color rather than in brightness only: an element shown in the same place in \
+                         another color (button prompts red in battles, white out of them) is not taken for it. Leave it off \
+                         for an element whose color changes while it is shown. Set the threshold again after changing it.",
+                    );
+                    let unknown = indicator_zones.iter().map(|&i| &inputs.zones[i]).any(|z| z.reference_colors.is_empty() && !z.capture.as_ref().is_some_and(|f| st.captures.contains_key(f)));
+                    if draft.compare_colors && unknown {
+                        ui.label(RichText::new("A zone's capture is gone: draw it again for its colors.").color(WARN).size(12.0));
+                    }
+                }
                 // The phases this indicator is a sure sign of (saved right away).
                 if let Some(name) = indicator_name.as_ref().filter(|_| !inputs.phases.is_empty()) {
                     let of: Vec<&PhaseDef> = inputs.phases.iter().filter(|sc| sc.indicators.contains(name)).collect();
                     let phases: Vec<&str> = of.iter().map(|sc| sc.name.as_str()).collect();
                     let signs: Vec<String> = of.iter().map(|sc| format!("{}: {}", sc.name, sc.indicators.join(" + "))).collect();
                     ui.label("Sure sign of").on_hover_text(
-                        "While this indicator is shown (any of its zones), GameViber is sure of the phase, right away (a \
+                        "While this indicator is shown, GameViber is sure of the phase, right away (a \
                          battle menu: battle). A phase can need several indicators shown together (in the Phases tab), \
                          and an indicator can be part of the signs of several phases: the sign of the most indicators \
                          shown wins. How long the phase is kept once it hides is set with the phase, in the Phases tab.",
