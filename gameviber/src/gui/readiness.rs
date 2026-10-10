@@ -188,10 +188,8 @@ impl App {
     }
 
     /// What keeps the active mode from working as it should, each with the way
-    /// to fix it; nothing when all is well. In the Creator (`creating`), the
-    /// image is needed anyway: captures and sessions' images come from it;
-    /// there, not everything is wanted while making a mode: the card folds.
-    pub(super) fn readiness_card(&mut self, ui: &mut egui::Ui, s: &Shared, creating: bool) {
+    /// to fix it; nothing when all is well.
+    pub(super) fn readiness_card(&mut self, ui: &mut egui::Ui, s: &Shared) {
         let needs = needs(s);
         let game = s.game.as_ref().map_or("the game", |g| g.name.as_str());
         let mut problems = Vec::new();
@@ -216,16 +214,10 @@ impl App {
         let image = Image::of(s, self.overlay_installed(s));
         let image_color = if overlay::WINDOW_CAPTURE { WARN } else { DANGER_TEXT };
         if let Some(fix) = image.fix(game) {
-            let title = if needs.image() {
-                Some((image_color, format!("No game image: {} won't work", needs.without_image())))
-            } else if creating {
-                Some((IDLE, "No game image: no captures, no images in sessions".to_owned()))
-            } else {
-                None
-            };
-            if let Some((color, title)) = title {
+            if needs.image() {
+                let title = format!("No game image: {} won't work", needs.without_image());
                 let hover = (needs.indicators.len() > 1).then(|| format!("Indicators: {}", needs.indicators.join(", ")));
-                problems.insert(0, Problem { color, title, fix, hover, button: "Overlay ›", tab: Some(setup::Tab::Overlay) });
+                problems.insert(0, Problem { color: image_color, title, fix, hover, button: "Overlay ›", tab: Some(setup::Tab::Overlay) });
             }
         }
         if problems.is_empty() {
@@ -240,29 +232,7 @@ impl App {
         };
         card(PANEL).stroke(egui::Stroke::new(1.0, border)).inner_margin(Margin::symmetric(16, 10)).show(ui, |ui| {
             ui.set_width(ui.available_width().min(CARD_WIDTH));
-            let foldable = self.page == Page::Creator;
-            let folded = foldable && self.creator.readiness_folded;
-            ui.horizontal(|ui| {
-                eyebrow(ui, if creating { "To get everything" } else { "Before you play" });
-                if foldable {
-                    if folded {
-                        let worst = problems.iter().find(|p| p.color != IDLE).map_or(IDLE, |p| p.color);
-                        dot(ui, worst);
-                        ui.label(muted(format!("{} to set up", problems.len())).size(12.5)).on_hover_text(
-                            problems.iter().map(|p| p.title.as_str()).collect::<Vec<_>>().join("\n"),
-                        );
-                    }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let (text, hover) = if folded { ("Show", "Show what is missing") } else { ("Hide", "Not everything is needed while making a mode") };
-                        if ui.small_button(text).on_hover_text(hover).clicked() {
-                            self.creator.readiness_folded = !folded;
-                        }
-                    });
-                }
-            });
-            if folded {
-                return;
-            }
+            eyebrow(ui, "Before you play");
             for p in problems {
                 ui.horizontal_top(|ui| {
                     ui.add_space(2.0);
