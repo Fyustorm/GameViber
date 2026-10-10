@@ -86,7 +86,7 @@ The best experience is a mode written for the game you play. In the
    - **how the assistant works**: **Propose the game's phases and screen
      indicators first** (ticked at first, and needed by what reads the screen):
      pasting its answer sets the phases up (with their sure signs) and lists
-     the indicators under **To draw** in **Captures & indicators**, with where
+     the indicators under **Proposed, to draw** in **Captures & indicators**, with where
      to find them; once they are drawn, send the short script request in the
      same conversation. **Ask me questions and propose designs** first: the
      assistant asks what you want, with choices, and proposes 2 or 3 designs
