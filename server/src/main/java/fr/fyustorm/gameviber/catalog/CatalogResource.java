@@ -23,6 +23,8 @@ public class CatalogResource {
     ModeCatalog catalog;
     @Inject
     Stats stats;
+    @Inject
+    PackageStore store;
 
     /** Games with public modes, the most modes first; `search` in their name. */
     @GET
@@ -75,7 +77,7 @@ public class CatalogResource {
         };
         return Mode.<Mode>list("gameId = ?1 and visibility = ?2 and withdrawnAt is null", id, Mode.PUBLIC)
                 .stream()
-                .map(m -> Views.summary(m, stats.figures(m.id)))
+                .map(m -> Views.summary(m, stats.figures(m.id), store))
                 .sorted(order.thenComparing(Comparator.comparing(Views.ModeSummary::updatedAt).reversed()))
                 .toList();
     }

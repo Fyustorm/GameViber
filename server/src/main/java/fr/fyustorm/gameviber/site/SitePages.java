@@ -33,7 +33,7 @@ public class SitePages {
     static final String SITE = "GameViber";
     static final String DEFAULT_TITLE = "GameViber: feel your games on your toys";
     static final String DEFAULT_DESCRIPTION = "GameViber turns the rumble, the sound and the image of your games into vibrations"
-            + " for the toys connected to Intiface Central. Free and open source, for Linux.";
+            + " for the toys connected to Intiface Central. Free and open source, for Windows and Linux.";
     static final int MAX_DESCRIPTION_CHARS = 200;
     /** What the built index.html has between them is the page's: replaced here. */
     static final String START = "<!-- page -->";
@@ -114,7 +114,7 @@ public class SitePages {
     @GET
     @Path("download")
     public Response download() {
-        return send(Page.of("Download", "Download GameViber for Linux: packages for Ubuntu, Debian, Fedora, Arch, and an archive for SteamOS and other systems.", null));
+        return send(Page.of("Download", "Download GameViber for Windows (installer or archive) and Linux (packages for Ubuntu, Debian, Fedora, Arch, and an archive for SteamOS and other systems).", null));
     }
 
     private Page modePage(Mode mode, String cover, boolean index) {

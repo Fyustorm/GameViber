@@ -18,9 +18,21 @@ public final class Views {
         }
     }
 
-    /** `version` and `api`: its latest version's number and mode API. */
+    /**
+     * `version` and `api`: its latest version's number and mode API; `uses`:
+     * what that version is made for (`SharedPackage.uses`).
+     */
     public record ModeSummary(
-            String id, String name, String description, String author, long downloads, int version, int api, Instant updatedAt, Figures figures) {}
+            String id,
+            String name,
+            String description,
+            String author,
+            long downloads,
+            int version,
+            int api,
+            List<String> uses,
+            Instant updatedAt,
+            Figures figures) {}
 
     /** `visibility` and `shareCode` only for its author (and administrators). */
     public record ModeDetail(
@@ -31,6 +43,7 @@ public final class Views {
             String author,
             long downloads,
             List<VersionView> versions,
+            List<String> uses,
             Instant createdAt,
             Instant updatedAt,
             String visibility,
@@ -44,18 +57,21 @@ public final class Views {
         return new GameView(game.id, game.name, game.steamAppId, modes);
     }
 
-    static ModeSummary summary(Mode mode, Figures figures) {
+    static ModeSummary summary(Mode mode, Figures figures, PackageStore store) {
         Author author = Author.findById(mode.authorId);
         var latest = ModeVersion.latest(mode);
         return new ModeSummary(
                 mode.publicId, mode.name, mode.description, author.pseudo, mode.downloads,
-                latest.map(v -> v.number).orElse(0), latest.map(v -> v.api).orElse(0), mode.updatedAt, figures);
+                latest.map(v -> v.number).orElse(0), latest.map(v -> v.api).orElse(0),
+                latest.map(v -> store.uses(mode, v.number)).orElse(List.of()), mode.updatedAt, figures);
     }
 
-    static ModeDetail detail(Mode mode, boolean owner, Figures figures) {
+    static ModeDetail detail(Mode mode, boolean owner, Figures figures, PackageStore store) {
         Author author = Author.findById(mode.authorId);
         Game game = Game.findById(mode.gameId);
-        List<VersionView> versions = ModeVersion.of(mode).stream().map(VersionView::of).toList();
+        List<ModeVersion> all = ModeVersion.of(mode);
+        List<VersionView> versions = all.stream().map(VersionView::of).toList();
+        List<String> uses = all.isEmpty() ? List.of() : store.uses(mode, all.get(0).number);
         return new ModeDetail(
                 mode.publicId,
                 mode.name,
@@ -64,6 +80,7 @@ public final class Views {
                 author.pseudo,
                 mode.downloads,
                 versions,
+                uses,
                 mode.createdAt,
                 mode.updatedAt,
                 owner ? mode.visibility : null,

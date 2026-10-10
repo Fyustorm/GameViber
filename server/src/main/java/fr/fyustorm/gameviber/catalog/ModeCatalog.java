@@ -48,7 +48,7 @@ public class ModeCatalog {
     }
 
     public Views.ModeDetail detail(Mode mode, boolean owner) {
-        return Views.detail(mode, owner, stats.figures(mode.id));
+        return Views.detail(mode, owner, stats.figures(mode.id), store);
     }
 
     /** A public mode, by its public id. */

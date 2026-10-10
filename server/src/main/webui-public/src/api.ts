@@ -25,8 +25,27 @@ export interface ModeSummary {
   downloads: number
   version: number
   api: number
+  uses: Use[]
   updatedAt: string
   figures: Figures
+}
+
+// What a mode is made for, beyond the gamepad and the sound every mode reads (`SharedPackage.uses`).
+export type Use = 'strokers' | 'screen' | 'programs'
+
+export const USES: Record<Use, { label: string; text: string }> = {
+  strokers: {
+    label: 'Made for strokers',
+    text: 'Written for strokers too: its own strokes, thrusts or funscripts. Vibrators play it as well.',
+  },
+  screen: {
+    label: 'Reads the screen',
+    text: "Reads the game's image: a health bar, a menu. On Linux, turn the in-game overlay on for this game.",
+  },
+  programs: {
+    label: 'Needs another program',
+    text: 'Reads values another program sends (a game mod, a script): its description says which.',
+  },
 }
 
 export interface Version {
@@ -45,6 +64,7 @@ export interface ModeDetail {
   author: string
   downloads: number
   versions: Version[]
+  uses: Use[]
   createdAt: string
   updatedAt: string
   withdrawnAt: string | null

@@ -16,6 +16,7 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.zip.CRC32;
@@ -155,7 +156,8 @@ public class CatalogTest {
         as(token).contentType(ContentType.JSON).body(Map.of("visibility", "public")).patch("/api/modes/" + id).then().statusCode(200);
         int gameId = given().queryParam("search", game.toUpperCase()).get("/api/games").then().statusCode(200)
                 .body("[0].name", equalTo(game)).body("[0].modes", equalTo(1)).extract().path("[0].id");
-        given().get("/api/games/" + gameId + "/modes?sort=downloads").then().body("[0].id", equalTo(id)).body("[0].downloads", equalTo(1));
+        given().get("/api/games/" + gameId + "/modes?sort=downloads").then().body("[0].id", equalTo(id)).body("[0].downloads", equalTo(1))
+                .body("[0].uses", equalTo(List.of("strokers")));
         given().queryParam("name", game.toLowerCase()).get("/api/games/match").then().statusCode(200).body("id", equalTo(gameId)).body("modes", equalTo(1));
         given().queryParam("name", "No such game").get("/api/games/match").then().statusCode(404);
         given().get("/api/modes/" + id + "/package").then().statusCode(200).header("Content-Disposition", containsString(id + "-1.gameviber"));
@@ -182,6 +184,17 @@ public class CatalogTest {
         // Someone else's mode.
         as(register(unique("b"))).contentType(ContentType.JSON).body(Map.of("name", "Mine")).patch("/api/modes/" + id).then().statusCode(403);
         given().get("/api/modes/" + id).then().body("name", equalTo("Battle pulse"));
+    }
+
+    @Test
+    void whatAModeIsMadeForIsReadFromItsPackage() {
+        Map<String, byte[]> entries = new LinkedHashMap<>();
+        entries.put("gameviber.json", "{\"inputs\":{\"zones\":[{\"name\":\"hp\"}]}}".getBytes(StandardCharsets.UTF_8));
+        entries.put("mode.luau", "-- stroke(1) in a comment\n--[[ thrust(1, 0.2) ]]\nset(input.rumble.level)".getBytes(StandardCharsets.UTF_8));
+        assertEquals(List.of("screen"), SharedPackage.uses(entries));
+        entries.put("variants/hard.luau", "if input.external.heart then stroke(0.5, 1) end".getBytes(StandardCharsets.UTF_8));
+        assertEquals(List.of("strokers", "screen", "programs"), SharedPackage.uses(entries));
+        assertEquals(List.of(), SharedPackage.uses(Map.of("mode.luau", SCRIPT.getBytes(StandardCharsets.UTF_8))));
     }
 
     @Test

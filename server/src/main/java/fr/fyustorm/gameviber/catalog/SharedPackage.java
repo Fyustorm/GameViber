@@ -11,7 +11,9 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
@@ -58,6 +60,16 @@ public final class SharedPackage {
     private static final Pattern API = Pattern.compile("\\bapi\\s*=\\s*(\\d+)");
     private static final Pattern SAFE_NAME = Pattern.compile("[A-Za-z0-9_\\-.]{1,128}");
     private static final ObjectMapper JSON = new ObjectMapper();
+
+    /** What a mode is made for, beyond the gamepad and the sound every mode reads (`uses`). */
+    public static final String STROKERS = "strokers";
+    public static final String SCREEN = "screen";
+    public static final String PROGRAMS = "programs";
+    /** The mode API's calls and fields (`docs/spec-modes.md`), the first names included. */
+    private static final Pattern STROKES = Pattern.compile("\\b(?:stroke|thrust|funscript)\\s*\\(|\\bmotion\\s*[({]");
+    private static final Pattern READS_SCREEN = Pattern.compile("\\binput\\.(?:screen|indicators|zones)\\b");
+    private static final Pattern READS_PROGRAMS = Pattern.compile("\\binput\\.(?:external|custom)\\b");
+    private static final Pattern LUA_COMMENT = Pattern.compile("--\\[(=*)\\[.*?\\]\\1\\]|--[^\\n]*", Pattern.DOTALL);
 
     /** The game's name and Steam app id, as the package names them. */
     public final String gameName;
@@ -281,6 +293,45 @@ public final class SharedPackage {
             }
         }
         return out.toByteArray();
+    }
+
+    /**
+     * What the mode of a package's entries is made for: {@link #STROKERS} (its
+     * scripts give strokes or motions, or it has funscripts: every mode plays on
+     * every toy, this one was written for strokers too), {@link #SCREEN} (it
+     * reads indicators or the game's image), {@link #PROGRAMS} (it reads values
+     * other programs send).
+     */
+    static List<String> uses(Map<String, byte[]> entries) {
+        StringBuilder scripts = new StringBuilder();
+        boolean funscripts = false;
+        for (var entry : entries.entrySet()) {
+            String name = entry.getKey();
+            if (name.equals(SCRIPT) || name.startsWith(VARIANTS) && name.endsWith(".luau")) {
+                scripts.append(LUA_COMMENT.matcher(new String(entry.getValue(), StandardCharsets.UTF_8)).replaceAll("")).append('\n');
+            }
+            funscripts |= name.startsWith(FUNSCRIPTS) && name.endsWith(".funscript");
+        }
+        JsonNode inputs = JSON.createObjectNode();
+        try {
+            byte[] manifest = entries.get(MANIFEST);
+            if (manifest != null) {
+                inputs = JSON.readTree(manifest).path("inputs");
+            }
+        } catch (IOException e) {
+            // Checked when published: unreadable, it sets nothing up.
+        }
+        List<String> uses = new ArrayList<>();
+        if (funscripts || STROKES.matcher(scripts).find()) {
+            uses.add(STROKERS);
+        }
+        if (inputs.path("zones").size() > 0 || READS_SCREEN.matcher(scripts).find()) {
+            uses.add(SCREEN);
+        }
+        if (inputs.path("external").size() > 0 || inputs.path("inputs").size() > 0 || READS_PROGRAMS.matcher(scripts).find()) {
+            uses.add(PROGRAMS);
+        }
+        return uses;
     }
 
     static String sha256(byte[] bytes) {

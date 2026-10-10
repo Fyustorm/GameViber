@@ -24,8 +24,8 @@ watch(() => route.fullPath, () => (open.value = false))
       </button>
       <nav id="menu" :class="{ open }" aria-label="Main">
         <RouterLink to="/games">Modes</RouterLink>
-        <a :href="USER_GUIDE">Guide</a>
-        <a :href="GITHUB">GitHub</a>
+        <a target="_blank" rel="noopener" :href="USER_GUIDE">Guide</a>
+        <a target="_blank" rel="noopener" :href="GITHUB">GitHub</a>
         <RouterLink to="/download" class="button primary small">Download</RouterLink>
       </nav>
     </div>
@@ -44,8 +44,8 @@ watch(() => route.fullPath, () => (open.value = false))
       <nav aria-label="Footer">
         <RouterLink to="/download">Download</RouterLink>
         <RouterLink to="/games">Community modes</RouterLink>
-        <a :href="USER_GUIDE">User guide</a>
-        <a :href="GITHUB">Source code</a>
+        <a target="_blank" rel="noopener" :href="USER_GUIDE">User guide</a>
+        <a target="_blank" rel="noopener" :href="GITHUB">Source code</a>
       </nav>
     </div>
   </footer>

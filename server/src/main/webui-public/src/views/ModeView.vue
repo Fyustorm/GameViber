@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch, watchEffect } from 'vue'
-import { api, modePaths, steamHeader, ApiError } from '@/api'
+import { api, modePaths, steamHeader, ApiError, USES } from '@/api'
 import { useLoad } from '@/load'
 import { setTitle } from '@/router'
 import { ago, date, size } from '@/format'
@@ -78,6 +78,13 @@ watchEffect(() => {
           </header>
 
           <FigureList :figures="mode.data.value.figures" :downloads="mode.data.value.downloads" class="figures" />
+
+          <ul v-if="mode.data.value.uses?.length" class="uses">
+            <li v-for="use in mode.data.value.uses" :key="use">
+              <span class="tag accent">{{ USES[use].label }}</span>
+              <span class="muted">{{ USES[use].text }}</span>
+            </li>
+          </ul>
 
           <p v-if="mode.data.value.description" class="description">{{ mode.data.value.description }}</p>
           <p v-else class="muted">No description.</p>
@@ -176,6 +183,18 @@ h1 {
   margin: 16px 0 20px;
   padding: 14px 0;
   border-block: 1px solid var(--line);
+}
+
+.uses {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 20px;
+  display: grid;
+  gap: 8px;
+}
+
+.uses .tag {
+  margin-right: 8px;
 }
 
 .description,

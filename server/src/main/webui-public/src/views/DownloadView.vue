@@ -4,6 +4,7 @@ import { useLoad } from '@/load'
 import { setTitle } from '@/router'
 import { date, size } from '@/format'
 import { INTIFACE, RELEASES, REPOSITORY, USER_GUIDE } from '@/links'
+import { visitorSystem, type System } from '@/system'
 
 setTitle('Download')
 
@@ -32,57 +33,101 @@ const release = useLoad(async () => {
   return latest
 })
 
-const systems = [
-  { name: 'Ubuntu 24.04+, Debian 13+, Mint 22+', suffix: '.deb', install: 'sudo apt install ./gameviber_*.deb' },
-  { name: 'Fedora 40+', suffix: '.rpm', install: 'sudo dnf install ./gameviber-*.rpm' },
-  { name: 'Arch, CachyOS, Manjaro', suffix: '.pkg.tar.zst', install: 'sudo pacman -U gameviber-*.pkg.tar.zst' },
-  { name: 'SteamOS, Bazzite, other systems', suffix: '.tar.gz', install: 'Extract it and run ./gameviber (see its README.txt)' },
+interface File {
+  name: string
+  suffix: string
+  // A command to type, or what to do in words.
+  command?: string
+  how?: string
+}
+
+// The files `packaging/windows/package.sh` and `packaging/linux/package.sh` make.
+const platforms: { system: System; title: string; files: File[] }[] = [
+  {
+    system: 'windows',
+    title: 'Windows 10 (2004) or later',
+    files: [
+      {
+        name: 'Installer',
+        suffix: '-setup.exe',
+        how: 'Run it: it also offers ViGEmBus, which GameViber needs to capture the rumble, and HidHide.',
+      },
+      {
+        name: 'Without installing',
+        suffix: '.zip',
+        how: 'Extract it and run gameviber.exe. Install ViGEmBus yourself (see its README.txt).',
+      },
+    ],
+  },
+  {
+    system: 'linux',
+    title: 'Linux',
+    files: [
+      { name: 'Ubuntu 24.04+, Debian 13+, Mint 22+', suffix: '.deb', command: 'sudo apt install ./gameviber_*.deb' },
+      { name: 'Fedora 40+', suffix: '.rpm', command: 'sudo dnf install ./gameviber-*.rpm' },
+      { name: 'Arch, CachyOS, Manjaro', suffix: '.pkg.tar.zst', command: 'sudo pacman -U gameviber-*.pkg.tar.zst' },
+      { name: 'SteamOS, Bazzite, other systems', suffix: '.tar.gz', how: 'Extract it and run ./gameviber (see its README.txt).' },
+    ],
+  },
 ]
 
-const files = computed(() =>
-  systems.map((system) => ({
-    ...system,
-    asset: release.data.value?.assets.find((a) => a.name.endsWith(system.suffix)),
+// The visitor's system first.
+const system = visitorSystem()
+const ordered = [...platforms].sort((a, b) => Number(b.system === system) - Number(a.system === system))
+
+const sections = computed(() =>
+  ordered.map((platform) => ({
+    ...platform,
+    files: platform.files.map((file) => ({
+      ...file,
+      asset: release.data.value?.assets.find((a) => a.name.endsWith(file.suffix)),
+    })),
   })),
 )
+// alpha, beta, rc: the release's stage, from its version.
+const stage = computed(() => release.data.value?.tag_name.match(/-([a-z]+)/)?.[1] ?? null)
 const sums = computed(() => release.data.value?.assets.find((a) => a.name === 'SHA256SUMS'))
 </script>
 
 <template>
   <div class="wrap page">
     <p class="eyebrow">Download</p>
-    <h1>GameViber for Linux</h1>
+    <h1>Download GameViber</h1>
     <p class="lead">
       <template v-if="release.data.value">
         Version <strong class="version">{{ release.data.value.tag_name.replace(/^v/, '') }}</strong>, released
         {{ date(release.data.value.published_at) }}.
-        <span v-if="release.data.value.prerelease" class="tag accent">alpha</span>
+        <span v-if="stage" class="tag accent">{{ stage }}</span>
       </template>
       <template v-else>Pick the file for your system.</template>
     </p>
 
     <p v-if="release.error.value" class="card notice">
       The release list cannot be read right now: get the files from the
-      <a :href="RELEASES">releases page on GitHub</a>.
+      <a target="_blank" rel="noopener" :href="RELEASES">releases page on GitHub</a>.
     </p>
 
-    <ul class="files">
-      <li v-for="file in files" :key="file.suffix" class="card file">
-        <div class="what">
-          <strong>{{ file.name }}</strong>
-          <code class="muted">{{ file.install }}</code>
-        </div>
-        <a v-if="file.asset" :href="file.asset.browser_download_url" class="button primary">
-          {{ file.suffix }} <span class="weight">{{ size(file.asset.size) }}</span>
-        </a>
-        <a v-else :href="RELEASES" class="button">{{ file.suffix }}</a>
-      </li>
-    </ul>
+    <section v-for="platform in sections" :key="platform.system" class="platform">
+      <h2>{{ platform.title }}</h2>
+      <ul class="files">
+        <li v-for="file in platform.files" :key="file.suffix" class="card file">
+          <div class="what">
+            <strong>{{ file.name }}</strong>
+            <code v-if="file.command" class="muted">{{ file.command }}</code>
+            <span v-else class="muted how">{{ file.how }}</span>
+          </div>
+          <a v-if="file.asset" target="_blank" rel="noopener" :href="file.asset.browser_download_url" class="button primary">
+            {{ file.suffix.replace(/^-/, '') }} <span class="weight">{{ size(file.asset.size) }}</span>
+          </a>
+          <a v-else target="_blank" rel="noopener" :href="RELEASES" class="button">{{ file.suffix.replace(/^-/, '') }}</a>
+        </li>
+      </ul>
+    </section>
     <p class="muted small">
-      <a v-if="sums" :href="sums.browser_download_url">SHA256SUMS</a>
+      <a v-if="sums" target="_blank" rel="noopener" :href="sums.browser_download_url">SHA256SUMS</a>
       <template v-if="sums"> · </template>
-      <a :href="release.data.value?.html_url ?? RELEASES">Release notes</a> ·
-      <a :href="RELEASES">All releases</a>
+      <a target="_blank" rel="noopener" :href="release.data.value?.html_url ?? RELEASES">Release notes</a> ·
+      <a target="_blank" rel="noopener" :href="RELEASES">All releases</a>
     </p>
     <p class="muted">GameViber tells you when a new version is out and, with these files, installs it for you.</p>
 
@@ -90,13 +135,14 @@ const sums = computed(() => release.data.value?.assets.find((a) => a.name === 'S
       <h2>You also need</h2>
       <div class="grid">
         <div class="card">
-          <h3><a :href="INTIFACE">Intiface Central</a></h3>
+          <h3><a target="_blank" rel="noopener" :href="INTIFACE">Intiface Central</a></h3>
           <p class="muted">It connects your toys. Start it and click <strong>Start Server</strong> before GameViber.</p>
         </div>
         <div class="card">
-          <h3>A gamepad and PipeWire</h3>
+          <h3>A gamepad</h3>
           <p class="muted">
-            Any gamepad, for the rumble. PipeWire, for the game's sound: it is the default on recent systems.
+            Any gamepad, for the rumble. On Windows, ViGEmBus (the installer offers it); on Linux, PipeWire for the
+            game's sound, the default on recent systems.
           </p>
         </div>
       </div>
@@ -107,8 +153,8 @@ const sums = computed(() => release.data.value?.assets.find((a) => a.name === 'S
       <ol class="first-steps">
         <li>Start Intiface Central and click <strong>Start Server</strong>.</li>
         <li>
-          Start <strong>GameViber</strong> from your applications menu. Not with <code>sudo</code>: it asks for your
-          password itself when it needs it.
+          Start <strong>GameViber</strong> from your applications menu. On Linux, not with <code>sudo</code>: it asks
+          for your password itself when it needs it.
         </li>
         <li>Check that your toys show up in <strong>Toys</strong>, and your gamepad in <strong>Setup</strong>.</li>
         <li>
@@ -117,7 +163,7 @@ const sums = computed(() => release.data.value?.assets.find((a) => a.name === 'S
         </li>
         <li>Start your game and play. <strong>STOP ALL</strong>, or BACK + START held on the gamepad, stops everything.</li>
       </ol>
-      <p><a :href="USER_GUIDE">Read the full guide ›</a></p>
+      <p><a target="_blank" rel="noopener" :href="USER_GUIDE">Read the full guide ›</a></p>
     </section>
   </div>
 </template>
@@ -136,10 +182,22 @@ const sums = computed(() => release.data.value?.assets.find((a) => a.name === 'S
   margin: 16px 0;
 }
 
+.platform {
+  margin-top: 28px;
+}
+
+.platform h2 {
+  font-size: 20px;
+}
+
+.how {
+  font-size: 14px;
+}
+
 .files {
   list-style: none;
   padding: 0;
-  margin: 20px 0 12px;
+  margin: 12px 0 12px;
   display: grid;
   gap: 12px;
 }

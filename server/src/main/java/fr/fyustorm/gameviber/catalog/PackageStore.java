@@ -5,7 +5,11 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
@@ -18,6 +22,8 @@ import jakarta.enterprise.context.ApplicationScoped;
 public class PackageStore {
     @ConfigProperty(name = "data.dir")
     String dataDir;
+    /** What each version's mode is made for: a version's package never changes. */
+    private final Map<Path, List<String>> uses = new ConcurrentHashMap<>();
 
     public Path path(Mode mode, int version) {
         return Path.of(dataDir, "packages", mode.publicId, version + ".gameviber");
@@ -36,6 +42,25 @@ public class PackageStore {
                 return Optional.of(in.readAllBytes());
             }
         }
+    }
+
+    /** What a version's mode is made for (`SharedPackage.uses`), read from its package once. */
+    public List<String> uses(Mode mode, int version) {
+        return uses.computeIfAbsent(path(mode, version), path -> {
+            Map<String, byte[]> entries = new LinkedHashMap<>();
+            try (var zip = new ZipFile(path.toFile())) {
+                for (var entry : zip.stream().toList()) {
+                    String name = entry.getName();
+                    boolean read = name.endsWith(".json") || name.endsWith(".luau");
+                    try (var in = zip.getInputStream(entry)) {
+                        entries.put(name, read ? in.readAllBytes() : new byte[0]);
+                    }
+                }
+            } catch (IOException e) {
+                return List.of();
+            }
+            return List.copyOf(SharedPackage.uses(entries));
+        });
     }
 
     /** Written beside, then renamed: a failure leaves no half file. */

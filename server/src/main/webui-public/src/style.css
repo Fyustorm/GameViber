@@ -477,6 +477,10 @@ a.card:hover {
     margin-top: 0;
   }
 
+  .grid.two {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
   .grid.three {
     grid-template-columns: repeat(3, 1fr);
   }
