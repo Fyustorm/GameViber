@@ -118,6 +118,10 @@ impl App {
             ui.add_space(10.0);
             let game = mode_game(s).cloned();
             let tab = self.creator.tab;
+            // Where the game's image is gathered, it is needed whatever the script reads.
+            if !matches!(tab, Tab::Logs | Tab::Script | Tab::Funscripts) {
+                self.readiness_card(ui, s, matches!(tab, Tab::Assistant | Tab::Sessions | Tab::Screen | Tab::Phases));
+            }
             match (tab, &game) {
                 (Tab::Sessions, _) => self.sessions(ui, s),
                 (Tab::Logs, _) => self.log(ui),

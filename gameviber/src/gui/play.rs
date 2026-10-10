@@ -98,6 +98,7 @@ impl App {
             });
         });
         ui.add_space(12.0);
+        self.readiness_card(ui, s, false);
         if let Some(entry) = entry.filter(|e| e.dir().is_some()) {
             self.variants_row(ui, s, entry);
             ui.add_space(8.0);

@@ -6,8 +6,11 @@ goes through the rest.
 ## The app
 
 The top bar shows **the game being played** (pick another there), the state of
-the gamepad, of the rumble capture and of Intiface, the global maximum
-intensity and **STOP ALL**.
+the gamepad and its rumble, of Intiface, of the game's image (the in-game
+overlay on Linux) and of its sound, the global maximum intensity and **STOP ALL**.
+A mode's page, and the Creator, say what keeps the mode from working fully (no
+toy, the rumble not captured, an indicator it reads while GameViber does not see
+the game's image...) with the way to fix it.
 
 | Page | What it is for |
 |---|---|

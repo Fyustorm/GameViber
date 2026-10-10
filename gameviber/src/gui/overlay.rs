@@ -47,6 +47,8 @@ impl App {
                     window_capture(ui, s);
                     return;
                 }
+                required(ui);
+                ui.add_space(8.0);
                 self.overlay_install(ui, s);
                 ui.add_space(8.0);
                 if self.overlay.install.as_ref().is_some_and(|(_, archs)| overall(archs) != InstallState::NotInstalled) {
@@ -62,12 +64,23 @@ impl App {
         });
     }
 
+    /// The overlay's files, checked again only when forgotten or the scope changed.
+    fn overlay_archs(&mut self, s: &Shared) -> Vec<(Arch, InstallState)> {
+        let all_games = s.settings.overlay.all_games;
+        if self.overlay.install.as_ref().is_none_or(|(all, _)| *all != all_games) {
+            self.overlay.install = Some((all_games, overlay::install_state(all_games)));
+        }
+        self.overlay.install.as_ref().map(|(_, a)| a.clone()).unwrap_or_default()
+    }
+
+    /// The overlay is installed, even outdated.
+    pub(super) fn overlay_installed(&mut self, s: &Shared) -> bool {
+        overall(&self.overlay_archs(s)) != InstallState::NotInstalled
+    }
+
     fn overlay_install(&mut self, ui: &mut egui::Ui, s: &Shared) {
         let mut settings = s.settings.overlay.clone();
-        if self.overlay.install.as_ref().is_none_or(|(all, _)| *all != settings.all_games) {
-            self.overlay.install = Some((settings.all_games, overlay::install_state(settings.all_games)));
-        }
-        let archs = self.overlay.install.as_ref().map(|(_, a)| a.clone()).unwrap_or_default();
+        let archs = self.overlay_archs(s);
         let install = overall(&archs);
         // Installed with GameViber's package: nothing to install or remove.
         let packaged = overlay::packaged();
@@ -147,6 +160,19 @@ impl App {
             }
         });
     }
+}
+
+/// On Linux, the game's image comes only through the overlay.
+fn required(ui: &mut egui::Ui) {
+    card(PANEL).stroke(egui::Stroke::new(1.5, DANGER)).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.label(RichText::new("⚠ Required to play modes made for a game").strong().size(15.0).color(DANGER_TEXT));
+        ui.label(
+            "GameViber sees the game's image only through the overlay. Without it, the indicators a mode reads \
+             (health, gauges...) and the phases recognized from the image stay empty: most modes made for a game \
+             then barely work. Install it, then enable it in each game below.",
+        );
+    });
 }
 
 /// The state to show for the whole overlay: the 64-bit layer decides whether it

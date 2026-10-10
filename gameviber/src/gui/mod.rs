@@ -29,6 +29,7 @@ mod settings;
 mod setup;
 mod sharing;
 mod play;
+mod readiness;
 mod screen;
 mod sessions;
 mod inputs;
@@ -325,20 +326,7 @@ impl App {
                 ui.label(RichText::new("〰 GameViber").size(16.0).strong().color(ACCENT));
                 ui.add_space(8.0);
                 self.game_picker(ui, s);
-                let (pad_color, pad_text) = gamepad_status(s);
-                if status_chip(ui, pad_color, "🎮", &pad_text).clicked() {
-                    self.page = Page::Setup;
-                    self.setup_tab = setup::Tab::Gamepad;
-                }
-                let (rumble_color, rumble_text) = capture_status(s);
-                if status_chip(ui, rumble_color, "📳", &rumble_text).clicked() {
-                    self.page = Page::Setup;
-                    self.setup_tab = setup::Tab::Gamepad;
-                }
-                let (toy_color, toy_text) = intiface_status(s);
-                if status_chip(ui, toy_color, "🔌", &toy_text).clicked() {
-                    self.page = Page::Toys;
-                }
+                self.status_chips(ui, s);
                 let session = match (s.recording, &s.replay) {
                     (Some(secs), _) => Some((DANGER_TEXT, "⏺", format!("Recording {:.0} s", secs))),
                     (None, Some(_)) if self.player_outdated() => Some((WARN, "▶", "Replaying a session · changes to apply".to_owned())),
