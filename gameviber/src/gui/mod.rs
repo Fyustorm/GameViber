@@ -22,6 +22,7 @@ mod library;
 mod live;
 mod luau;
 mod motions;
+mod navigation;
 mod onboarding;
 mod pad_setup;
 mod overlay;
@@ -106,6 +107,8 @@ pub struct App {
     inputs: inputs::State,
     motions: motions::State,
     sharing: sharing::State,
+    /// The places seen, to go back to; the menu of modes.
+    navigation: navigation::State,
     /// The engine was told the Screen page is open.
     watching_screen: bool,
     /// Development: screenshots of every page (`GAMEVIBER_SCREENSHOTS`).
@@ -163,6 +166,7 @@ impl App {
             inputs: inputs::State::default(),
             motions: motions::State::default(),
             sharing: sharing::State::default(),
+            navigation: navigation::State::default(),
             watching_screen: false,
             tour: tour::Tour::from_env(),
             updater: None,
@@ -273,6 +277,7 @@ impl eframe::App for App {
             return;
         }
 
+        self.history_buttons(ui.ctx(), &s);
         self.status_bar(ui, &s);
         self.update_banner(ui);
         self.rail(ui, &s);
@@ -301,6 +306,7 @@ impl eframe::App for App {
             self.stats_consent(ui.ctx(), &s);
         }
         self.run_player(ui.ctx(), &s);
+        self.remember_location();
         // The overlay copies the game's image while it is looked at, even when modes do not see it.
         let watching = self.page == Page::Creator && self.creator.watches_screen();
         if watching != self.watching_screen {

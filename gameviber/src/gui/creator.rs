@@ -14,7 +14,7 @@ use super::diagram::{mode_diagram, Part};
 use super::library::mode_game;
 use super::luau;
 use super::theme::*;
-use super::{main_of, App, Page, Route};
+use super::{App, Page, Route};
 use crate::config::{self, ModeEntry, NEW_MODE_TEMPLATE};
 use crate::engine::{Command, Shared};
 
@@ -154,16 +154,15 @@ impl App {
         }
     }
 
-    /// The mode's name, its game, the way to its page, other modes, the help.
+    /// The path to the mode (its page, its game, other modes), its name, the help.
     fn creator_header(&mut self, ui: &mut egui::Ui, s: &Shared) {
         let entry = ModeEntry::from_id(&s.mode.id);
         let name = s.mode.info.as_ref().map_or_else(|| entry.key.clone(), |i| i.name.clone());
         let wide = ui.available_width() >= WIDE_HEADER;
         let draft = is_draft(&self.creator.editor.text);
+        self.mode_path(ui, s, Some("Creator"));
         let title = |ui: &mut egui::Ui| {
             ui.label(RichText::new(&name).size(20.0).strong());
-            let game = mode_game(s).map_or_else(|| if entry.builtin { "any game".to_owned() } else { "no game".to_owned() }, |g| g.name.clone());
-            ui.label(muted(format!("for {game}")).size(14.0));
             if entry.builtin {
                 pill(ui, "Built-in", TEXT, RAISED);
             } else if draft {
@@ -180,27 +179,6 @@ impl App {
                 if ui.add(help).clicked() {
                     self.creator.help = !self.creator.help;
                 }
-                if ui.button("Its page ›").on_hover_text("Its settings, sharing it, its game").clicked() {
-                    self.page = Page::Library;
-                    self.route = Route::Mode;
-                }
-                egui::ComboBox::from_id_salt("creator-mode").selected_text("Another mode").width(150.0).show_ui(ui, |ui| {
-                    for entry in s.modes.iter().filter(|e| !e.builtin) {
-                        let name = s.catalog.get(&entry.id).and_then(|r| r.as_ref().ok()).map_or(entry.key.clone(), |i| i.name.clone());
-                        if ui.selectable_label(main_of(&s.mode.id) == entry.id, name).clicked() {
-                            if let Some(game) = s.games.iter().find(|g| g.modes.contains(&entry.id)) {
-                                if s.game.as_ref().is_none_or(|p| p.id != game.id) {
-                                    self.send(Command::SelectGame(Some(game.id.clone())));
-                                }
-                            }
-                            self.send(Command::SelectMode(entry.id.clone()));
-                        }
-                    }
-                    ui.separator();
-                    if ui.selectable_label(false, "+ Create a mode").clicked() {
-                        self.open_create(None);
-                    }
-                });
         };
         if wide {
             ui.horizontal(|ui| {
@@ -308,7 +286,7 @@ impl App {
                 return;
             }
             ui.label("What a mode reads belongs to a game: give this mode one on its page.");
-            if ui.button("Its page ›").clicked() {
+            if ui.button("Give it a game ›").clicked() {
                 self.page = Page::Library;
                 self.route = Route::Mode;
             }

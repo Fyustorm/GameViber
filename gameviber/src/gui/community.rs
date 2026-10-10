@@ -133,7 +133,31 @@ pub struct State {
     pub(super) consent_preview: bool,
 }
 
+/// Where the Community page is: a game's modes, a mode's page.
+#[derive(Clone, PartialEq)]
+pub(super) struct Place {
+    game: Option<GameView>,
+    selected: Option<Source>,
+}
+
 impl State {
+    pub(super) fn place(&self) -> Place {
+        Place { game: self.game.clone(), selected: self.selected.clone() }
+    }
+
+    /// Back to a place left: what it shows is asked for again.
+    pub(super) fn go_to(&mut self, place: Place) {
+        if place.game != self.game {
+            self.game = place.game;
+            self.modes = Remote::Idle;
+        }
+        if place.selected != self.selected {
+            self.selected = place.selected;
+            self.detail = Remote::Idle;
+            self.report = None;
+        }
+    }
+
     /// Shows `game`'s modes on the Community page.
     pub(super) fn open_game(&mut self, game: GameView) {
         self.game = Some(game);

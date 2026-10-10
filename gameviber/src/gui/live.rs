@@ -32,7 +32,7 @@ impl App {
                             if ui.button("In the Creator ›").clicked() {
                                 self.page = Page::Creator;
                             }
-                            if ui.button("Its page ›").clicked() {
+                            if ui.button("Mode page ›").on_hover_text("Its settings, presets and variants, sharing it, its game").clicked() {
                                 self.page = Page::Library;
                                 self.route = Route::Mode;
                             }

@@ -23,7 +23,7 @@ const TILE_HEIGHT: f32 = 92.0;
 
 /// The modes shown.
 #[derive(Default, PartialEq, Clone)]
-enum Filter {
+pub(super) enum Filter {
     #[default]
     All,
     /// One game's, by id.
@@ -34,7 +34,7 @@ enum Filter {
 
 #[derive(Default)]
 pub struct State {
-    filter: Filter,
+    pub(super) filter: Filter,
     /// The game typed on the Create page; None until the page fills it in.
     create: Option<String>,
     /// A game asked for to make a mode for, by name: the mode is made once the engine lists it.
@@ -85,15 +85,22 @@ impl App {
 
     /// Plays the mode `id` of `game` (None: a built-in mode for any game) and opens its page.
     fn open_mode(&mut self, s: &Shared, game: Option<&Game>, id: &str) {
-        if let Some(game) = game.filter(|g| s.game.as_ref().is_none_or(|p| p.id != g.id)) {
-            self.send(Command::SelectGame(Some(game.id.clone())));
-        }
-        if main_of(&s.mode.id) != id {
-            self.send(Command::SelectMode(id.to_owned()));
-        }
+        // The mode's tile keeps the variant played.
+        let id = if main_of(&s.mode.id) == id { &s.mode.id } else { id };
+        self.play_mode(s, game, id);
         self.feedback.open = false;
         self.page = Page::Library;
         self.route = Route::Mode;
+    }
+
+    /// Plays the mode (or variant) `id` of `game` (None: a built-in mode, or one in no game).
+    pub(super) fn play_mode(&mut self, s: &Shared, game: Option<&Game>, id: &str) {
+        if let Some(game) = game.filter(|g| s.game.as_ref().is_none_or(|p| p.id != g.id)) {
+            self.send(Command::SelectGame(Some(game.id.clone())));
+        }
+        if s.mode.id != id {
+            self.send(Command::SelectMode(id.to_owned()));
+        }
     }
 
     /// A path of links; the last item is the current page.
@@ -435,11 +442,7 @@ impl App {
 
     fn mode_route(&mut self, ui: &mut egui::Ui, s: &Shared) {
         let game = mode_game(s).cloned();
-        let name = s.mode.info.as_ref().map_or("Mode".to_owned(), |i| i.name.clone());
-        match &game {
-            Some(g) => self.breadcrumb(ui, &[("Library", Some(Route::Library)), (&g.name, Some(Route::Library)), (&name, None)]),
-            None => self.breadcrumb(ui, &[("Library", Some(Route::Library)), (&name, None)]),
-        }
+        self.mode_path(ui, s, None);
         self.mode_page(ui, s);
         if s.mode.id.is_empty() {
             return;
@@ -617,7 +620,7 @@ impl App {
 
 /// The library's groups: each game with modes, the game being played first,
 /// then the player's modes in no game.
-fn groups(s: &Shared) -> Vec<(Option<Game>, Vec<String>)> {
+pub(super) fn groups(s: &Shared) -> Vec<(Option<Game>, Vec<String>)> {
     let mut games: Vec<&Game> = s.games.iter().filter(|g| !g.modes.is_empty()).collect();
     games.sort_by_key(|g| (s.game.as_ref().is_none_or(|p| p.id != g.id), g.name.to_lowercase()));
     let mut groups: Vec<(Option<Game>, Vec<String>)> = games.into_iter().map(|g| (Some(g.clone()), g.modes.clone())).collect();
