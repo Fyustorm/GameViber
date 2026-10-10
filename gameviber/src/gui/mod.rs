@@ -275,7 +275,7 @@ impl eframe::App for App {
 
         self.status_bar(ui, &s);
         self.update_banner(ui);
-        self.rail(ui);
+        self.rail(ui, &s);
         let mode_page = self.page == Page::Library && self.route == Route::Mode;
         // The fix page needs the room.
         let fixing = mode_page && self.feedback.open;
@@ -326,68 +326,45 @@ impl App {
                 ui.label(RichText::new("〰 GameViber").size(16.0).strong().color(ACCENT));
                 ui.add_space(8.0);
                 self.game_picker(ui, s);
-                self.status_chips(ui, s);
                 let session = match (s.recording, &s.replay) {
                     (Some(secs), _) => Some((DANGER_TEXT, "⏺", format!("Recording {:.0} s", secs))),
                     (None, Some(_)) if self.player_outdated() => Some((WARN, "▶", "Replaying a session · changes to apply".to_owned())),
                     (None, Some(_)) => Some((WARN, "▶", "Replaying a session".to_owned())),
                     (None, None) => None,
                 };
+                // The chips share the bar: a long gamepad or sound name is cut, whole in its tooltip.
+                let chips = 4 + usize::from(session.is_some()) + usize::from(s.panic);
+                let width = ui.available_width() / chips as f32 - CHIP_FRAME;
+                self.status_chips(ui, s, width);
                 if let Some((color, icon, text)) = session {
-                    if status_chip(ui, color, icon, &text).on_hover_text("Creator › Sessions").clicked() {
+                    if status_chip(ui, color, icon, &text, width).on_hover_text("Creator › Sessions").clicked() {
                         self.page = Page::Creator;
                         self.creator.show_sessions();
                     }
                 }
-
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if s.panic {
-                        if ui.add(primary("Re-arm")).clicked() {
-                            self.send(Command::Rearm);
-                        }
-                        ui.label(RichText::new("⛔ PANIC STOP").strong().color(DANGER_TEXT));
-                    } else {
-                        let stop = egui::Button::new(RichText::new("STOP ALL").strong().color(egui::Color32::WHITE))
-                            .fill(DANGER)
-                            .min_size(Vec2::new(0.0, 34.0));
-                        let hint = format!(
-                            "Stops every toy. Also: hold {} on the gamepad",
-                            crate::gamepad::combo_text(&s.settings.panic_combo)
-                        );
-                        if ui.add(stop).on_hover_text(hint).clicked() {
-                            self.send(Command::Panic);
-                        }
-                    }
-                    ui.add_space(8.0);
-                    let mut cap = s.settings.global_cap * 100.0;
-                    ui.spacing_mut().slider_width = 120.0;
-                    let slider = egui::Slider::new(&mut cap, 0.0..=100.0).suffix("%").integer();
-                    if ui.add(slider).on_hover_text("No toy ever goes above this intensity").changed() {
-                        self.send(Command::SetCap(cap / 100.0));
-                    }
-                    ui.label(muted("Max"));
-                });
+                if s.panic {
+                    status_chip(ui, DANGER_TEXT, "⛔", "Toys stopped", width).on_hover_text("Re-arm them at the bottom of the left bar");
+                }
             });
         });
     }
 
-    fn rail(&mut self, ui: &mut egui::Ui) {
+    fn rail(&mut self, ui: &mut egui::Ui, s: &Shared) {
         let frame = egui::Frame::new().fill(SIDEBAR).inner_margin(Margin::symmetric(8, 14));
         egui::Panel::left("rail").frame(frame).exact_size(84.0).resizable(false).show(ui, |ui| {
             ui.vertical_centered(|ui| {
+                // The modes, then playing with them; setting GameViber up at the bottom.
                 for (page, icon, label) in [
                     (Page::Community, "🌐", "Community"),
                     (Page::Library, "📚", "Library"),
+                    (Page::Creator, "🔧", "Creator"),
                     (Page::Live, "📺", "Live"),
                     (Page::Toys, "📳", "Toys"),
-                    (Page::Setup, "🛠", "Setup"),
-                    (Page::Creator, "🔧", "Creator"),
                 ] {
+                    if page == Page::Live {
+                        rail_separator(ui);
+                    }
                     if nav_item(ui, icon, label, self.page == page).clicked() {
-                        if page == Page::Setup && self.page != page {
-                            // Check the installed overlay files again.
-                            self.overlay.forget_install_state();
-                        }
                         // The Library button always leads back to the list of modes.
                         if page == Page::Library && self.page == Page::Library {
                             self.route = Route::Library;
@@ -396,12 +373,49 @@ impl App {
                     }
                 }
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
+                    self.stop_button(ui, s);
+                    rail_separator(ui);
                     if nav_item(ui, "⚙", "Settings", self.page == Page::Settings).clicked() {
                         self.page = Page::Settings;
+                    }
+                    if nav_item(ui, "🛠", "Setup", self.page == Page::Setup).clicked() && self.page != Page::Setup {
+                        // Check the installed overlay files again.
+                        self.overlay.forget_install_state();
+                        self.page = Page::Setup;
                     }
                 });
             });
         });
+    }
+
+    /// STOP ALL, or Re-arm after a panic stop: at the bottom of the rail, on every page.
+    fn stop_button(&mut self, ui: &mut egui::Ui, s: &Shared) {
+        let (rect, response) = ui.allocate_exact_size(Vec2::new(68.0, 54.0), egui::Sense::click());
+        let painter = ui.painter();
+        let label = if s.panic { "Re-arm" } else { "STOP ALL" };
+        if s.panic {
+            painter.rect(rect, 10, if response.hovered() { RAISED } else { PANEL }, egui::Stroke::new(1.5, DANGER), egui::StrokeKind::Inside);
+        } else {
+            painter.rect_filled(rect, 10, if response.hovered() { DANGER_TEXT } else { DANGER });
+        }
+        let color = if s.panic { DANGER_TEXT } else { egui::Color32::WHITE };
+        painter.text(rect.center_top() + Vec2::new(0.0, 18.0), egui::Align2::CENTER_CENTER, "⛔", egui::FontId::proportional(18.0), color);
+        painter.text(
+            rect.center_bottom() - Vec2::new(0.0, 12.0),
+            egui::Align2::CENTER_CENTER,
+            label,
+            egui::FontId::proportional(12.0),
+            color,
+        );
+        ui.add_space(4.0);
+        let hint = if s.panic {
+            "Every toy is stopped: click to let the mode drive them again".to_owned()
+        } else {
+            format!("Stops every toy. Also: hold {} on the gamepad", crate::gamepad::combo_text(&s.settings.panic_combo))
+        };
+        if response.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(hint).clicked() {
+            self.send(if s.panic { Command::Rearm } else { Command::Panic });
+        }
     }
 
     /// The game being played, to pick another.
@@ -440,7 +454,17 @@ fn nav_item(ui: &mut egui::Ui, icon: &str, label: &str, active: bool) -> egui::R
     response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
-fn status_chip(ui: &mut egui::Ui, color: egui::Color32, icon: &str, text: &str) -> egui::Response {
+/// What a status chip takes around its text.
+const CHIP_FRAME: f32 = 48.0;
+
+/// A thin line between groups of the rail.
+fn rail_separator(ui: &mut egui::Ui) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(44.0, 9.0), egui::Sense::hover());
+    ui.painter().hline(rect.x_range(), rect.center().y, egui::Stroke::new(1.0, LINE));
+    ui.add_space(4.0);
+}
+
+fn status_chip(ui: &mut egui::Ui, color: egui::Color32, icon: &str, text: &str, width: f32) -> egui::Response {
     let response = egui::Frame::new()
         .fill(RAISED)
         .stroke(egui::Stroke::new(1.0, LINE))
@@ -449,7 +473,9 @@ fn status_chip(ui: &mut egui::Ui, color: egui::Color32, icon: &str, text: &str) 
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
             dot(ui, color);
-            ui.label(RichText::new(format!("{icon} {text}")).size(12.5));
+            let text = egui::WidgetText::from(RichText::new(format!("{icon} {text}")).size(12.5));
+            let galley = text.into_galley(ui, Some(egui::TextWrapMode::Truncate), width.max(60.0), egui::TextStyle::Body);
+            ui.label(galley);
         })
         .response;
     response.interact(egui::Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand)

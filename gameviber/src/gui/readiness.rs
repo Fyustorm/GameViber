@@ -153,14 +153,14 @@ const CARD_WIDTH: f32 = 620.0;
 
 impl App {
     /// The status bar's chips: gamepad and rumble, toys, the game's image, its sound.
-    pub(super) fn status_chips(&mut self, ui: &mut egui::Ui, s: &Shared) {
+    pub(super) fn status_chips(&mut self, ui: &mut egui::Ui, s: &Shared, width: f32) {
         let needs = needs(s);
         let (color, text, hover) = pad_chip(s);
-        if status_chip(ui, color, "🎮", &text).on_hover_text(hover).clicked() {
+        if status_chip(ui, color, "🎮", &text, width).on_hover_text(hover).clicked() {
             self.open_setup(setup::Tab::Gamepad);
         }
         let (color, text) = intiface_status(s);
-        if status_chip(ui, color, "🔌", &text).clicked() {
+        if status_chip(ui, color, "🔌", &text, width).clicked() {
             self.page = Page::Toys;
         }
         let image = Image::of(s, self.overlay_installed(s));
@@ -169,12 +169,12 @@ impl App {
             Some(fix) => format!("No game image: indicators and image phases stay empty.\n{fix}"),
             None => "Modes see the game's image: phases, indicators, flashes".to_owned(),
         };
-        if status_chip(ui, color, "🖼", &text).on_hover_text(hover).clicked() {
+        if status_chip(ui, color, "🖼", &text, width).on_hover_text(hover).clicked() {
             self.open_setup(setup::Tab::Overlay);
         }
         let (color, text) = sound_chip(s, needs.sound);
         let hover = s.audio.status.error.clone().unwrap_or_else(|| "The game's sound: hits, levels, phases".to_owned());
-        if status_chip(ui, color, "🔊", &text).on_hover_text(hover).clicked() {
+        if status_chip(ui, color, "🔊", &text, width).on_hover_text(hover).clicked() {
             self.open_setup(setup::Tab::Sound);
         }
     }
