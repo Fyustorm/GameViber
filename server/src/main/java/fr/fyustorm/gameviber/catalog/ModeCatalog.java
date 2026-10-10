@@ -141,6 +141,10 @@ public class ModeCatalog {
         if (!sameGame) {
             throw Problem.badRequest("this version is for another game (" + pkg.gameName + ") than " + game.name);
         }
+        // A mode first published without its game's Steam app id (no executable linked) gets it from a later version.
+        if (game.steamAppId == null && pkg.steamAppId != null && Game.count("steamAppId", pkg.steamAppId) == 0) {
+            game.steamAppId = pkg.steamAppId;
+        }
         int number = ModeVersion.latest(mode).map(v -> v.number + 1).orElse(1);
         addVersion(mode, pkg, changelog, number);
         mode.updatedAt = Instant.now();

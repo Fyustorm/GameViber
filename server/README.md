@@ -77,7 +77,7 @@ wider screens.
 | | `POST /api/modes/{id}/share-code`, `DELETE /api/modes/{id}` | a new share code; withdraw |
 | | `GET /api/authors/me/modes` | |
 | Administrator | `POST /api/admin/session` | form `token` → an 8-hour session |
-| | `/api/admin/modes`, `/authors`, `/reports`, `/games/{id}/merge?into=` | the back-office's |
+| | `/api/admin/modes`, `/authors`, `/reports`, `/games`, `/games/{id}` (name, Steam app id), `/games/{id}/merge?into=` | the back-office's |
 
 Errors answer `{"error": "<a sentence to show>"}`. A package is checked as
 GameViber checks one it imports (`SharedPackage`): its entries, their sizes,

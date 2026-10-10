@@ -98,10 +98,14 @@ const views = {
     ]));
   },
   async games() {
-    const games = await api("GET", "/api/games");
+    const games = await api("GET", "/api/admin/games");
     return `<form id="merge"><label>Merge game <input name="from" type="number" required></label>
       <label>into <input name="into" type="number" required></label><button type="submit">Merge</button></form><br>` +
-      table(["Id", "Game", "Steam app", "Public modes"], games.map((g) => [g.id, esc(g.name), g.steamAppId ?? "", g.modes]));
+      table(["Id", "Game and Steam app id", "Public modes"], games.map((g) => [g.id,
+        `<form class="game" data-id="${g.id}"><input name="name" value="${esc(g.name)}" required aria-label="Name">
+          <input name="steamAppId" value="${g.steamAppId ?? ""}" inputmode="numeric" placeholder="none" aria-label="Steam app id">
+          <button type="submit">Save</button></form>`,
+        g.modes]));
   },
 };
 
@@ -148,6 +152,9 @@ document.addEventListener("submit", async (e) => {
     } else if (e.target.id === "merge") {
       const f = new FormData(e.target);
       await api("POST", `/api/admin/games/${f.get("from")}/merge?into=${f.get("into")}`);
+      render("games");
+    } else if (e.target.classList.contains("game")) {
+      await api("POST", `/api/admin/games/${e.target.dataset.id}`, null, new FormData(e.target));
       render("games");
     }
   } catch (err) { $("error").textContent = err.message; }

@@ -192,6 +192,16 @@ public class CatalogTest {
     }
 
     @Test
+    void aVersionGivesItsGameTheSteamAppIdTheFirstLacked() {
+        String token = register(unique("a"));
+        String game = unique("Game");
+        long steamAppId = 1_000_000 + Math.floorMod(UUID.randomUUID().hashCode(), 1_000_000_000);
+        String id = publish(token, gameviber(game, null), "public").statusCode(200).extract().path("id");
+        as(token).multiPart("package", "m.gameviber", gameviber(game, steamAppId), "application/zip").post("/api/modes/" + id + "/versions")
+                .then().statusCode(200).body("game.steamAppId", equalTo((int) steamAppId));
+    }
+
+    @Test
     void whatAModeIsMadeForIsReadFromItsPackage() {
         Map<String, byte[]> entries = new LinkedHashMap<>();
         entries.put("gameviber.json", "{\"inputs\":{\"zones\":[{\"name\":\"hp\"}]}}".getBytes(StandardCharsets.UTF_8));
@@ -282,11 +292,24 @@ public class CatalogTest {
         as(admin).post("/api/admin/games/" + from + "/merge?into=" + into).then().statusCode(200).body("modes", equalTo(2)).body("steamAppId", equalTo(steamAppId));
         given().get("/api/modes/" + other).then().body("game.id", equalTo(into));
 
+        // A game edited by hand: its Steam app id, which no other game may have.
+        int edited = 1_000_000 + Math.floorMod(UUID.randomUUID().hashCode(), 1_000_000_000);
+        as(admin).get("/api/admin/games").then().statusCode(200).body("id", hasItem(into));
+        as(admin).formParam("name", game).formParam("steamAppId", String.valueOf(edited)).post("/api/admin/games/" + into)
+                .then().statusCode(200).body("steamAppId", equalTo(edited));
+        given().get("/api/modes/" + id).then().body("game.steamAppId", equalTo(edited));
+        int third = given().get("/api/modes/" + publish(token, gameviber(game + " 3", null), "public").statusCode(200).extract().path("id"))
+                .then().extract().path("game.id");
+        as(admin).formParam("name", game + " 3").formParam("steamAppId", String.valueOf(edited)).post("/api/admin/games/" + third)
+                .then().statusCode(400).body("error", containsString("merge"));
+        as(admin).formParam("name", game).formParam("steamAppId", "").post("/api/admin/games/" + third)
+                .then().statusCode(400).body("error", containsString("merge"));
+
         // Blocked: no more signing in nor publishing.
         int author = as(admin).get("/api/admin/authors").then().extract().path("find { it.pseudo == '" + pseudo + "' }.id");
         as(admin).post("/api/admin/authors/" + author + "/block").then().statusCode(200).body("blocked", equalTo(true));
         given().contentType(ContentType.JSON).body(Map.of("pseudo", pseudo, "password", "secret-password")).post("/api/authors/session").then().statusCode(403);
         publish(token, gameviber(game, null), "public").statusCode(403);
-        assertEquals(2, (int) as(admin).get("/api/admin/authors").then().extract().path("find { it.pseudo == '" + pseudo + "' }.modes"));
+        assertEquals(3, (int) as(admin).get("/api/admin/authors").then().extract().path("find { it.pseudo == '" + pseudo + "' }.modes"));
     }
 }

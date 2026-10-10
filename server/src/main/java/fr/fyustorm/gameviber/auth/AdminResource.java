@@ -33,8 +33,8 @@ import jakarta.ws.rs.core.Response;
 
 /**
  * The back-office: the operations token (ADMIN_TOKEN) is traded once for an
- * administration session, which withdraws modes, blocks authors, merges games
- * and handles reports.
+ * administration session, which withdraws modes, blocks authors, edits and
+ * merges games and handles reports.
  */
 @Path("/api/admin")
 @RolesAllowed(Tokens.ADMIN)
@@ -119,6 +119,53 @@ public class AdminResource {
         Author author = Author.<Author>findByIdOptional(id).orElseThrow(() -> Problem.notFound("no such author"));
         author.blocked = blocked;
         return new AuthorView(author.id, author.pseudo, author.blocked, Mode.count("authorId", author.id), author.createdAt);
+    }
+
+    /** Every game, even those without public modes, newest first. */
+    @GET
+    @Path("/games")
+    public List<Views.GameView> games() {
+        return Game.<Game>list("order by createdAt desc").stream().map(Views::game).toList();
+    }
+
+    /**
+     * A game's name and Steam app id (blank: none), set by hand: a mode published
+     * without its executable linked leaves its game without one, and without its
+     * Steam picture on the website.
+     */
+    @POST
+    @Path("/games/{id}")
+    @Consumes(MediaType.APPLICATION_FORM_URLENCODED)
+    @Transactional
+    public Views.GameView edit(@PathParam("id") long id, @FormParam("name") String name, @FormParam("steamAppId") String steamAppId) {
+        Game game = Game.<Game>findByIdOptional(id).orElseThrow(() -> Problem.notFound("no such game"));
+        String trimmed = name == null ? "" : name.trim();
+        String slug = Game.slug(trimmed);
+        if (slug.isEmpty()) {
+            throw Problem.badRequest("a game needs a name");
+        }
+        if (Game.count("slug = ?1 and id <> ?2", slug, game.id) > 0) {
+            throw Problem.badRequest("another game has this name: merge them instead");
+        }
+        Long app = null;
+        if (steamAppId != null && !steamAppId.isBlank()) {
+            try {
+                app = Long.parseLong(steamAppId.trim());
+            } catch (NumberFormatException e) {
+                throw Problem.badRequest("a Steam app id is a number");
+            }
+            if (app <= 0) {
+                throw Problem.badRequest("a Steam app id is a number above 0");
+            }
+            if (Game.count("steamAppId = ?1 and id <> ?2", app, game.id) > 0) {
+                throw Problem.badRequest("another game has this Steam app id: merge them instead");
+            }
+        }
+        game.name = trimmed;
+        game.slug = slug;
+        game.steamAppId = app;
+        log.infof("game %d edited: %s, Steam app %s", game.id, game.name, game.steamAppId);
+        return Views.game(game);
     }
 
     /** Two names of one game: `id`'s modes join `into`, which keeps its name. */
