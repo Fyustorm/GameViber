@@ -452,8 +452,11 @@ struct Draft {
     /// Corners of the rectangle, as fractions of the image.
     start: Option<Pos2>,
     end: Option<Pos2>,
-    /// The drag going on.
+    /// The drag going on...
     grab: Option<Grab>,
+    /// ...drawing the first rectangle: the settings it shows wait until it is
+    /// drawn, so that they do not shrink the image under the pointer.
+    sketching: bool,
     name: String,
     kind: IndicatorKind,
     direction: Direction,
@@ -529,6 +532,7 @@ impl Default for Draft {
             start: None,
             end: None,
             grab: None,
+            sketching: false,
             name: String::new(),
             kind: IndicatorKind::Visibility,
             direction: Direction::Right,
@@ -611,6 +615,7 @@ impl Draft {
         self.start = Some(Pos2::new(x, y));
         self.end = Some(Pos2::new(x + w, y + h));
         self.grab = None;
+        self.sketching = false;
         self.picking = None;
         self.by_look = indicators::has_look(zone);
         self.look = self.by_look.then(|| Look {
@@ -1572,6 +1577,7 @@ impl App {
                         }
                         match &mut grab {
                             Grab::New => {
+                                draft.sketching = draft.rect().is_none();
                                 draft.start = Some(to_fraction(origin));
                                 draft.end = draft.start;
                             }
@@ -1593,6 +1599,7 @@ impl App {
                 }
                 if response.drag_stopped() {
                     draft.grab = None;
+                    draft.sketching = false;
                 }
             }
             // A click on another indicator's zone, or one of this indicator, opens it (not while clicking a path).
@@ -1738,7 +1745,9 @@ impl App {
             }
         }
 
-        let hint = match (draft.picking, draft.rect()) {
+        // The rectangle drawn, once the first one is.
+        let drawn = draft.rect().filter(|_| !draft.sketching);
+        let hint = match (draft.picking, drawn) {
             (None, _) if can_draw && draft.traced() => {
                 "Click along the middle of the bar, from the end it fills from (0%) to its full end (100%); drag a point to move it, \
                  right-click one to remove it; arrow keys nudge it all."
@@ -1982,7 +1991,7 @@ impl App {
         }
 
         // The zone's own settings: its shape, and where it was drawn.
-        if can_draw && (draft.rect().is_some() || draft.kind == IndicatorKind::Gauge) {
+        if can_draw && (drawn.is_some() || draft.kind == IndicatorKind::Gauge) {
             let title = match draft.editing.and_then(|i| indicator_zones.iter().position(|&z| z == i)) {
                 Some(n) => format!("Zone {}", n + 1),
                 None if indicator_name.is_some() => "New zone".to_owned(),
@@ -2030,7 +2039,7 @@ impl App {
                 }
             });
         }
-        if draft.rect().is_some() {
+        if drawn.is_some() {
             let saved = draft.editing.and_then(|i| inputs.zones.get(i));
             ui.horizontal_wrapped(|ui| {
                 if draft.kind == IndicatorKind::Visibility {
@@ -2157,7 +2166,7 @@ impl App {
         ui.add_space(2.0);
         ui.horizontal_wrapped(|ui| {
             match problem {
-                Some(problem) if dirty || draft.rect().is_some() => {
+                Some(problem) if dirty || drawn.is_some() => {
                     ui.label(RichText::new(problem).color(WARN).size(12.5));
                 }
                 _ if dirty => {
