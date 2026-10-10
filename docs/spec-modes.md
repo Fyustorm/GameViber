@@ -514,14 +514,18 @@ name; identical toys are numbered (`Lush 3`, `Lush 3 #2`) in the order they conn
 
 ```lua
 set(x [, channel])            -- base level of the channel, 0..1, held until the next set
-pulse(x, seconds [, channel]) -- temporary overlay of intensity x for `seconds`
+pulse(x, seconds [, channel | opts]) -- adds x to the channel for `seconds`
 play(pattern [, opts])        -- plays a pattern (§8.3), returns a handle with :stop()
 stop_all()                    -- resets the base level to 0 and cancels pulses and patterns
 ```
 
 - `channel` defaults to `"main"`, or `"*"` for all channels.
 - Values outside 0..1 are silently clamped.
-- **Final channel value** = `max(base level, active pulses, active patterns)`.
+- **Final channel value** = `max(base level, active patterns) + active pulses`, at
+  most 1: a pulse is an accent felt whatever plays under it, several add up. Keep
+  waves and backgrounds at 0.6 or below so that pulses still stand out.
+- `pulse(x, seconds, { channel = "main", add = false })` joins the max instead of
+  adding: the channel plays at least `x` for `seconds` (a level, not an accent).
 - v1: a channel drives all the actuators (vibration, rotation, oscillation) of the toys
   mapped to it. For the script, it is always an intensity between 0 and 1. A stroker
   (a toy moving to positions) plays it as strokes, faster and longer as it rises
@@ -584,6 +588,9 @@ thrust(length, seconds [, channel]) -- one stroke there and back, at once
   `seconds` (there and back), never faster than the toy can go, then the strokes go
   on. Other toys feel it as `pulse(length, seconds)`. A thrust is the accent: a hit,
   a parry, a finisher; use it like a pulse, not every tick.
+- A thrust already is the pulse of every toy: never add a `pulse()` on the same channel
+  for the same moment, the two add up (`thrust(0.5, …)` and `pulse(0.5, …)` play 1 on
+  vibrators). Accents that differ between strokers and vibrators go on two channels.
 - A stroker plays the strokes of the channels it plays (of the fastest if several
   have some). It follows them at its next change of direction, a few hundred
   milliseconds late: strokes carry the mood (a slow stroke in exploration, a fast one

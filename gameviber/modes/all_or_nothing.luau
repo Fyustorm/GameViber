@@ -42,7 +42,7 @@ end
 function on_rumble(ev)
   if ev.level >= P.hit and prev_level < P.hit then
     persist.gauge *= 1 - P.loss
-    pulse(P.punish, P.punish_len)
+    pulse(P.punish, P.punish_len, { add = false })
   end
   prev_level = ev.level
 end

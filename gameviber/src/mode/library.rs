@@ -119,11 +119,18 @@ pub(super) fn register(lua: &Lua, ctx: &Rc<RefCell<Ctx>>) -> mlua::Result<()> {
         let ctx = ctx.clone();
         g.set(
             "pulse",
-            lua.create_function(move |_, (level, seconds, channel): (f64, f64, Option<String>)| {
+            // pulse(x, seconds [, channel | { channel = ..., add = false }])
+            lua.create_function(move |_, (level, seconds, opts): (f64, f64, Value)| {
+                let (channel, add) = match opts {
+                    Value::Nil => (None, true),
+                    Value::String(c) => (Some(c.to_str()?.to_string()), true),
+                    Value::Table(o) => (o.get::<Option<String>>("channel")?, o.get::<Option<bool>>("add")?.unwrap_or(true)),
+                    _ => return Err(runtime_err("pulse: the third argument is a channel or an options table")),
+                };
                 let channel = channel.unwrap_or_else(|| DEFAULT_CHANNEL.into());
                 let mut ctx = ctx.borrow_mut();
                 let now = ctx.time;
-                ctx.outputs()?.pulse(&channel, level, seconds, now).map_err(runtime_err)
+                ctx.outputs()?.pulse(&channel, level, seconds, add, now).map_err(runtime_err)
             })?,
         )?;
     }

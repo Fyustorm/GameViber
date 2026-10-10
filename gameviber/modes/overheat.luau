@@ -51,7 +51,7 @@ end
 
 function on_rumble(ev)
   if ev.level >= P.peak and prev_level < P.peak then
-    pulse(ev.level, P.peak_len)
+    pulse(ev.level, P.peak_len, { add = false })
   end
   prev_level = ev.level
 end

@@ -61,7 +61,7 @@ end
 function on_rumble_start(ev)
   hits += 1
   last_hit = ev.t
-  pulse(math.max(ev.level, combo_level()), P.hit_len)
+  pulse(math.max(ev.level, combo_level()), P.hit_len, { add = false })
 end
 
 function on_rumble_end(ev)

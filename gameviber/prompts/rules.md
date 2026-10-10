@@ -3,6 +3,8 @@
 - **Continuous beats intermittent.** A vibration that keeps going and rises and falls with
   the action feels far better than a short buzz, silence, another short buzz. Build a
   base that follows what is going on, and use pulses as accents on top of it, not alone.
+- **Leave room for the accents.** Pulses add to what plays: keep waves and backgrounds
+  at 0.6 or below by default, or a pulse on top of them is cut at 1 and barely felt.
 - **Intense phases get a background that runs whatever the player does**: a slow sine
   wave (2 to 10 s per cycle) in battles and intense action, a heartbeat pattern in games
   built on tension (horror, stealth). Detect the phase with recent rumble, combat
@@ -47,5 +49,7 @@
   for short messages ("Parry!") in the in-game overlay.
 - 2 to 5 `feedback` questions (§4.2) about the mechanics, each linked with `param` to the
   number parameter that fixes it when there is one.
+- With strokers, a `thrust()` is also the pulse vibrators feel: never add a `pulse()` on
+  the same channel for the same moment, they add up.
 - Safety is not the script's job: the global cap, the panic stop and zeroing on gamepad
   loss are handled by GameViber.

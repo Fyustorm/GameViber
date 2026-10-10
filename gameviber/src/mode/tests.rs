@@ -66,6 +66,18 @@ fn wrap(body: &str) -> String {
 }
 
 #[test]
+fn pulses_add_unless_told_not_to() {
+    let src = wrap(
+        "function on_start() pulse(0.3, 1); pulse(0.3, 1, 'aux'); pulse(0.4, 1, { channel = 'aux', add = false }) end\n\
+         function tick() set(0.5, '*') end",
+    );
+    let mut rt = load(&src);
+    let out = step(&mut rt, rumble(0.0, 0.0));
+    assert!((out.channels["main"] - 0.8).abs() < 1e-9, "added to the base");
+    assert!((out.channels["aux"] - 0.8).abs() < 1e-9, "the max of the base and 0.4, plus 0.3");
+}
+
+#[test]
 fn simple_mode_matches_ghr_formula() {
     let mut rt = load(SIMPLE);
     assert_eq!(rt.info().name, "Simple");

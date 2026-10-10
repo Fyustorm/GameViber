@@ -77,6 +77,8 @@ struct Pulse {
     channel: String,
     level: f64,
     until: f64,
+    /// Added on top of everything else rather than joining the max.
+    add: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -171,13 +173,13 @@ impl Outputs {
         Ok(())
     }
 
-    pub fn pulse(&mut self, channel: &str, level: f64, seconds: f64, now: f64) -> Result<(), String> {
+    pub fn pulse(&mut self, channel: &str, level: f64, seconds: f64, add: bool, now: f64) -> Result<(), String> {
         self.pulses.retain(|p| p.until > now);
         if self.pulses.len() >= MAX_PULSES {
             return Err(format!("pulse: at most {MAX_PULSES} at once"));
         }
         for c in self.targets(channel)? {
-            self.pulses.push(Pulse { channel: c, level: level.clamp(0.0, 1.0), until: now + seconds.max(0.0) });
+            self.pulses.push(Pulse { channel: c, level: level.clamp(0.0, 1.0), until: now + seconds.max(0.0), add });
         }
         Ok(())
     }
@@ -223,7 +225,7 @@ impl Outputs {
     /// One stroke at once; other toys feel it as a pulse of its length.
     pub fn thrust(&mut self, channel: &str, length: f64, seconds: f64, now: f64) -> Result<(), String> {
         let thrust = ThrustIntent { length: length.clamp(0.0, 1.0), seconds: seconds.max(0.0) };
-        self.pulse(channel, thrust.length, thrust.seconds, now)?;
+        self.pulse(channel, thrust.length, thrust.seconds, true, now)?;
         for c in self.targets(channel)? {
             self.thrusts.push((c, thrust));
         }
@@ -296,7 +298,7 @@ impl Outputs {
             let v = values.entry(c.clone()).or_default();
             *v = v.max(s.speed);
         }
-        for p in &self.pulses {
+        for p in self.pulses.iter().filter(|p| !p.add) {
             let v = values.entry(p.channel.clone()).or_default();
             *v = v.max(p.level);
         }
@@ -313,6 +315,11 @@ impl Outputs {
             *v = v.max(m.track.intensity(at) * m.options.rate * m.options.depth);
             true
         });
+        // Accents are felt whatever plays under them.
+        for p in self.pulses.iter().filter(|p| p.add) {
+            let v = values.entry(p.channel.clone()).or_default();
+            *v = (*v + p.level).min(1.0);
+        }
         values
     }
 }
@@ -344,12 +351,24 @@ mod tests {
     }
 
     #[test]
-    fn pulse_overrides_base_until_expiry() {
+    fn pulse_adds_to_base_until_expiry() {
         let mut o = outputs();
         o.set("main", 0.2).unwrap();
-        o.pulse("main", 0.9, 0.5, 1.0).unwrap();
+        o.pulse("main", 0.5, 0.5, true, 1.0).unwrap();
+        assert!((o.evaluate(1.2)["main"] - 0.7).abs() < 1e-9);
+        o.pulse("main", 0.5, 0.5, true, 1.2).unwrap();
+        assert_eq!(o.evaluate(1.3)["main"], 1.0);
+        assert_eq!(o.evaluate(1.7)["main"], 0.2);
+    }
+
+    #[test]
+    fn pulse_not_added_joins_the_max() {
+        let mut o = outputs();
+        o.set("main", 0.6).unwrap();
+        o.pulse("main", 0.4, 0.5, false, 1.0).unwrap();
+        assert_eq!(o.evaluate(1.2)["main"], 0.6);
+        o.pulse("main", 0.9, 0.5, false, 1.0).unwrap();
         assert_eq!(o.evaluate(1.2)["main"], 0.9);
-        assert_eq!(o.evaluate(1.5)["main"], 0.2);
     }
 
     #[test]
@@ -370,7 +389,7 @@ mod tests {
     fn stop_all_clears_everything() {
         let mut o = outputs();
         o.set("main", 0.5).unwrap();
-        o.pulse("aux", 1.0, 10.0, 0.0).unwrap();
+        o.pulse("aux", 1.0, 10.0, true, 0.0).unwrap();
         o.stroke("main", Some(StrokeIntent { speed: 0.7, length: 1.0 })).unwrap();
         o.thrust("aux", 1.0, 0.5, 0.0).unwrap();
         o.stop_all();
