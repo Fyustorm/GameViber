@@ -1242,6 +1242,8 @@ impl Engine {
 
     /// Hot reload: keeps the previous version running if the new one fails to load.
     fn reload_mode(&mut self) {
+        // Saved against the defaults of the script being replaced.
+        self.save_params();
         let Some(active) = self.mode.as_mut() else { return };
         active.modified = active.entry.modified();
         let persist = active.runtime.as_ref().and_then(|rt| rt.persist_snapshot());
@@ -1314,7 +1316,7 @@ impl Engine {
         if name.is_empty() {
             return;
         }
-        presets.presets.insert(name.to_owned(), rt.param_values().clone());
+        presets.presets.insert(name.to_owned(), rt.changed_params());
         presets.active = Some(name.to_owned());
         entry.save_presets(presets);
         log::info!("preset '{name}' saved");
@@ -1337,7 +1339,7 @@ impl Engine {
             return;
         }
         if let Some(ActiveMode { entry, runtime: Some(rt), .. }) = &self.mode {
-            entry.save_params(rt.param_values());
+            entry.save_params(&rt.changed_params());
         }
     }
 

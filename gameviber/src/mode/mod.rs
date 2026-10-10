@@ -500,6 +500,23 @@ impl ModeRuntime {
         &self.param_values
     }
 
+    /// The values the player changed from the script's defaults: the ones saved, so
+    /// that a new default in the script reaches the players who kept the old one.
+    pub fn changed_params(&self) -> BTreeMap<String, ParamValue> {
+        self.info
+            .params
+            .iter()
+            .filter_map(|def| {
+                let value = self.param_values.get(&def.name)?;
+                let same = match (value, &def.default) {
+                    (ParamValue::Number(a), ParamValue::Number(b)) => (a - b).abs() < 1e-9,
+                    (a, b) => a == b,
+                };
+                (!same).then(|| (def.name.clone(), value.clone()))
+            })
+            .collect()
+    }
+
     /// The phases of the game being played, which replace the mode's own
     /// (§6.3); none: the mode's own phases.
     pub fn set_game_phases(&mut self, game: &[PhaseDecl]) {

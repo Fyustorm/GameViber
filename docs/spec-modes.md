@@ -93,6 +93,8 @@ params = {
   a declared parameter. Without `main_params`, the GUI shows every parameter.
 - Values are saved per mode in `~/.config/gameviber/params/<key>.toml`
   (key = built-in mode name, or file name without extension).
+- Only the values the player changed from their default are saved: when the script
+  changes a default, players who kept the old one get the new one.
 - On reload, a value is kept if the parameter keeps the same name and type. Otherwise it
   is reset to its default.
 - Any change from the GUI calls `on_param_changed(name, value)`, if that callback is
@@ -118,6 +120,7 @@ max_hits = 8
 window = 0.5
 ```
 
+- A preset keeps the values that differ from the defaults, like the saved values.
 - Loading a preset sets **every** parameter: a value missing from the preset, or no
   longer valid (wrong type, unknown option), falls back to the default; numbers are
   clamped to their range. Values of parameters the mode no longer declares are ignored.

@@ -102,6 +102,22 @@ fn saved_params_are_applied_and_validated() {
 }
 
 #[test]
+fn only_changed_params_are_saved_so_new_defaults_reach_players() {
+    let v1 = "mode { api = 1, name = 'T', params = { a = number(0.3, 0, 1, 'A'), b = number(0.5, 0, 1, 'B') } }\n\
+              function tick() end";
+    let mut rt = load(v1);
+    rt.set_param("a", &ParamValue::Number(0.8)).unwrap();
+    rt.set_param("b", &ParamValue::Number(0.2)).unwrap();
+    rt.set_param("b", &ParamValue::Number(0.5)).unwrap();
+    let saved = rt.changed_params();
+    assert_eq!(saved, BTreeMap::from([("a".to_owned(), ParamValue::Number(0.8))]), "b is back to its default");
+    let v2 = v1.replace("number(0.3,", "number(0.4,").replace("number(0.5,", "number(0.6,");
+    let rt = ModeRuntime::load("test", &v2, &saved, None).unwrap();
+    assert_eq!(rt.param_values()["a"], ParamValue::Number(0.8), "changed: kept");
+    assert_eq!(rt.param_values()["b"], ParamValue::Number(0.6), "default: the new one");
+}
+
+#[test]
 fn accumulation_gains_points_and_drains_when_idle() {
     let mut rt = load(ACCUMULATION);
     // One vibration: +5 points, output = rumble level * 5%.
