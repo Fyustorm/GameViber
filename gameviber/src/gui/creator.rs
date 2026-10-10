@@ -79,6 +79,8 @@ pub struct State {
     pub(super) tab: Tab,
     /// How a mode works, shown above the tab.
     pub(super) help: bool,
+    /// What is missing to get everything (`readiness_card`) folded to a line.
+    pub(super) readiness_folded: bool,
     /// How the Script tab gets the script; None: as fits the script.
     pub(super) way: Option<Way>,
     pub(super) editor: Editor,

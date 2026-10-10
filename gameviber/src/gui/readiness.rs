@@ -189,7 +189,8 @@ impl App {
 
     /// What keeps the active mode from working as it should, each with the way
     /// to fix it; nothing when all is well. In the Creator (`creating`), the
-    /// image is needed anyway: captures and sessions' images come from it.
+    /// image is needed anyway: captures and sessions' images come from it;
+    /// there, not everything is wanted while making a mode: the card folds.
     pub(super) fn readiness_card(&mut self, ui: &mut egui::Ui, s: &Shared, creating: bool) {
         let needs = needs(s);
         let game = s.game.as_ref().map_or("the game", |g| g.name.as_str());
@@ -239,7 +240,29 @@ impl App {
         };
         card(PANEL).stroke(egui::Stroke::new(1.0, border)).inner_margin(Margin::symmetric(16, 10)).show(ui, |ui| {
             ui.set_width(ui.available_width().min(CARD_WIDTH));
-            eyebrow(ui, if creating { "To get everything" } else { "Before you play" });
+            let foldable = self.page == Page::Creator;
+            let folded = foldable && self.creator.readiness_folded;
+            ui.horizontal(|ui| {
+                eyebrow(ui, if creating { "To get everything" } else { "Before you play" });
+                if foldable {
+                    if folded {
+                        let worst = problems.iter().find(|p| p.color != IDLE).map_or(IDLE, |p| p.color);
+                        dot(ui, worst);
+                        ui.label(muted(format!("{} to set up", problems.len())).size(12.5)).on_hover_text(
+                            problems.iter().map(|p| p.title.as_str()).collect::<Vec<_>>().join("\n"),
+                        );
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let (text, hover) = if folded { ("Show", "Show what is missing") } else { ("Hide", "Not everything is needed while making a mode") };
+                        if ui.small_button(text).on_hover_text(hover).clicked() {
+                            self.creator.readiness_folded = !folded;
+                        }
+                    });
+                }
+            });
+            if folded {
+                return;
+            }
             for p in problems {
                 ui.horizontal_top(|ui| {
                     ui.add_space(2.0);
