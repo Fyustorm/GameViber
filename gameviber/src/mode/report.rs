@@ -173,7 +173,7 @@ pub fn simulate(
                 }
                 match frame.data.load() {
                     Ok(image) => {
-                        let read = reader.update(&inputs.zones, &image);
+                        let read = reader.update(&inputs.zones, &image, frame.t);
                         replayed.extend(read.into_iter().map(|(name, value)| ModeEvent::Indicator { name, value }));
                     }
                     Err(e) => log::warn!("cannot read an image of the session: {e:#}"),
@@ -553,13 +553,13 @@ function tick(dt, input) end
             Frame { width: w, height: h, source_width: w, source_height: h, count: 1, pixels }
         };
         let rect = [120.0 / 160.0, 60.0 / 90.0, 40.0 / 160.0, 30.0 / 90.0];
-        let zone = Zone { indicator: "battle_hud".into(), rect, reference: indicators::reference(&image(true), rect), ..Zone::default() };
+        let zone = Zone { indicator: "battle_hud".into(), rect, reference: indicators::reference(&image(true), &Zone { rect, ..Zone::default() }), ..Zone::default() };
         let inputs = Inputs { zones: vec![zone], ..Inputs::default() };
         let session = |zones: Option<Vec<Zone>>| Session {
-            header: Header { version: 4, started: "now".into(), game: None, mode: "T".into(), duration: 2.0, marks: 0, frames: 2, zones },
+            header: Header { version: 4, started: "now".into(), game: None, mode: "T".into(), duration: 2.0, marks: 0, frames: 3, zones },
             // Shown all along, as read in the zones of the recording.
             changes: vec![(0.0, Change::Indicator { name: "battle_hud".into(), value: IndicatorValue::Visibility(true) })],
-            frames: [(0.0, true), (1.0, false)]
+            frames: [(0.0, true), (1.0, false), (1.5, false)]
                 .into_iter()
                 .map(|(t, shown)| SessionFrame { t, data: FrameData::Jpeg(encode_frame(&image(shown)).unwrap()) })
                 .collect(),
@@ -570,14 +570,15 @@ function tick(dt, input) end
 
         let same = replay(Some(inputs.zones.clone()));
         assert!(!same.indicators_reread());
-        assert_eq!(shown(&same, 1.5), Some(IndicatorValue::Visibility(true)), "as recorded");
+        assert_eq!(shown(&same, 1.8), Some(IndicatorValue::Visibility(true)), "as recorded");
 
         let changed = replay(None);
         assert!(changed.indicators_reread());
         assert_eq!(shown(&changed, 0.5), Some(IndicatorValue::Visibility(true)));
-        assert_eq!(shown(&changed, 1.5), Some(IndicatorValue::Visibility(false)), "read from the image");
+        assert_eq!(shown(&changed, 1.2), Some(IndicatorValue::Visibility(true)), "hidden on one image only, not yet");
+        assert_eq!(shown(&changed, 1.8), Some(IndicatorValue::Visibility(false)), "read from the images");
         let out = |t: f64| changed.ticks().iter().find(|k| k.t >= t).unwrap().channels.values().copied().fold(0.0, f64::max);
-        assert_eq!((out(0.5), out(1.5)), (1.0, 0.0), "the mode is given them");
+        assert_eq!((out(0.5), out(1.8)), (1.0, 0.0), "the mode is given them");
     }
 
     #[test]

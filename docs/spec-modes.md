@@ -432,9 +432,10 @@ them; an indicator shown in several places has a zone for each).
 - `input.indicators.<name>` holds the value; `on_indicator(ev)` is called when it
   changes, with `ev.indicator`, `ev.value` (nil for a gauge gone from the screen) and
   `ev.previous` (nil at first). Indicators are read ten times per second; a gauge change
-  below 0.02 is not reported.
+  below 0.02 is not reported, a visibility change only once it has held for 0.3 s
+  (a flash over the element does not make it blink).
 - Indicators say exactly what phases guess (the battle interface is on screen or not)
-  and come within 0.1 s: prefer them when the game has them.
+  and come within 0.3 s: prefer them when the game has them.
 
 
 **External inputs**: values and events from other programs. A game's existing mod, a script reading a game's API or

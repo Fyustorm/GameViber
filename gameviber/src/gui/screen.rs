@@ -20,7 +20,7 @@ use super::theme::*;
 use super::App;
 use crate::engine::{Command, Shared};
 use crate::game::Game;
-use crate::package::{self, valid_name, Condition, Direction, IndicatorKind, Inputs, PhaseDef, Zone};
+use crate::package::{self, valid_name, Condition, Direction, IndicatorKind, Inputs, Outline, PhaseDef, Reading, Zone};
 use crate::models::Model;
 use crate::screen::{indicators, Frame};
 
@@ -273,6 +273,7 @@ impl State {
         let mut zone = Zone {
             rect,
             path: shape.path,
+            ring: shape.ring,
             thickness: shape.thickness,
             threshold: d.threshold,
             phase: if drawn.is_some() { phase.filter(|s| !s.is_empty()) } else { base.phase.clone() },
@@ -282,12 +283,22 @@ impl State {
         self.shared(&mut zone);
         match zone.kind {
             IndicatorKind::Visibility => {
-                if let Some(frame) = drawn {
-                    zone.reference = indicators::reference(frame, rect);
-                    zone.reference_colors = indicators::reference_colors(frame, rect);
+                // Read on its rim or its path rather than its rectangle, or on another line: its look again, from its capture.
+                let lined = zone.ring || indicators::has_path(&zone);
+                let reshaped = zone.ring != base.ring || zone.path != base.path || (lined && zone.thickness != base.thickness);
+                let from = drawn.or_else(|| base.capture.as_ref().filter(|_| reshaped).and_then(|f| self.captures.get(f)).map(|(frame, _)| frame));
+                if let Some(frame) = from {
+                    zone.reference = indicators::reference(frame, &zone);
+                    zone.reference_colors = indicators::reference_colors(frame, &zone);
                 }
                 zone.weights = match &d.weights {
                     Some((at, weights)) if at.iter().zip(rect).all(|(a, b)| (a - b).abs() < 1e-5) => weights.clone(),
+                    _ => Vec::new(),
+                };
+                zone.reading = d.reading;
+                zone.outline = d.outline;
+                zone.palette = match &d.palette {
+                    Some((at, palette)) if d.reading == Reading::Palette && at.iter().zip(rect).all(|(a, b)| (a - b).abs() < 1e-5) => palette.clone(),
                     _ => Vec::new(),
                 };
                 (zone.shown_on, zone.hidden_on) = (d.shown_on.clone(), d.hidden_on.clone());
@@ -296,6 +307,7 @@ impl State {
                 zone.reference.clear();
                 zone.reference_colors.clear();
                 zone.weights.clear();
+                (zone.reading, zone.palette) = (Reading::Look, Vec::new());
                 (zone.shown_on, zone.hidden_on) = (Vec::new(), Vec::new());
                 if d.full.is_empty() {
                     zone.color = match drawn {
@@ -337,7 +349,7 @@ impl State {
             // Drawn before its colors were kept: from the capture it was drawn on.
             if zone.reference_colors.is_empty() {
                 if let Some((frame, _)) = zone.capture.as_ref().and_then(|f| self.captures.get(f)) {
-                    zone.reference_colors = indicators::reference_colors(frame, zone.rect);
+                    zone.reference_colors = indicators::reference_colors(frame, zone);
                 }
             }
         }
@@ -509,6 +521,12 @@ struct Draft {
     /// A visibility zone's cells that tell whether it is shown (`Zone::weights`),
     /// learned from captures for this rectangle: once it changes, they must be learned again.
     weights: Option<([f32; 4], Vec<u8>)>,
+    /// How a visibility zone tells it is shown (`Zone::reading`), the
+    /// outline of an element read by its contour or palette (`Zone::outline`)...
+    reading: Reading,
+    outline: Outline,
+    /// ...and the colors of its palette, learned for this rectangle (`Zone::palette`).
+    palette: Option<([f32; 4], Vec<u16>)>,
     /// The captures marked as showing it, and as not (`Zone::shown_on`, `hidden_on`).
     shown_on: Vec<String>,
     hidden_on: Vec<String>,
@@ -516,6 +534,9 @@ struct Draft {
     /// rectangle: clicks on the image add its points...
     tracing: bool,
     path: Vec<Pos2>,
+    /// A visibility zone read on the rim of the round element its rectangle is around (`Zone::ring`).
+    ring: bool,
+    /// A path's or a rim's thickness...
     thickness: f32,
     /// ...and the point being dragged.
     point: Option<usize>,
@@ -577,10 +598,14 @@ impl Default for Draft {
             by_look: false,
             look: None,
             weights: None,
+            reading: Reading::Look,
+            outline: Outline::Ellipse,
+            palette: None,
             shown_on: Vec::new(),
             hidden_on: Vec::new(),
             tracing: false,
             path: Vec::new(),
+            ring: false,
             thickness: Zone::default().thickness,
             point: None,
             opened: None,
@@ -610,10 +635,15 @@ impl Draft {
             || self.by_look != o.by_look
             || self.look != o.look
             || self.weights != o.weights
+            || self.reading != o.reading
+            || self.outline != o.outline
+            || self.palette != o.palette
             || self.shown_on != o.shown_on
             || self.hidden_on != o.hidden_on
             || self.tracing != o.tracing
             || (self.tracing && (self.path != o.path || self.thickness != o.thickness))
+            || self.ring != o.ring
+            || (self.ring && self.thickness != o.thickness)
             || self.threshold != o.threshold
             || self.start != o.start
             || self.end != o.end
@@ -660,17 +690,22 @@ impl Draft {
             empty: zone.empty_look.clone(),
         });
         self.weights = indicators::has_weights(zone).then(|| (zone.rect, zone.weights.clone()));
+        self.reading = if zone.kind == IndicatorKind::Visibility { zone.reading } else { Reading::Look };
+        self.outline = zone.outline;
+        self.palette = (!zone.palette.is_empty()).then(|| (zone.rect, zone.palette.clone()));
         (self.shown_on, self.hidden_on) = (zone.shown_on.clone(), zone.hidden_on.clone());
         self.tracing = indicators::has_path(zone);
         self.path = zone.path.iter().map(|p| Pos2::new(p[0], p[1])).collect();
+        self.ring = zone.kind == IndicatorKind::Visibility && zone.ring;
         self.thickness = zone.thickness;
         self.point = None;
         // The zone as it is saved is where its changes count from.
         if let Some(o) = &mut self.opened {
             (o.editing, o.start, o.end, o.threshold, o.drawn_on) = (self.editing, self.start, self.end, self.threshold, None);
             (o.by_look, o.look, o.weights) = (self.by_look, self.look.clone(), self.weights.clone());
+            (o.reading, o.outline, o.palette) = (self.reading, self.outline, self.palette.clone());
             (o.shown_on, o.hidden_on) = (self.shown_on.clone(), self.hidden_on.clone());
-            (o.tracing, o.path, o.thickness) = (self.tracing, self.path.clone(), self.thickness);
+            (o.tracing, o.path, o.ring, o.thickness) = (self.tracing, self.path.clone(), self.ring, self.thickness);
         }
     }
 
@@ -687,9 +722,14 @@ impl Draft {
         self.end = Some(Pos2::new(x + dx + w, y + dy + h));
     }
 
-    /// A gauge drawn as a path.
+    /// Drawn as a path.
     fn traced(&self) -> bool {
-        self.tracing && self.kind == IndicatorKind::Gauge
+        self.tracing
+    }
+
+    /// A visibility zone read on a rim.
+    fn ringed(&self) -> bool {
+        self.ring && !self.tracing && self.kind == IndicatorKind::Visibility
     }
 
     /// The zone's rectangle: around its path, for a path.
@@ -716,6 +756,7 @@ impl Draft {
             rect: self.rect()?,
             direction: self.direction,
             path: if self.traced() { self.path.iter().map(|p| [p.x, p.y]).collect() } else { Vec::new() },
+            ring: self.ringed(),
             thickness: self.thickness,
             ..Zone::default()
         })
@@ -786,6 +827,30 @@ fn along(points: &[Pos2], from: f32, to: f32, beside: f32) -> Vec<Pos2> {
         before += len;
     }
     out
+}
+
+/// The outline (`Zone::outline`) of `rect` (fractions of the image) on an image drawn in `area`, `scale` times as large, closed.
+fn outline_line(area: Rect, rect: [f32; 4], outline: Outline, scale: f32) -> Vec<Pos2> {
+    let r = on_image(area, rect);
+    (0..=64)
+        .map(|k| {
+            let (x, y) = indicators::outline_point(outline, k as f32 / 64.0, scale);
+            r.center() + Vec2::new(x * r.width(), y * r.height()) / 2.0
+        })
+        .collect()
+}
+
+/// The middle line of a zone's rim (`Zone::ring`) on an image drawn in `area`, closed.
+fn ring_line(area: Rect, zone: &Zone) -> Vec<Pos2> {
+    let aspect = area.width() / area.height().max(1.0);
+    (0..=indicators::RING_AROUND)
+        .step_by(4)
+        .map(|i| {
+            let k = (i % indicators::RING_AROUND) * indicators::RING_ACROSS + indicators::RING_ACROSS / 2;
+            let [x, y] = indicators::line_point(zone, k, aspect, (0.0, 0.0));
+            on_image_point(area, Pos2::new(x, y))
+        })
+        .collect()
 }
 
 /// A zone's rectangle on an image drawn in `area`.
@@ -1685,6 +1750,22 @@ impl App {
                             let points = zone.path.iter().map(|p| on_image_point(area, Pos2::new(p[0], p[1]))).collect();
                             ui.painter().add(egui::Shape::line(points, stroke));
                         }
+                        if zone.ring && zone.kind == IndicatorKind::Visibility {
+                            ui.painter().add(egui::Shape::line(ring_line(area, zone), stroke));
+                        }
+                        if zone.kind == IndicatorKind::Visibility && zone.reading != Reading::Look {
+                            match (indicators::has_path(zone), zone.path.first(), zone.path.last()) {
+                                // A palette's outline closes itself.
+                                (true, Some(first), Some(last)) if zone.reading == Reading::Palette => {
+                                    let ends = [last, first].map(|p| on_image_point(area, Pos2::new(p[0], p[1])));
+                                    ui.painter().line_segment(ends, stroke);
+                                }
+                                (true, ..) => {}
+                                _ => {
+                                    ui.painter().add(egui::Shape::line(outline_line(area, zone.rect, zone.outline, 1.0), stroke));
+                                }
+                            }
+                        }
                         if hovered {
                             let (text, color) = reading_here(zone, &inputs.zones, frame);
                             tag(ui, r.left_top() - Vec2::new(0.0, 4.0), egui::Align2::LEFT_BOTTOM, format!("{} · {text} · click to edit", zone.indicator), color);
@@ -1693,8 +1774,14 @@ impl App {
                     // A path being clicked: its line as thick as it reads, its points (its first one ringed).
                     if draft.traced() && !st.hide_zones {
                         let points: Vec<Pos2> = draft.path.iter().map(|p| on_image_point(area, *p)).collect();
+                        let visibility = draft.kind == IndicatorKind::Visibility;
+                        if points.len() >= 3 && visibility && draft.reading == Reading::Palette {
+                            ui.painter().line_segment([points[points.len() - 1], points[0]], Stroke::new(1.0, ACCENT.gamma_multiply(0.6)));
+                        }
                         if points.len() >= 2 {
-                            let width = (draft.thickness * area.height()).max(1.0);
+                            // A contour compares on both sides of its path.
+                            let sides = if visibility && draft.reading == Reading::Contour { 2.0 } else { 1.0 };
+                            let width = (sides * draft.thickness * area.height()).max(1.0);
                             ui.painter().add(egui::Shape::line(points.clone(), Stroke::new(width, ACCENT.gamma_multiply(0.3))));
                             ui.painter().add(egui::Shape::line(points.clone(), Stroke::new(1.0, ACCENT)));
                         }
@@ -1704,7 +1791,8 @@ impl App {
                                 ui.painter().circle_stroke(*p, 6.0, Stroke::new(1.5, ACCENT));
                             }
                         }
-                        if let (Some(first), Some(last)) = (points.first(), points.last().filter(|_| points.len() >= 2)) {
+                        let gauge = draft.kind == IndicatorKind::Gauge;
+                        if let (Some(first), Some(last)) = (points.first().filter(|_| gauge), points.last().filter(|_| points.len() >= 2)) {
                             tag(ui, *first + Vec2::new(0.0, 8.0), egui::Align2::CENTER_TOP, "0%".to_owned(), ACCENT_TEXT);
                             tag(ui, *last + Vec2::new(0.0, 8.0), egui::Align2::CENTER_TOP, "100%".to_owned(), ACCENT_TEXT);
                         }
@@ -1715,6 +1803,21 @@ impl App {
                             ui.painter().rect_stroke(r, 1.0, Stroke::new(1.0, ACCENT.gamma_multiply(0.5)), StrokeKind::Outside);
                         } else {
                             ui.painter().rect_stroke(r, 1.0, Stroke::new(2.0, ACCENT), StrokeKind::Outside);
+                            // A contour's edge and where it compares, a palette's inside and what is around it.
+                            if draft.kind == IndicatorKind::Visibility && draft.reading != Reading::Look {
+                                ui.painter().add(egui::Shape::line(outline_line(area, rect, draft.outline, 1.0), Stroke::new(1.5, ACCENT)));
+                                let (inner, outer) = if draft.reading == Reading::Contour { (0.85, 1.15) } else { (0.92, 1.35) };
+                                for scale in [inner, outer] {
+                                    ui.painter().add(egui::Shape::line(outline_line(area, rect, draft.outline, scale), Stroke::new(1.0, ACCENT.gamma_multiply(0.45))));
+                                }
+                            }
+                            // The rim read, as thick as it reads.
+                            if let Some(shape) = draft.shape().filter(|_| draft.ringed()) {
+                                let line = ring_line(area, &shape);
+                                let width = (draft.thickness * area.height()).max(1.0);
+                                ui.painter().add(egui::Shape::line(line.clone(), Stroke::new(width, ACCENT.gamma_multiply(0.3))));
+                                ui.painter().add(egui::Shape::line(line, Stroke::new(1.0, ACCENT)));
+                            }
                             // Handles at the corners.
                             for corner in [r.left_top(), r.right_top(), r.left_bottom(), r.right_bottom()] {
                                 ui.painter().rect_filled(Rect::from_center_size(corner, Vec2::splat(5.0)), 1.0, ACCENT);
@@ -1725,7 +1828,13 @@ impl App {
                             let label = if draft.name.is_empty() { text } else { format!("{} · {text}", draft.name) };
                             tag(ui, r.left_top() - Vec2::new(0.0, 6.0), egui::Align2::LEFT_BOTTOM, label, color);
                             // The cells it is compared on, when it compares only what stays.
-                            if indicators::has_weights(zone) {
+                            if indicators::has_weights(zone) && indicators::on_line(zone) {
+                                let aspect = area.width() / area.height().max(1.0);
+                                for (k, &w) in zone.weights.iter().enumerate().filter(|(_, w)| **w > 0) {
+                                    let [x, y] = indicators::line_point(zone, k, aspect, (0.5, 0.5));
+                                    ui.painter().circle_filled(on_image_point(area, Pos2::new(x, y)), 1.5, ACCENT.gamma_multiply(0.3 + 0.7 * w as f32 / 255.0));
+                                }
+                            } else if indicators::has_weights(zone) {
                                 let cell = Vec2::new(r.width() / indicators::REF_WIDTH as f32, r.height() / indicators::REF_HEIGHT as f32);
                                 for (k, &w) in zone.weights.iter().enumerate().filter(|(_, w)| **w > 0) {
                                     let at = r.left_top() + Vec2::new((k % indicators::REF_WIDTH) as f32 * cell.x, (k / indicators::REF_WIDTH) as f32 * cell.y);
@@ -1794,6 +1903,18 @@ impl App {
                 }
 
                 let hint = match (draft.picking, draft.rect()) {
+                    (None, _) if can_draw && draft.traced() && draft.kind == IndicatorKind::Visibility && draft.reading == Reading::Contour => {
+                        "Click along the element's edge, all of it or where it stands out best from the scenery; drag a point to move it, \
+                         right-click one to remove it; arrow keys nudge it all."
+                    }
+                    (None, _) if can_draw && draft.traced() && draft.kind == IndicatorKind::Visibility && draft.reading == Reading::Palette => {
+                        "Click all around the element, along its edge: the path closes itself. Drag a point to move it, \
+                         right-click one to remove it; arrow keys nudge it all."
+                    }
+                    (None, _) if can_draw && draft.traced() && draft.kind == IndicatorKind::Visibility => {
+                        "Click along the middle of the element's frame (fixed parts only, not what changes inside); drag a point to move it, \
+                         right-click one to remove it; arrow keys nudge it all."
+                    }
                     (None, _) if can_draw && draft.traced() => {
                         "Click along the middle of the bar, from the end it fills from (0%) to its full end (100%); drag a point to move it, \
                          right-click one to remove it; arrow keys nudge it all."
@@ -1804,10 +1925,95 @@ impl App {
                     (None, None) if !can_draw => "Choose what the new indicator reads, above, then draw it on the image.",
                     (None, None) if indicator_name.is_some() => "Pick a zone above, or click or drag it on the image; or draw a new zone.",
                     (None, None) if draft.kind == IndicatorKind::Gauge => "Drag a rectangle along the bar, from its empty end to its full end.",
+                    (None, None) if draft.kind == IndicatorKind::Visibility && draft.reading != Reading::Look && draft.outline == Outline::Ellipse => {
+                        "Drag a square around the round element, its edges on its edge: it is compared with what is around it."
+                    }
+                    (None, None) if draft.kind == IndicatorKind::Visibility && draft.reading != Reading::Look => {
+                        "Drag a rectangle exactly on the element's edges: it is compared with what is around it."
+                    }
+                    (None, None) if draft.ringed() => "Drag a square around the round element, its edges on the outer edge of its rim.",
                     (None, None) => "Drag a rectangle around fixed parts of the element (not text that changes).",
                     (None, Some(_)) => "Drag its edges to resize it, its inside to move it; arrow keys nudge it (Shift: 10 px). Esc leaves it.",
                 };
                 ui.label(muted(hint).size(12.0));
+                // A visibility zone read by its contour or its palette: its outline.
+                if can_draw && draft.kind == IndicatorKind::Visibility && draft.reading != Reading::Look {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("Shape");
+                        let choices = [
+                            (Outline::Ellipse, false, "◯ Ellipse", "For a round or oval element: draw the square (rectangle) around it"),
+                            (Outline::Rectangle, false, "▭ Rectangle", "For a square or rectangular element: draw the rectangle on its edges"),
+                            (
+                                Outline::Ellipse,
+                                true,
+                                "〰 Path",
+                                "For any other shape: click along its edge. A contour compares the two sides of the path, all around \
+                                 the element or only where it stands out best; a palette's path goes all around it and closes itself.",
+                            ),
+                        ];
+                        for (outline, tracing, text, help) in choices {
+                            let on = draft.tracing == tracing && (tracing || draft.outline == outline);
+                            if ui.selectable_label(on, text).on_hover_text(help).clicked() && !on {
+                                (draft.outline, draft.tracing, draft.palette) = (outline, tracing, None);
+                            }
+                        }
+                        if draft.traced() && draft.reading == Reading::Contour {
+                            let height = frame.height.max(1) as f32;
+                            let mut px = (draft.thickness * height).round();
+                            if ui.add(egui::Slider::new(&mut px, 1.0..=20.0).step_by(1.0).text("each side (px)")).on_hover_text("How far from the path it compares, on each side").changed() {
+                                draft.thickness = px / height;
+                            }
+                        }
+                        if draft.traced() && !draft.path.is_empty() && ui.small_button("Clear").on_hover_text("Click the path again").clicked() {
+                            draft.path.clear();
+                        }
+                    });
+                }
+                // A visibility zone read by its look: a rectangle, the rim of a round element, or a path.
+                if can_draw && draft.kind == IndicatorKind::Visibility && draft.reading == Reading::Look {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("Shape");
+                        let (rectangle_on, ring_on, path_on) = (!draft.ringed() && !draft.traced(), draft.ringed(), draft.traced());
+                        let rectangle = ui.selectable_label(rectangle_on, "▭ Rectangle").on_hover_text("For an element that stays the same");
+                        let ring = ui.selectable_label(ring_on, "◯ Rim").on_hover_text(
+                            "For a round element whose inside changes (a minimap turning with the camera): draw the square around it, \
+                             and only its rim, as thick as set, is read, not its map nor the scenery in the corners.",
+                        );
+                        let path = ui.selectable_label(path_on, "〰 Path").on_hover_text(
+                            "For an element whose inside changes, of another shape (a minimap's square or curved frame, part of a \
+                             rim hidden at times): click points along the middle of its frame, and only the pixels along the path, \
+                             as thick as set, are read.",
+                        );
+                        // Its cells are others: its look taken again from its capture, and learned again.
+                        let chosen = if rectangle.clicked() && !rectangle_on {
+                            Some((false, false))
+                        } else if ring.clicked() && !ring_on {
+                            Some((true, false))
+                        } else if path.clicked() && !path_on {
+                            Some((false, true))
+                        } else {
+                            None
+                        };
+                        if let Some((ring, tracing)) = chosen {
+                            (draft.ring, draft.tracing, draft.weights) = (ring, tracing, None);
+                        }
+                        if draft.ringed() || draft.traced() {
+                            let height = frame.height.max(1) as f32;
+                            let mut px = (draft.thickness * height).round();
+                            let (text, help) = if draft.ringed() {
+                                ("rim (px)", "The rim's thickness on the captures, inwards from the square")
+                            } else {
+                                ("thickness (px)", "The frame's thickness on the captures")
+                            };
+                            if ui.add(egui::Slider::new(&mut px, 1.0..=20.0).step_by(1.0).text(text)).on_hover_text(help).changed() {
+                                (draft.thickness, draft.weights) = (px / height, None);
+                            }
+                        }
+                        if draft.traced() && !draft.path.is_empty() && ui.small_button("Clear").on_hover_text("Click the path again").clicked() {
+                            draft.path.clear();
+                        }
+                    });
+                }
                 // A gauge's zone: a rectangle, or a path along a curved bar.
                 if can_draw && draft.kind == IndicatorKind::Gauge {
                     ui.horizontal_wrapped(|ui| {
@@ -1944,6 +2150,36 @@ impl App {
                                 }
                             }
                         });
+                    }
+                    // How a visibility zone tells it is shown.
+                    if can_draw && draft.kind == IndicatorKind::Visibility {
+                        ui.horizontal(|ui| {
+                            ui.label("Read by");
+                            for reading in Reading::ALL {
+                                if ui.selectable_label(draft.reading == reading, reading.label()).clicked() && draft.reading != reading {
+                                    draft.reading = reading;
+                                    // Its own shape and scale.
+                                    if reading != Reading::Look {
+                                        (draft.ring, draft.tracing, draft.weights) = (false, false, None);
+                                    }
+                                    draft.threshold = match reading {
+                                        Reading::Look => Zone::default().threshold,
+                                        Reading::Contour => 0.35,
+                                        Reading::Palette => 0.3,
+                                    };
+                                }
+                            }
+                        });
+                        let why = match draft.reading {
+                            Reading::Look => "Look: compared with how it looked where it was drawn. For an element with fixed parts \
+                                              (an icon, a frame); a minimap with a frame: compare only what stays, or its rim.",
+                            Reading::Contour => "Contour: for an element with nothing fixed (a minimap turning, without a frame): \
+                                                 how sharply its edge stands out from what is around it. Nothing to learn; draw its \
+                                                 outline below.",
+                            Reading::Palette => "Palette: for an element with nothing fixed but its colors (a minimap's parchment): \
+                                                 the share of it in its colors, learned from captures, less the share of what is around it.",
+                        };
+                        ui.label(muted(why).size(12.0));
                     }
                     // How the bar is read: by its colors or its look.
                     if can_draw {
@@ -2213,31 +2449,58 @@ impl App {
                                 (Some(phase), false) => (format!("the {phase} captures"), "those of the other phases".to_owned()),
                                 _ => ("the captures marked shown".to_owned(), "those marked not shown".to_owned()),
                             };
+                            // Its colors, learned, for a palette.
+                            if zone.reading == Reading::Palette {
+                                ui.horizontal_wrapped(|ui| {
+                                    let help = format!(
+                                        "Learns the element's colors: those more frequent inside it on {shown_text} than around it, \
+                                         and than in its place on {hidden_text}. Needs {} captures where it is shown or more, the more \
+                                         varied the better (day and night, towns and fields).",
+                                        indicators::WEIGHT_CAPTURES
+                                    );
+                                    let learn = |draft: &mut Draft| {
+                                        draft.palette = indicators::learn_palette(zone, &shown_frames, &other_frames).map(|p| (zone.rect, p)).or(draft.palette.take());
+                                    };
+                                    if !zone.palette.is_empty() {
+                                        ui.label(RichText::new(format!("✔ {} colors learned", zone.palette.len())).color(OK).size(12.0)).on_hover_text(&help);
+                                        if ui.small_button("Learn again").on_hover_text(format!("From the captures as they are marked now\n\n{help}")).clicked() {
+                                            learn(draft);
+                                        }
+                                    } else if shown_frames.len() < indicators::WEIGHT_CAPTURES {
+                                        let text = format!("Mark {} captures or more where it is shown, then learn its colors.", indicators::WEIGHT_CAPTURES);
+                                        ui.label(RichText::new(text).color(WARN).size(12.0)).on_hover_text(&help);
+                                    } else if ui.button("Learn its colors").on_hover_text(&help).clicked() {
+                                        learn(draft);
+                                    }
+                                });
+                            }
                             // Its cells that tell, for an element whose inside changes (a minimap).
-                            ui.horizontal_wrapped(|ui| {
-                                let help = format!(
-                                    "For an element whose inside changes (a minimap's map): compares only the parts of the zone that stay the \
-                                     same on {shown_text} and differ on {hidden_text} (its frame). Needs {} captures where it is shown or more, \
-                                     the more varied the better. When it shows in some phases and not others, or a phase mixes screens \
-                                     (cutscenes and menus), mark the captures: 👁 Shown or ⊘ Not shown, above.",
-                                    indicators::WEIGHT_CAPTURES
-                                );
-                                if indicators::has_weights(zone) {
-                                    let share = indicators::weighted_share(zone) * 100.0;
-                                    ui.label(RichText::new(format!("✔ compared on what stays ({share:.0}% of the zone)")).color(OK).size(12.0)).on_hover_text(&help);
-                                    if ui.small_button("Learn again").on_hover_text(format!("From the captures as they are marked now\n\n{help}")).clicked() {
-                                        draft.weights = indicators::learn_weights(zone, &shown_frames, &other_frames).map(|w| (zone.rect, w)).or(draft.weights.take());
+                            if zone.reading == Reading::Look {
+                                ui.horizontal_wrapped(|ui| {
+                                    let help = format!(
+                                        "For an element whose inside changes (a minimap's map): compares only the parts of the zone that stay the \
+                                         same on {shown_text} and differ on {hidden_text} (its frame). Needs {} captures where it is shown or more, \
+                                         the more varied the better. When it shows in some phases and not others, or a phase mixes screens \
+                                         (cutscenes and menus), mark the captures: 👁 Shown or ⊘ Not shown, above.",
+                                        indicators::WEIGHT_CAPTURES
+                                    );
+                                    if indicators::has_weights(zone) {
+                                        let share = indicators::weighted_share(zone) * 100.0;
+                                        ui.label(RichText::new(format!("✔ compared on what stays ({share:.0}% of the zone)")).color(OK).size(12.0)).on_hover_text(&help);
+                                        if ui.small_button("Learn again").on_hover_text(format!("From the captures as they are marked now\n\n{help}")).clicked() {
+                                            draft.weights = indicators::learn_weights(zone, &shown_frames, &other_frames).map(|w| (zone.rect, w)).or(draft.weights.take());
+                                        }
+                                        if ui.small_button("Compare it all").on_hover_text("Compare the whole zone again").clicked() {
+                                            draft.weights = None;
+                                        }
+                                    } else if shown_frames.len() < indicators::WEIGHT_CAPTURES {
+                                        let text = format!("Its inside changes? Mark {} captures or more where it is shown to compare only what stays.", indicators::WEIGHT_CAPTURES);
+                                        ui.label(muted(text).size(12.0)).on_hover_text(&help);
+                                    } else if ui.button("Compare only what stays").on_hover_text(&help).clicked() {
+                                        draft.weights = indicators::learn_weights(zone, &shown_frames, &other_frames).map(|w| (zone.rect, w));
                                     }
-                                    if ui.small_button("Compare it all").on_hover_text("Compare the whole zone again").clicked() {
-                                        draft.weights = None;
-                                    }
-                                } else if shown_frames.len() < indicators::WEIGHT_CAPTURES {
-                                    let text = format!("Its inside changes? Mark {} captures or more where it is shown to compare only what stays.", indicators::WEIGHT_CAPTURES);
-                                    ui.label(muted(text).size(12.0)).on_hover_text(&help);
-                                } else if ui.button("Compare only what stays").on_hover_text(&help).clicked() {
-                                    draft.weights = indicators::learn_weights(zone, &shown_frames, &other_frames).map(|w| (zone.rect, w));
-                                }
-                            });
+                                });
+                            }
                             // A threshold telling where it is shown from where it is not.
                             ui.horizontal(|ui| match indicators::suggest_threshold(&shown_in, &others) {
                                 Some(t) if (t - draft.threshold).abs() > 0.01 => {

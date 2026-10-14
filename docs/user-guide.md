@@ -230,7 +230,25 @@ to set some up.
   element whose inside changes (a minimap and its map) is told by what stays:
   with three varied captures where it is shown or more (and some where it is
   not), **Compare only what stays** learns which parts of the zone (its frame)
-  tell it, highlighted on the image. A bar of one color is
+  tell it, highlighted on the image. A round one (a minimap turning with the
+  camera) is best drawn with the **◯ Rim** shape: a square around it, its
+  edges on the rim's outer edge, and only the rim is read, as thick as set,
+  not the map nor the scenery in the corners; another shape (a square
+  frame, part of a rim hidden at times) with the **〰 Path** shape: click
+  points along the middle of its frame. An element with nothing fixed
+  (The Witcher 3's minimap: no frame to speak of, its map and marks turning)
+  is read by **Contour** (how sharply its edge stands out from what is
+  around it, nothing to learn) or by **Palette** (the share of it in its
+  colors, learned from the marked captures with **Learn its colors**, less
+  the share of what is around it): choose it under **Read by**, then its
+  shape: **◯ Ellipse** (a square drawn around a round element), **▭
+  Rectangle** (drawn on a square element's edges) or **〰 Path** (clicked
+  along its edge: for a contour, all of it or only where it stands out best,
+  compared on both sides of the path; for a palette, all around it, the path
+  closing itself). Both together, in two zones with
+  **Shown in all its zones**, make it surer still. A visibility indicator changes
+  once its zones have said so for 0.3 s, so that a flash does not make it
+  blink. A bar of one color is
   read by its colors (pick its full and empty parts); a bar filled again over
   itself in another color once full (green, then yellow over the green) by
   its colors with a **tier** for each color (**+ Tier**), each an equal share

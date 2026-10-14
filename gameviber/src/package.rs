@@ -121,6 +121,56 @@ impl IndicatorKind {
     }
 }
 
+/// How a visibility zone tells whether its element is shown.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Reading {
+    /// Its look compared with how it looked when the zone was drawn.
+    #[default]
+    Look,
+    /// An element with nothing fixed (a minimap turning, without a frame):
+    /// how sharply it stands out from what is around it, along its outline
+    /// (`Zone::outline`, or its path).
+    Contour,
+    /// The same, by its colors: the share of it in its colors (`Zone::palette`),
+    /// learned from captures, less the share of what is around it.
+    Palette,
+}
+
+/// The outline of an element read by its contour or its palette, drawn as
+/// the zone's rectangle (a path clicked around it instead: `Zone::path`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Outline {
+    /// The ellipse inscribed in the rectangle (a round minimap).
+    #[default]
+    Ellipse,
+    /// The rectangle itself (a square minimap, a panel).
+    Rectangle,
+}
+
+impl Outline {
+    fn is_ellipse(&self) -> bool {
+        *self == Outline::Ellipse
+    }
+}
+
+impl Reading {
+    pub const ALL: [Reading; 3] = [Reading::Look, Reading::Contour, Reading::Palette];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Reading::Look => "Look",
+            Reading::Contour => "Contour",
+            Reading::Palette => "Palette",
+        }
+    }
+
+    fn is_look(&self) -> bool {
+        *self == Reading::Look
+    }
+}
+
 /// Where a bar fills towards.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -178,7 +228,19 @@ pub struct Zone {
     /// cell, compared by correlation.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub weights: Vec<u8>,
-    /// Visibility: similarity with the reference (-1..1; 0..1 with weights) above which the element is shown.
+    /// Visibility: how the zone tells it is shown.
+    #[serde(skip_serializing_if = "Reading::is_look")]
+    pub reading: Reading,
+    /// Visibility read by its contour or its palette: the element's outline.
+    #[serde(skip_serializing_if = "Outline::is_ellipse")]
+    pub outline: Outline,
+    /// Visibility read by its palette: the colors of the element (bins of
+    /// `screen::indicators::palette_bin`), learned from captures.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub palette: Vec<u16>,
+    /// Visibility: similarity with the reference (-1..1; 0..1 with weights or
+    /// along a line; for a contour or a palette, `screen::indicators::measure`)
+    /// above which the element is shown.
     pub threshold: f32,
     /// Visibility: captures the player marked as showing the element in this
     /// zone, and as not showing it, to learn its weights and threshold from;
@@ -232,10 +294,19 @@ pub struct Zone {
     /// Gauge: a curved bar's middle line, as points clicked along it (fractions
     /// of the screen), from the end it fills from to its full end: the bar is
     /// read along it rather than across `rect` (then around it, for the
-    /// editor), and `direction` is left out...
+    /// editor), and `direction` is left out. Visibility: the middle line of
+    /// an element's frame, read only along it (`screen::indicators::on_line`);
+    /// read by its contour, its edge (compared on both sides of it); by its
+    /// palette, its outline, closed from its last point to its first...
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub path: Vec<[f32; 2]>,
-    /// ...across this thickness (a fraction of the screen's height).
+    /// Visibility: a round element whose inside changes (a minimap turning
+    /// with the camera) is read only on its rim, the ellipse `rect` is drawn
+    /// around, inwards from it...
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub ring: bool,
+    /// ...across this thickness (a fraction of the screen's height), as a
+    /// path's is; a contour's path compares that far on each side of it.
     pub thickness: f32,
     /// Gauge: how far (0..255 per channel) a pixel may be from `color`.
     pub tolerance: f32,
@@ -252,6 +323,9 @@ impl Default for Zone {
             compare_colors: false,
             all_zones: false,
             weights: Vec::new(),
+            reading: Reading::Look,
+            outline: Outline::Ellipse,
+            palette: Vec::new(),
             threshold: 0.6,
             shown_on: Vec::new(),
             hidden_on: Vec::new(),
@@ -268,6 +342,7 @@ impl Default for Zone {
             capture: None,
             direction: Direction::Right,
             path: Vec::new(),
+            ring: false,
             thickness: 0.01,
             tolerance: 60.0,
         }

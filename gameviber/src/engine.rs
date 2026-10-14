@@ -1738,12 +1738,12 @@ impl Engine {
                 if let Some(strength) = flash {
                     self.events.push(ModeEvent::ScreenFlash(strength));
                 }
-                for (name, value) in self.indicators.update(&self.mode_inputs.zones, &frame) {
+                for (name, value) in self.indicators.update(&self.mode_inputs.zones, &frame, time) {
                     self.events.push(ModeEvent::Indicator { name, value });
                 }
             } else {
                 // Indicators are still measured for the editor.
-                self.indicators.update(&self.mode_inputs.zones, &frame);
+                self.indicators.update(&self.mode_inputs.zones, &frame, time);
             }
             let rt = self.mode.as_ref().and_then(|m| m.runtime.as_ref());
             let phases_use_image = self.settings.screen && rt.is_some_and(|rt| rt.phase_sense(Sense::Screen) || rt.phase_sense(Sense::Examples));

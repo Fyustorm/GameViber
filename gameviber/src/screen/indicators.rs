@@ -2,8 +2,11 @@
 //! read in one or more zones: whether an element is shown (its look compared
 //! with a reference taken when the zone was drawn, in brightness or in color;
 //! for an element whose inside changes, a minimap, only on the parts of it
-//! that stay the same, learned from captures; in one of its zones or in all of
-//! them) and how full a gauge's bar
+//! that stay the same, learned from captures; a round one only on its rim,
+//! `Zone::ring`, another only along a path clicked on its frame; a round one
+//! with nothing fixed, a minimap without a frame, by how sharply it stands
+//! out from what is around it or by its colors, `Zone::reading`; in one of
+//! its zones or in all of them) and how full a gauge's bar
 //! is (the share of it in the bar's full color rather than its empty one;
 //! with both colors known, the bar is the longest run of them in the zone,
 //! wherever it is; a bar filled again over itself in other colors reads
@@ -17,13 +20,34 @@ use std::collections::BTreeMap;
 
 use super::Frame;
 use crate::mode::IndicatorValue;
-use crate::package::{Condition, Direction, Zone, IndicatorKind};
+use crate::package::{Condition, Direction, IndicatorKind, Outline, Reading, Zone};
 
 /// References are compared on a grid of this size.
 pub const REF_WIDTH: usize = 32;
 pub const REF_HEIGHT: usize = 24;
+/// The cells of a ring or a path (`on_line`): this many along it, by
+/// `RING_ACROSS` across, as many as the grid's.
+pub const RING_AROUND: usize = REF_WIDTH * REF_HEIGHT / RING_ACROSS;
+pub const RING_ACROSS: usize = 4;
+/// A contour compares the colors just inside the outline with those just
+/// outside it, at these radii (fractions of its own)...
+const CONTOUR_INSIDE: [f32; 3] = [0.80, 0.85, 0.90];
+const CONTOUR_OUTSIDE: [f32; 3] = [1.10, 1.15, 1.20];
+/// A path's contour compares on both sides of it, at these shares of its thickness.
+const CONTOUR_SIDES: [f32; 3] = [0.5, 0.75, 1.0];
+/// ...at this many angles, the median of their differences read as 1 from this far (0..441).
+const CONTOUR_ANGLES: usize = 72;
+const CONTOUR_FULL: f32 = 128.0;
+/// A palette's element is inside this radius, what is around it between these.
+const PALETTE_INSIDE: f32 = 0.92;
+const PALETTE_AROUND: (f32, f32) = (1.08, 1.35);
+/// Palettes are of colors rounded to this many levels per channel.
+pub const PALETTE_LEVELS: usize = 6;
 /// A shown element is hidden once its similarity drops this far below the threshold.
 const HYSTERESIS: f32 = 0.05;
+/// A visibility indicator changes once its zones say so for this long (s), so
+/// that a flash or a frame over it does not make it blink.
+const SETTLE: f64 = 0.3;
 /// A cell matches the reference less the further its luma is from it, not at
 /// all from this far (its color: as far as a gray this much lighter).
 const CELL_MATCH: f32 = 32.0;
@@ -66,14 +90,15 @@ fn pixel(frame: &Frame, x: usize, y: usize) -> [u8; 3] {
     [frame.pixels[i], frame.pixels[i + 1], frame.pixels[i + 2]]
 }
 
-/// The zone's look: luma averaged on a `REF_WIDTH` x `REF_HEIGHT` grid...
-pub fn reference(frame: &Frame, rect: [f32; 4]) -> Vec<u8> {
-    cells(frame, rect).into_iter().map(|c| luma(c).round().clamp(0.0, 255.0) as u8).collect()
+/// The zone's look: luma averaged on a `REF_WIDTH` x `REF_HEIGHT` grid (on
+/// `RING_AROUND` x `RING_ACROSS` cells along a ring or a path)...
+pub fn reference(frame: &Frame, zone: &Zone) -> Vec<u8> {
+    cells(frame, zone).into_iter().map(|c| luma(c).round().clamp(0.0, 255.0) as u8).collect()
 }
 
 /// ...and its colors (`Zone::reference_colors`).
-pub fn reference_colors(frame: &Frame, rect: [f32; 4]) -> Vec<[u8; 3]> {
-    cells(frame, rect).into_iter().map(|c| c.map(|v| v.round().clamp(0.0, 255.0) as u8)).collect()
+pub fn reference_colors(frame: &Frame, zone: &Zone) -> Vec<[u8; 3]> {
+    cells(frame, zone).into_iter().map(|c| c.map(|v| v.round().clamp(0.0, 255.0) as u8)).collect()
 }
 
 fn luma([r, g, b]: [f32; 3]) -> f32 {
@@ -81,8 +106,11 @@ fn luma([r, g, b]: [f32; 3]) -> f32 {
 }
 
 /// The zone's colors averaged on the reference's grid.
-fn cells(frame: &Frame, rect: [f32; 4]) -> Vec<[f32; 3]> {
-    let (x0, y0, x1, y1) = bounds(frame, rect);
+fn cells(frame: &Frame, zone: &Zone) -> Vec<[f32; 3]> {
+    if on_line(zone) {
+        return line_cells(frame, zone);
+    }
+    let (x0, y0, x1, y1) = bounds(frame, zone.rect);
     let mut sums = vec![[0f32; 3]; REF_WIDTH * REF_HEIGHT];
     let mut counts = vec![0u32; REF_WIDTH * REF_HEIGHT];
     for y in y0..y1 {
@@ -108,6 +136,277 @@ fn cells(frame: &Frame, rect: [f32; 4]) -> Vec<[f32; 3]> {
         }
     }
     sums
+}
+
+/// A visibility zone read along a line, its rim or its path, rather than across its rectangle.
+pub fn on_line(zone: &Zone) -> bool {
+    zone.kind == IndicatorKind::Visibility && (zone.ring || has_path(zone))
+}
+
+/// Where cell `k` of a line's grid (`on_line`) is on an image `aspect` times
+/// wider than high, as fractions of it, `at` (0..1 each way) inside the
+/// cell: around the ellipse inscribed in the zone's rectangle from its top,
+/// clockwise, and inwards from it across its thickness; or along its path from
+/// its first point, across its thickness, its middle on the path.
+pub fn line_point(zone: &Zone, k: usize, aspect: f32, at: (f32, f32)) -> [f32; 2] {
+    let (i, j) = (k / RING_ACROSS, k % RING_ACROSS);
+    let along = (i as f32 + at.0) / RING_AROUND as f32;
+    let across = (j as f32 + at.1) / RING_ACROSS as f32 * zone.thickness;
+    let aspect = aspect.max(1e-3);
+    if !zone.ring {
+        // In heights of the image, where lengths are the same both ways.
+        let line: Vec<(f32, f32)> = zone.path.iter().map(|p| (p[0] * aspect, p[1])).collect();
+        let Some(((x, y), (nx, ny))) = path_at(&line, along) else {
+            return zone.path.first().copied().unwrap_or([zone.rect[0], zone.rect[1]]);
+        };
+        let off = across - zone.thickness / 2.0;
+        return [(x + nx * off) / aspect, y + ny * off];
+    }
+    let [x, y, w, h] = zone.rect;
+    let angle = along * std::f32::consts::TAU;
+    let (rx, ry) = ((w / 2.0 - across / aspect).max(0.0), (h / 2.0 - across).max(0.0));
+    [x + w / 2.0 + rx * angle.sin(), y + h / 2.0 - ry * angle.cos()]
+}
+
+/// The point at `along` (0..1 of its length) of the line through `points`,
+/// and the unit normal to it there (to its right going along it, y down).
+fn path_at(points: &[(f32, f32)], along: f32) -> Option<((f32, f32), (f32, f32))> {
+    let segments: Vec<f32> = points.windows(2).map(|s| (s[1].0 - s[0].0).hypot(s[1].1 - s[0].1)).collect();
+    let mut rest = along * segments.iter().sum::<f32>();
+    let mut k = 0;
+    while k + 1 < segments.len() && rest > segments[k] {
+        rest -= segments[k];
+        k += 1;
+    }
+    let (&a, &b, &len) = (points.get(k)?, points.get(k + 1)?, segments.get(k)?);
+    let (dx, dy) = if len > 0.0 { ((b.0 - a.0) / len, (b.1 - a.1) / len) } else { (1.0, 0.0) };
+    let t = if len > 0.0 { (rest / len).clamp(0.0, 1.0) } else { 0.0 };
+    Some(((a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t), (-dy, dx)))
+}
+
+/// A line's colors: each cell the average of a few pixels spread over it.
+fn line_cells(frame: &Frame, zone: &Zone) -> Vec<[f32; 3]> {
+    let (w, h) = (frame.width.max(1) as f32, frame.height.max(1) as f32);
+    const SPREAD: [(f32, f32); 6] = [(1.0 / 6.0, 0.25), (0.5, 0.25), (5.0 / 6.0, 0.25), (1.0 / 6.0, 0.75), (0.5, 0.75), (5.0 / 6.0, 0.75)];
+    (0..RING_AROUND * RING_ACROSS)
+        .map(|k| {
+            let mut sum = [0f32; 3];
+            for at in SPREAD {
+                let [px, py] = line_point(zone, k, w / h, at);
+                let x = ((px.max(0.0) * w) as usize).min(frame.width as usize - 1);
+                let y = ((py.max(0.0) * h) as usize).min(frame.height as usize - 1);
+                (0..3).for_each(|c| sum[c] += pixel(frame, x, y)[c] as f32);
+            }
+            sum.map(|v| v / SPREAD.len() as f32)
+        })
+        .collect()
+}
+
+/// The center of the zone's rectangle and its half sizes, in pixels of `frame`.
+fn center(zone: &Zone, frame: &Frame) -> (f32, f32, f32, f32) {
+    let (w, h) = (frame.width as f32, frame.height as f32);
+    let [x, y, rw, rh] = zone.rect;
+    ((x + rw / 2.0) * w, (y + rh / 2.0) * h, (rw / 2.0 * w).max(1.0), (rh / 2.0 * h).max(1.0))
+}
+
+/// A point of the zone's outline (`Zone::outline`), `r` times as large, as
+/// fractions of its half sizes from its center: at `u` (0..1) around it, from
+/// its top, clockwise.
+pub fn outline_point(outline: Outline, u: f32, r: f32) -> (f32, f32) {
+    match outline {
+        Outline::Ellipse => {
+            let (sin, cos) = (u * std::f32::consts::TAU).sin_cos();
+            (r * sin, -r * cos)
+        }
+        // Along the square's 8 half sides from the middle of its top.
+        Outline::Rectangle => {
+            let t = u.rem_euclid(1.0) * 8.0;
+            let (x, y) = match t {
+                t if t < 1.0 => (t, -1.0),
+                t if t < 3.0 => (1.0, t - 2.0),
+                t if t < 5.0 => (4.0 - t, 1.0),
+                t if t < 7.0 => (-1.0, 6.0 - t),
+                t => (t - 8.0, -1.0),
+            };
+            (r * x, r * y)
+        }
+    }
+}
+
+/// How far a point (as fractions of the zone's half sizes from its center) is
+/// from the center, its outline at 1.
+fn outline_radius(outline: Outline, x: f32, y: f32) -> f32 {
+    match outline {
+        Outline::Ellipse => x.hypot(y),
+        Outline::Rectangle => x.abs().max(y.abs()),
+    }
+}
+
+/// A zone's path in pixels of `frame`.
+fn path_pixels(zone: &Zone, frame: &Frame) -> Vec<(f32, f32)> {
+    zone.path.iter().map(|p| (p[0] * frame.width as f32, p[1] * frame.height as f32)).collect()
+}
+
+/// The pixel nearest to a point of `frame` (in pixels), inside it.
+fn pixel_at(frame: &Frame, x: f32, y: f32) -> [u8; 3] {
+    let x = (x.max(0.0) as usize).min(frame.width as usize - 1);
+    let y = (y.max(0.0) as usize).min(frame.height as usize - 1);
+    pixel(frame, x, y)
+}
+
+/// How sharply the zone's element stands out from what is around it (0..1):
+/// the median, along its outline (its path: on both sides of it, as far as
+/// its thickness), of the difference between its colors just inside and just
+/// outside. Nothing of the element needs to stay the same, only to differ
+/// from the scenery: a minimap turning, without a frame.
+fn contour(zone: &Zone, frame: &Frame) -> f32 {
+    let mean = |points: &mut dyn Iterator<Item = (f32, f32)>| {
+        let (mut sum, mut n) = ([0f32; 3], 0.0);
+        for (x, y) in points {
+            let p = pixel_at(frame, x, y);
+            (0..3).for_each(|c| sum[c] += p[c] as f32);
+            n += 1.0;
+        }
+        sum.map(|v| v / n)
+    };
+    let (cx, cy, hx, hy) = center(zone, frame);
+    let path = path_pixels(zone, frame);
+    let reach = zone.thickness * frame.height as f32;
+    let mut differences: Vec<f32> = (0..CONTOUR_ANGLES)
+        .filter_map(|k| {
+            let u = (k as f32 + 0.5) / CONTOUR_ANGLES as f32;
+            let (inside, outside) = if has_path(zone) {
+                let ((x, y), (nx, ny)) = path_at(&path, u)?;
+                let side = |sign: f32| CONTOUR_SIDES.map(|d| (x + sign * nx * reach * d, y + sign * ny * reach * d));
+                (mean(&mut side(1.0).into_iter()), mean(&mut side(-1.0).into_iter()))
+            } else {
+                let at = |r: f32| {
+                    let (x, y) = outline_point(zone.outline, u, r);
+                    (cx + x * hx, cy + y * hy)
+                };
+                (mean(&mut CONTOUR_INSIDE.into_iter().map(at)), mean(&mut CONTOUR_OUTSIDE.into_iter().map(at)))
+            };
+            Some((0..3).map(|c| (inside[c] - outside[c]).powi(2)).sum::<f32>().sqrt())
+        })
+        .collect();
+    if differences.is_empty() {
+        return 0.0;
+    }
+    differences.sort_by(f32::total_cmp);
+    (differences[differences.len() / 2] / CONTOUR_FULL).min(1.0)
+}
+
+/// The bin of a color in a palette (`Zone::palette`).
+pub fn palette_bin([r, g, b]: [u8; 3]) -> u16 {
+    let level = |v: u8| v as usize * PALETTE_LEVELS / 256;
+    ((level(r) * PALETTE_LEVELS + level(g)) * PALETTE_LEVELS + level(b)) as u16
+}
+
+/// The bins of the pixels inside the zone's element, and of those around it:
+/// inside and around its outline, or the outline its path closes.
+fn palette_regions(zone: &Zone, frame: &Frame) -> (Vec<u16>, Vec<u16>) {
+    let (inside_of, far) = (PALETTE_INSIDE, PALETTE_AROUND.1);
+    // How far each pixel is from the center, the outline at 1.
+    let radius: Box<dyn Fn(f32, f32) -> f32> = if has_path(zone) && zone.path.len() >= 3 {
+        let polygon = path_pixels(zone, frame);
+        // As large as a disc of its area: what is near it is as near as for a disc.
+        let area = polygon.iter().zip(polygon.iter().cycle().skip(1)).map(|(a, b)| a.0 * b.1 - b.0 * a.1).sum::<f32>().abs() / 2.0;
+        let size = (area / std::f32::consts::PI).sqrt().max(1.0);
+        Box::new(move |x, y| {
+            let (inside, distance) = polygon_distance(&polygon, x, y);
+            if inside { 1.0 - distance / size } else { 1.0 + distance / size }
+        })
+    } else {
+        let (cx, cy, hx, hy) = center(zone, frame);
+        let outline = zone.outline;
+        Box::new(move |x, y| outline_radius(outline, (x - cx) / hx, (y - cy) / hy))
+    };
+    let (x0, y0, x1, y1) = if has_path(zone) {
+        let polygon = path_pixels(zone, frame);
+        let (lx, hx) = polygon.iter().fold((f32::MAX, f32::MIN), |(a, b), p| (a.min(p.0), b.max(p.0)));
+        let (ly, hy) = polygon.iter().fold((f32::MAX, f32::MIN), |(a, b), p| (a.min(p.1), b.max(p.1)));
+        let pad = (hx - lx).max(hy - ly) * (far - 1.0);
+        (lx - pad, ly - pad, hx + pad, hy + pad)
+    } else {
+        let (cx, cy, hx, hy) = center(zone, frame);
+        (cx - far * hx, cy - far * hy, cx + far * hx, cy + far * hy)
+    };
+    let (x0, y0) = (x0.max(0.0) as usize, y0.max(0.0) as usize);
+    let (x1, y1) = ((x1.ceil().max(0.0) as usize).min(frame.width as usize), (y1.ceil().max(0.0) as usize).min(frame.height as usize));
+    let (mut inside, mut around) = (Vec::new(), Vec::new());
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let r = radius(x as f32 + 0.5, y as f32 + 0.5);
+            if r < inside_of {
+                inside.push(palette_bin(pixel(frame, x, y)));
+            } else if (PALETTE_AROUND.0..far).contains(&r) {
+                around.push(palette_bin(pixel(frame, x, y)));
+            }
+        }
+    }
+    (inside, around)
+}
+
+/// Whether a point is inside the polygon (closed from its last point to its
+/// first), and how far it is from its edges.
+fn polygon_distance(polygon: &[(f32, f32)], x: f32, y: f32) -> (bool, f32) {
+    let (mut inside, mut distance) = (false, f32::INFINITY);
+    for (&a, &b) in polygon.iter().zip(polygon.iter().cycle().skip(1)) {
+        if (a.1 > y) != (b.1 > y) && x < a.0 + (y - a.1) / (b.1 - a.1) * (b.0 - a.0) {
+            inside = !inside;
+        }
+        let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+        let t = (((x - a.0) * dx + (y - a.1) * dy) / (dx * dx + dy * dy).max(1e-6)).clamp(0.0, 1.0);
+        distance = distance.min((x - a.0 - t * dx).hypot(y - a.1 - t * dy));
+    }
+    (inside, distance)
+}
+
+/// The share of the zone's element in its palette's colors, less the share of
+/// what is around it (-1..1): a screen all in those colors (a world map
+/// menu) is not taken for the element.
+fn palette_share(zone: &Zone, frame: &Frame) -> f32 {
+    let mut known = vec![false; PALETTE_LEVELS.pow(3)];
+    for &b in &zone.palette {
+        if let Some(k) = known.get_mut(b as usize) {
+            *k = true;
+        }
+    }
+    let share = |bins: &[u16]| bins.iter().filter(|&&b| known[b as usize]).count() as f32 / bins.len().max(1) as f32;
+    let (inside, around) = palette_regions(zone, frame);
+    share(&inside) - share(&around)
+}
+
+/// The colors of the element in the zone (`Zone::palette`), from
+/// captures where it is shown and where it is not: those more frequent
+/// inside it when it is shown than around it, and than in its place when it
+/// is not. None with too few captures, or when no color tells.
+pub fn learn_palette(zone: &Zone, shown: &[&Frame], hidden: &[&Frame]) -> Option<Vec<u16>> {
+    if shown.len() < WEIGHT_CAPTURES {
+        return None;
+    }
+    // Each capture counts the same, whatever its size; colors never seen count a little.
+    let histogram = |regions: Vec<Vec<u16>>| {
+        let mut h = vec![0.5f32; PALETTE_LEVELS.pow(3)];
+        for bins in regions {
+            for &b in &bins {
+                h[b as usize] += 1.0 / bins.len() as f32;
+            }
+        }
+        let total: f32 = h.iter().sum();
+        h.into_iter().map(|v| v / total).collect::<Vec<f32>>()
+    };
+    let element = histogram(shown.iter().map(|f| palette_regions(zone, f).0).collect());
+    // Not the element: the scenery around it, and its place where it is not shown.
+    let around = histogram(shown.iter().map(|f| palette_regions(zone, f).1).collect());
+    let others = if hidden.is_empty() {
+        around
+    } else {
+        let instead = histogram(hidden.iter().map(|f| palette_regions(zone, f).0).collect());
+        around.iter().zip(instead).map(|(a, b)| a.max(b)).collect()
+    };
+    let palette: Vec<u16> = (0..element.len()).filter(|&b| element[b] > others[b]).map(|b| b as u16).collect();
+    (!palette.is_empty()).then_some(palette)
 }
 
 /// Whether the zone is compared in color (`Zone::compare_colors`, its colors known).
@@ -158,7 +457,7 @@ pub fn learn_weights(zone: &Zone, shown: &[&Frame], hidden: &[&Frame]) -> Option
         return None;
     }
     let distances = |frames: &[&Frame]| -> Vec<Vec<f32>> {
-        frames.iter().map(|f| cell_distances(zone, &cells(f, zone.rect))).collect()
+        frames.iter().map(|f| cell_distances(zone, &cells(f, zone))).collect()
     };
     let median = |all: &[Vec<f32>], cell: usize| {
         let mut v: Vec<f32> = all.iter().map(|d| d[cell]).collect();
@@ -225,21 +524,29 @@ pub fn suggest_threshold(shown: &[f32], hidden: &[f32]) -> Option<f32> {
 
 /// What a zone reads on `frame`: the similarity with its reference for a
 /// visibility indicator's zone (-1..1, of its luma or of its colors; with
-/// weights, 0..1: how near the cells they keep are, weighed), how full its bar is (0..1) for a gauge's; None when the bar is
+/// weights or along a line, 0..1: how near the cells they keep are, weighed;
+/// 0..1 for a contour, -1..1 for a palette), how full its bar is (0..1) for a gauge's; None when the bar is
 /// not on screen (too little of its colors in the zone, which needs its empty
 /// color to be told from an empty bar).
 pub fn measure(zone: &Zone, frame: &Frame) -> Option<f32> {
     match zone.kind {
         IndicatorKind::Visibility => {
+            match zone.reading {
+                Reading::Contour => return Some(contour(zone, frame)),
+                Reading::Palette => return Some(if zone.palette.is_empty() { 0.0 } else { palette_share(zone, frame) }),
+                Reading::Look => {}
+            }
             if zone.reference.len() != REF_WIDTH * REF_HEIGHT {
                 return Some(0.0);
             }
-            let grid = cells(frame, zone.rect);
-            if has_weights(zone) {
+            let grid = cells(frame, zone);
+            // A rim or a frame, often of one color, has too little contrast to correlate: its cells are compared as they are.
+            if has_weights(zone) || on_line(zone) {
                 let (mut near, mut total) = (0.0, 0.0);
-                for (d, &w) in cell_distances(zone, &grid).into_iter().zip(&zone.weights) {
-                    near += (1.0 - d) * w as f32;
-                    total += w as f32;
+                let weights: Vec<f32> = if has_weights(zone) { zone.weights.iter().map(|&w| w as f32).collect() } else { vec![255.0; grid.len()] };
+                for (d, w) in cell_distances(zone, &grid).into_iter().zip(weights) {
+                    near += (1.0 - d) * w;
+                    total += w;
                 }
                 return Some(if total > 0.0 { near / total } else { 0.0 });
             }
@@ -679,13 +986,19 @@ pub struct IndicatorReader {
     pub measures: BTreeMap<String, Option<f32>>,
     /// Copies in a row each bar was not found on.
     missing: BTreeMap<String, u32>,
+    /// Since when each visibility indicator's zones say otherwise than its value...
+    changing: BTreeMap<String, f64>,
+    /// ...and what they say on the last frame: gauges' conditions follow it right away.
+    seen: BTreeMap<String, bool>,
 }
 
 impl IndicatorReader {
-    pub fn update(&mut self, zones: &[Zone], frame: &Frame) -> Vec<(String, IndicatorValue)> {
+    /// Reads `frame`, copied at `time` (s).
+    pub fn update(&mut self, zones: &[Zone], frame: &Frame, time: f64) -> Vec<(String, IndicatorValue)> {
         let mut changed = Vec::new();
         self.measures.clear();
         self.values.retain(|name, _| zones.iter().any(|z| z.indicator == *name));
+        self.seen.clear();
         // Zones naming the same indicator are read together, visibility first:
         // gauges may be read only while one is shown, or hidden.
         let mut names: Vec<&str> = Vec::new();
@@ -701,13 +1014,27 @@ impl IndicatorReader {
             let (measure, value) = match of_indicator[0].kind {
                 IndicatorKind::Visibility => {
                     let (shown, best) = is_shown(&of_indicator, frame, previous == Some(IndicatorValue::Visibility(true)));
-                    (Some(best), IndicatorValue::Visibility(shown))
+                    self.seen.insert(name.to_owned(), shown);
+                    let value = match previous {
+                        // Changed only once it holds for `SETTLE`.
+                        Some(IndicatorValue::Visibility(old)) if old != shown => {
+                            let since = *self.changing.entry(name.to_owned()).or_insert(time);
+                            if time - since >= SETTLE {
+                                self.changing.remove(name);
+                                shown
+                            } else {
+                                old
+                            }
+                        }
+                        _ => {
+                            self.changing.remove(name);
+                            shown
+                        }
+                    };
+                    (Some(best), IndicatorValue::Visibility(value))
                 }
                 IndicatorKind::Gauge => {
-                    let shown = |n: &str| match self.values.get(n) {
-                        Some(IndicatorValue::Visibility(v)) => Some(*v),
-                        _ => None,
-                    };
+                    let shown = |n: &str| self.seen.get(n).copied();
                     let measure = if unmet(of_indicator[0], shown).is_none() { fill_anywhere(&of_indicator, frame) } else { None };
                     let missing = self.missing.entry(name.to_owned()).or_default();
                     *missing = if measure.is_none() { *missing + 1 } else { 0 };
@@ -738,6 +1065,8 @@ impl IndicatorReader {
         self.values.clear();
         self.measures.clear();
         self.missing.clear();
+        self.changing.clear();
+        self.seen.clear();
     }
 }
 
@@ -774,7 +1103,7 @@ mod tests {
     #[test]
     fn visibility_follows_the_element() {
         let rect = [120.0 / 160.0, 60.0 / 90.0, 40.0 / 160.0, 30.0 / 90.0];
-        let zone = Zone { indicator: "battle_hud".into(), rect, reference: reference(&with_hud(true, 0), rect), ..Zone::default() };
+        let zone = Zone { indicator: "battle_hud".into(), rect, reference: reference(&with_hud(true, 0), &Zone { rect, ..Zone::default() }), ..Zone::default() };
         assert!(measure(&zone, &with_hud(true, 0)).unwrap() > 0.99);
         // The scenery moved behind the element: still recognized; gone: not.
         let moved = measure(&zone, &with_hud(true, 37)).unwrap();
@@ -784,9 +1113,13 @@ mod tests {
 
         let mut reader = IndicatorReader::default();
         let zones = [zone];
-        assert_eq!(reader.update(&zones, &with_hud(true, 0)), vec![("battle_hud".to_owned(), IndicatorValue::Visibility(true))]);
-        assert_eq!(reader.update(&zones, &with_hud(true, 10)), vec![], "no change, nothing reported");
-        assert_eq!(reader.update(&zones, &with_hud(false, 10)), vec![("battle_hud".to_owned(), IndicatorValue::Visibility(false))]);
+        assert_eq!(reader.update(&zones, &with_hud(true, 0), 0.0), vec![("battle_hud".to_owned(), IndicatorValue::Visibility(true))]);
+        assert_eq!(reader.update(&zones, &with_hud(true, 10), 0.1), vec![], "no change, nothing reported");
+        assert_eq!(reader.update(&zones, &with_hud(false, 10), 0.2), vec![], "not yet: it may be a flash");
+        assert_eq!(reader.update(&zones, &with_hud(true, 10), 0.3), vec![], "it was");
+        assert_eq!(reader.update(&zones, &with_hud(false, 10), 0.4), vec![]);
+        assert_eq!(reader.update(&zones, &with_hud(false, 10), 0.6), vec![], "hidden for 0.2 s");
+        assert_eq!(reader.update(&zones, &with_hud(false, 10), 0.8), vec![("battle_hud".to_owned(), IndicatorValue::Visibility(false))]);
     }
 
     /// Button prompts in the bottom right corner, over scenery: `shown` says
@@ -815,8 +1148,8 @@ mod tests {
         Zone {
             indicator: "battle_hud".into(),
             rect,
-            reference: reference(frame, rect),
-            reference_colors: reference_colors(frame, rect),
+            reference: reference(frame, &Zone { rect, ..Zone::default() }),
+            reference_colors: reference_colors(frame, &Zone { rect, ..Zone::default() }),
             ..Zone::default()
         }
     }
@@ -835,8 +1168,9 @@ mod tests {
         assert!(!is_shown(&of(&zones), &one_missing, false).0, "all its zones are needed");
 
         let mut reader = IndicatorReader::default();
-        assert_eq!(reader.update(&zones, &battle), vec![("battle_hud".to_owned(), IndicatorValue::Visibility(true))]);
-        assert_eq!(reader.update(&zones, &one_missing), vec![("battle_hud".to_owned(), IndicatorValue::Visibility(false))]);
+        assert_eq!(reader.update(&zones, &battle, 0.0), vec![("battle_hud".to_owned(), IndicatorValue::Visibility(true))]);
+        reader.update(&zones, &one_missing, 0.1);
+        assert_eq!(reader.update(&zones, &one_missing, 0.5), vec![("battle_hud".to_owned(), IndicatorValue::Visibility(false))]);
     }
 
     #[test]
@@ -885,7 +1219,7 @@ mod tests {
     #[test]
     fn elements_whose_inside_changes_are_told_by_what_stays() {
         let rect = [124.0 / 160.0, 54.0 / 90.0, 32.0 / 160.0, 32.0 / 90.0];
-        let zone = Zone { indicator: "minimap".into(), rect, reference: reference(&minimap(true, 0), rect), ..Zone::default() };
+        let zone = Zone { indicator: "minimap".into(), rect, reference: reference(&minimap(true, 0), &Zone { rect, ..Zone::default() }), ..Zone::default() };
         let measures = |zone: &Zone, shown: bool, seeds: std::ops::Range<u32>| -> Vec<f32> {
             seeds.map(|seed| measure(zone, &minimap(shown, seed)).unwrap()).collect()
         };
@@ -911,6 +1245,173 @@ mod tests {
         let alone = Zone { weights: learn_weights(&zone, &shown, &[]).unwrap(), ..zone };
         let (on, off) = (measures(&alone, true, 20..60), measures(&alone, false, 20..60));
         assert!(suggest_threshold(&on, &off).is_some());
+    }
+
+    /// The Witcher 3: a round minimap turning with the camera, its north mark
+    /// going round its rim, over scenery that changes too.
+    fn round_minimap(shown: bool, seed: u32) -> Frame {
+        let noise = move |x: u32, y: u32, salt: u32| {
+            let mut h = (x / 3).wrapping_mul(73_856_093) ^ (y / 3).wrapping_mul(19_349_663) ^ seed.wrapping_mul(83_492_791) ^ salt;
+            h ^= h >> 13;
+            h = h.wrapping_mul(0x5bd1_e995);
+            h ^= h >> 15;
+            [(h & 0xff) as u8, ((h >> 8) & 0xff) as u8, ((h >> 16) & 0xff) as u8]
+        };
+        let north = seed as f32 * 0.7;
+        frame(move |x, y| {
+            let (dx, dy) = (x as f32 - 130.0, y as f32 - 40.0);
+            let r = (dx * dx + dy * dy).sqrt();
+            let mark = (dx.atan2(-dy) - north).rem_euclid(std::f32::consts::TAU) < 0.3;
+            match shown {
+                true if r < 25.0 => noise(x, y, 1),
+                true if r < 28.0 && mark => [230, 60, 40],
+                true if r < 28.0 => [70, 60, 50],
+                _ => noise(x, y, 2),
+            }
+        })
+    }
+
+    #[test]
+    fn round_elements_are_read_on_their_rim() {
+        // The square around the minimap, its rim 3 px thick.
+        let rect = [102.0 / 160.0, 12.0 / 90.0, 56.0 / 160.0, 56.0 / 90.0];
+        let zone = Zone { indicator: "minimap".into(), rect, ring: true, thickness: 3.0 / 90.0, compare_colors: true, ..Zone::default() };
+        let zone = Zone { reference: reference(&round_minimap(true, 0), &zone), reference_colors: reference_colors(&round_minimap(true, 0), &zone), ..zone };
+        assert_eq!(zone.reference.len(), REF_WIDTH * REF_HEIGHT);
+        let measures = |zone: &Zone, shown: bool| -> Vec<f32> { (20..60).map(|seed| measure(zone, &round_minimap(shown, seed)).unwrap()).collect() };
+        let (on, off) = (measures(&zone, true), measures(&zone, false));
+        let lowest = on.iter().copied().fold(f32::INFINITY, f32::min);
+        let highest = off.iter().copied().fold(-1.0, f32::max);
+        assert!(lowest - highest > 0.3, "on its rim only: shown from {lowest}, hidden up to {highest}");
+        // Learned, its north mark is left out: nearer still.
+        let shown: Vec<Frame> = (1..6).map(|seed| round_minimap(true, seed)).collect();
+        let hidden: Vec<Frame> = (10..15).map(|seed| round_minimap(false, seed)).collect();
+        let weights = learn_weights(&zone, &shown.iter().collect::<Vec<_>>(), &hidden.iter().collect::<Vec<_>>()).unwrap();
+        let learned = Zone { weights, ..zone.clone() };
+        let (on, off) = (measures(&learned, true), measures(&learned, false));
+        let lowest = on.iter().copied().fold(f32::INFINITY, f32::min);
+        let highest = off.iter().copied().fold(-1.0, f32::max);
+        assert!(lowest > 0.9 && highest < 0.5, "shown from {lowest}, hidden up to {highest}");
+        // The points read are on the rim.
+        for k in [0, 1, RING_ACROSS * RING_AROUND / 4 + 3] {
+            let [x, y] = line_point(&zone, k, 160.0 / 90.0, (0.5, 0.5));
+            let r = (x * 160.0 - 130.0).hypot(y * 90.0 - 40.0);
+            assert!((25.0..28.5).contains(&r), "cell {k}: {r}");
+        }
+    }
+
+    /// The Witcher 3's minimap: a disc of a parchment map turning with the
+    /// camera, without a frame nor anything fixed, over smooth scenery.
+    fn parchment_minimap(shown: bool, seed: u32) -> Frame {
+        const PARCHMENT: [[u8; 3]; 3] = [[160, 135, 90], [120, 125, 70], [200, 105, 50]];
+        frame(move |x, y| {
+            let (dx, dy) = (x as f32 - 130.0, y as f32 - 40.0);
+            let mut h = ((x as i32 + seed as i32 * 5) / 4) as u32 * 31 + (y / 4) * 17 + seed * 7;
+            h ^= h >> 3;
+            if shown && dx.hypot(dy) < 27.0 {
+                PARCHMENT[(h % 3) as usize]
+            } else {
+                let (x, y, s) = (x as f32, y as f32, seed as f32);
+                [(120.0 + 90.0 * ((x + 7.0 * s) / 30.0).sin()) as u8, (100.0 + 60.0 * (y / 25.0 + s).sin()) as u8, (90.0 + 70.0 * ((x + y) / 40.0 + 2.0 * s).cos()) as u8]
+            }
+        })
+    }
+
+    #[test]
+    fn round_elements_with_nothing_fixed_are_read_by_contour_or_palette() {
+        let rect = [103.0 / 160.0, 13.0 / 90.0, 54.0 / 160.0, 54.0 / 90.0];
+        let zone = Zone { indicator: "minimap".into(), rect, reading: Reading::Contour, ..Zone::default() };
+        let measures = |zone: &Zone, shown: bool| -> Vec<f32> { (20..60).map(|seed| measure(zone, &parchment_minimap(shown, seed)).unwrap()).collect() };
+        let lowest = |v: &[f32]| v.iter().copied().fold(f32::INFINITY, f32::min);
+        let highest = |v: &[f32]| v.iter().copied().fold(-1.0, f32::max);
+        let (on, off) = (measures(&zone, true), measures(&zone, false));
+        assert!(lowest(&on) - highest(&off) > 0.2, "contour: shown from {}, hidden up to {}", lowest(&on), highest(&off));
+
+        let shown: Vec<Frame> = (1..6).map(|seed| parchment_minimap(true, seed)).collect();
+        let hidden: Vec<Frame> = (10..15).map(|seed| parchment_minimap(false, seed)).collect();
+        let (shown, hidden): (Vec<&Frame>, Vec<&Frame>) = (shown.iter().collect(), hidden.iter().collect());
+        let zone = Zone { reading: Reading::Palette, ..zone };
+        assert_eq!(learn_palette(&zone, &shown[..2], &hidden), None, "too few captures");
+        for hidden in [&hidden[..], &[]] {
+            let palette = learn_palette(&zone, &shown, hidden).unwrap();
+            assert!(palette.contains(&palette_bin([160, 135, 90])) && palette.len() < 20, "{palette:?}");
+            let zone = Zone { palette, ..zone.clone() };
+            let (on, off) = (measures(&zone, true), measures(&zone, false));
+            assert!(lowest(&on) - highest(&off) > 0.5, "palette: shown from {}, hidden up to {}", lowest(&on), highest(&off));
+        }
+        // A screen all in its colors (a world map menu) is not it.
+        let map = frame(|x, y| [[160, 135, 90], [120, 125, 70]][((x / 5 + y / 3) % 2) as usize]);
+        let palette = learn_palette(&zone, &shown, &hidden).unwrap();
+        assert!(measure(&Zone { palette, ..zone }, &map).unwrap() < 0.1);
+    }
+
+    /// A square minimap, its map turning, over the same scenery.
+    fn square_minimap(shown: bool, seed: u32) -> Frame {
+        let round = parchment_minimap(true, seed);
+        let scenery = parchment_minimap(false, seed);
+        let at = |f: &Frame, x: u32, y: u32| {
+            let i = (y * f.width + x) as usize * 4;
+            [f.pixels[i], f.pixels[i + 1], f.pixels[i + 2]]
+        };
+        // Its map: the round one's, inside its disc.
+        frame(move |x, y| if shown && (105..=155).contains(&x) && (15..=65).contains(&y) { at(&round, 130 + (x - 105) / 3, 40 + (y - 15) / 3) } else { at(&scenery, x, y) })
+    }
+
+    #[test]
+    fn square_elements_are_read_on_their_rectangle_or_a_path() {
+        let rect = [105.0 / 160.0, 15.0 / 90.0, 51.0 / 160.0, 51.0 / 90.0];
+        let lowest = |v: &[f32]| v.iter().copied().fold(f32::INFINITY, f32::min);
+        let highest = |v: &[f32]| v.iter().copied().fold(-1.0, f32::max);
+        let measures = |zone: &Zone, shown: bool| -> Vec<f32> { (20..60).map(|seed| measure(zone, &square_minimap(shown, seed)).unwrap()).collect() };
+        let corners: Vec<[f32; 2]> = [(105.0, 15.0), (156.0, 15.0), (156.0, 66.0), (105.0, 66.0)].iter().map(|&(x, y)| [x / 160.0, y / 90.0]).collect();
+        let shown: Vec<Frame> = (1..6).map(|seed| square_minimap(true, seed)).collect();
+        let hidden: Vec<Frame> = (10..15).map(|seed| square_minimap(false, seed)).collect();
+        let (shown, hidden): (Vec<&Frame>, Vec<&Frame>) = (shown.iter().collect(), hidden.iter().collect());
+        for (what, zone) in [
+            ("rectangle", Zone { rect, outline: Outline::Rectangle, ..Zone::default() }),
+            // Its left and top edges only, compared 3 px on each side.
+            ("open path", Zone { rect, path: vec![corners[3], corners[0], corners[1]], thickness: 3.0 / 90.0, ..Zone::default() }),
+            // All around it, closed: the palette's outline.
+            ("closed path", Zone { rect, path: corners.clone(), thickness: 3.0 / 90.0, ..Zone::default() }),
+        ] {
+            let contour = Zone { indicator: "minimap".into(), reading: Reading::Contour, ..zone.clone() };
+            let (on, off) = (measures(&contour, true), measures(&contour, false));
+            assert!(lowest(&on) - highest(&off) > 0.2, "{what} contour: shown from {}, hidden up to {}", lowest(&on), highest(&off));
+            if what == "open path" {
+                continue;
+            }
+            let palette = Zone { reading: Reading::Palette, ..zone };
+            let palette = Zone { palette: learn_palette(&palette, &shown, &hidden).unwrap(), ..palette };
+            let (on, off) = (measures(&palette, true), measures(&palette, false));
+            assert!(lowest(&on) - highest(&off) > 0.2, "{what} palette: shown from {}, hidden up to {}", lowest(&on), highest(&off));
+        }
+        assert_eq!(outline_point(Outline::Rectangle, 0.125, 1.0), (1.0, -1.0), "the top right corner");
+        assert_eq!(outline_radius(Outline::Rectangle, 0.9, -0.5), 0.9);
+    }
+
+    /// A frame of an interface along an arc (a quarter of a ring), its inside changing.
+    #[test]
+    fn elements_are_read_along_their_path() {
+        let path: Vec<[f32; 2]> = (0..=8)
+            .map(|k| {
+                let a = k as f32 / 8.0 * std::f32::consts::FRAC_PI_2;
+                [(130.0 - 26.5 * a.cos()) / 160.0, (40.0 - 26.5 * a.sin()) / 90.0]
+            })
+            .collect();
+        let zone = Zone { indicator: "minimap".into(), path, thickness: 3.0 / 90.0, compare_colors: true, ..Zone::default() };
+        let zone = Zone { reference: reference(&round_minimap(true, 0), &zone), reference_colors: reference_colors(&round_minimap(true, 0), &zone), ..zone };
+        assert!(on_line(&zone) && zone.reference.len() == REF_WIDTH * REF_HEIGHT);
+        // Only from the left to the top: the north mark passes there at times.
+        let on: Vec<f32> = (20..60).map(|seed| measure(&zone, &round_minimap(true, seed)).unwrap()).collect();
+        let off: Vec<f32> = (20..60).map(|seed| measure(&zone, &round_minimap(false, seed)).unwrap()).collect();
+        let lowest = on.iter().copied().fold(f32::INFINITY, f32::min);
+        let highest = off.iter().copied().fold(-1.0, f32::max);
+        assert!(lowest - highest > 0.3, "shown from {lowest}, hidden up to {highest}");
+        for k in [0, RING_ACROSS * RING_AROUND / 2 + 1, RING_ACROSS * RING_AROUND - 1] {
+            let [x, y] = line_point(&zone, k, 160.0 / 90.0, (0.5, 0.5));
+            let r = (x * 160.0 - 130.0).hypot(y * 90.0 - 40.0);
+            assert!((24.5..28.5).contains(&r), "cell {k}: {r}");
+        }
     }
 
     /// Low on health the bar blinks: its full part turns lighter, then back.
@@ -1002,23 +1503,24 @@ mod tests {
         let hp = Zone { indicator: "hp".into(), kind: IndicatorKind::Gauge, rect, color: green, empty_color: Some(dark), tolerance: 30.0, ..Zone::default() };
         let hp = Zone { length: bar_length(&hp, &game(0.5)), ..hp };
         assert_eq!(measure(&hp, &menu), Some(0.0), "the menu looks like an empty bar");
-        let in_menu = Zone { indicator: "menu".into(), rect: button, reference: reference(&menu, button), ..Zone::default() };
+        let in_menu = Zone { indicator: "menu".into(), rect: button, reference: reference(&menu, &Zone { rect: button, ..Zone::default() }), ..Zone::default() };
         let read_when = vec![Condition { indicator: "menu".into(), shown: false }];
         let zones = [Zone { read_when, ..hp }, in_menu];
         let mut reader = IndicatorReader::default();
-        let first = reader.update(&zones, &game(0.5));
+        let first = reader.update(&zones, &game(0.5), 0.0);
         assert!(first.contains(&("menu".to_owned(), IndicatorValue::Visibility(false))), "{first:?}");
         assert!(first.contains(&("hp".to_owned(), IndicatorValue::Gauge(0.5))), "{first:?}");
-        reader.update(&zones, &menu);
-        reader.update(&zones, &menu);
-        let later = reader.update(&zones, &menu);
+        // The condition follows the menu right away, before the menu's value changes.
+        assert_eq!(reader.update(&zones, &menu, 0.1), vec![], "the last value stays");
+        reader.update(&zones, &menu, 0.2);
+        let later = reader.update(&zones, &menu, 0.3);
         assert!(later.contains(&("hp".to_owned(), IndicatorValue::Unknown)), "{later:?}");
-        let back = reader.update(&zones, &game(0.25));
+        let back = reader.update(&zones, &game(0.25), 0.4);
         assert!(back.contains(&("hp".to_owned(), IndicatorValue::Gauge(0.25))), "{back:?}");
         // A condition on an indicator no longer set up is left out.
         let alone = [zones[0].clone()];
         let mut reader = IndicatorReader::default();
-        assert_eq!(reader.update(&alone, &menu), vec![("hp".to_owned(), IndicatorValue::Gauge(0.0))]);
+        assert_eq!(reader.update(&alone, &menu, 0.0), vec![("hp".to_owned(), IndicatorValue::Gauge(0.0))]);
     }
 
     /// Metaphor: a character's stance shifts its health bar sideways, and the
@@ -1056,11 +1558,11 @@ mod tests {
         assert_eq!(measure(&drawn, &bar(85, 0.0)), Some(0.0), "an empty bar is still a bar");
         let mut reader = IndicatorReader::default();
         let zones = [drawn];
-        let first = reader.update(&zones, &bar(30, 0.5));
+        let first = reader.update(&zones, &bar(30, 0.5), 0.0);
         assert!(matches!(first[..], [(_, IndicatorValue::Gauge(v))] if (v - 0.5).abs() < 0.02), "{first:?}");
-        assert_eq!(reader.update(&zones, &menu), vec![], "briefly lost: the last value stays");
-        reader.update(&zones, &menu);
-        assert_eq!(reader.update(&zones, &menu), vec![("hp".to_owned(), IndicatorValue::Unknown)]);
+        assert_eq!(reader.update(&zones, &menu, 0.1), vec![], "briefly lost: the last value stays");
+        reader.update(&zones, &menu, 0.2);
+        assert_eq!(reader.update(&zones, &menu, 0.3), vec![("hp".to_owned(), IndicatorValue::Unknown)]);
         // Where it was found, for the editor: 60 px from x = 30 in a zone from x = 5, 150 px long.
         let ((start, full_end), (_, end)) = bar_extent(&zone, &bar(30, 0.5));
         let near = |a: f32, px: f32| (a - px / 150.0).abs() < 0.02;
@@ -1129,7 +1631,7 @@ mod tests {
 
         let mut reader = IndicatorReader::default();
         let zones = [battle, field];
-        let first = reader.update(&zones, &bar_at(60, 0.25));
+        let first = reader.update(&zones, &bar_at(60, 0.25), 0.0);
         assert!(matches!(first[..], [(ref n, IndicatorValue::Gauge(v))] if n == "hp" && (v - 0.25).abs() < 0.04), "one value for both places: {first:?}");
     }
 
@@ -1322,8 +1824,8 @@ mod tests {
 
         let mut reader = IndicatorReader::default();
         let zones = [zone];
-        assert_eq!(reader.update(&zones, &bar(1.0)), vec![("hp".to_owned(), IndicatorValue::Gauge(1.0))]);
-        assert_eq!(reader.update(&zones, &bar(0.99)), vec![], "small moves are not reported");
-        assert_eq!(reader.update(&zones, &bar(0.5)), vec![("hp".to_owned(), IndicatorValue::Gauge(0.5))]);
+        assert_eq!(reader.update(&zones, &bar(1.0), 0.0), vec![("hp".to_owned(), IndicatorValue::Gauge(1.0))]);
+        assert_eq!(reader.update(&zones, &bar(0.99), 0.1), vec![], "small moves are not reported");
+        assert_eq!(reader.update(&zones, &bar(0.5), 0.2), vec![("hp".to_owned(), IndicatorValue::Gauge(0.5))]);
     }
 }
