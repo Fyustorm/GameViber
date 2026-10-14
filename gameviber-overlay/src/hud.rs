@@ -7,7 +7,7 @@ use epaint::{
     emath::Align2, ClippedPrimitive, ClippedShape, Color32, CornerRadius, FontId, ImageDelta, Pos2, Rect, Shape, Stroke,
     StrokeKind, TessellationOptions, Tessellator, Vec2,
 };
-use gameviber_common::overlay::{Corner, OverlayState};
+use gameviber_common::overlay::OverlayState;
 
 // Colors of the GameViber theme.
 const PANEL: Color32 = Color32::from_rgb(0x16, 0x18, 0x1e);
@@ -52,7 +52,8 @@ impl Hud {
         let ppp = state.scale.clamp(0.25, 4.0) * (height as f32 / 1080.0).max(0.5);
         self.fonts.begin_pass(TextOptions::default());
         let screen = Vec2::new(width as f32, height as f32) / ppp;
-        let shapes = if state.visible { panel(&mut self.fonts.with_pixels_per_point(ppp), state, screen) } else { Vec::new() };
+        let alpha = state.alpha.clamp(0.0, 1.0);
+        let shapes = if state.visible && alpha > 0.0 { panel(&mut self.fonts.with_pixels_per_point(ppp), state, screen) } else { Vec::new() };
         let clip = Rect::from_min_size(Pos2::ZERO, screen);
         let clipped = shapes.into_iter().map(|shape| ClippedShape { clip_rect: clip, shape }).collect();
         let mut tessellator = Tessellator::new(
@@ -61,12 +62,20 @@ impl Hud {
             self.fonts.font_image_size(),
             self.fonts.texture_atlas().prepared_discs(),
         );
-        let primitives = tessellator.tessellate_shapes(clipped);
+        let mut primitives = tessellator.tessellate_shapes(clipped);
+        if alpha < 1.0 {
+            for primitive in &mut primitives {
+                if let epaint::Primitive::Mesh(mesh) = &mut primitive.primitive {
+                    // Premultiplied colors: every channel fades.
+                    mesh.vertices.iter_mut().for_each(|v| v.color = v.color.gamma_multiply(alpha));
+                }
+            }
+        }
         Frame { primitives, texture: self.fonts.font_image_delta(), pixels_per_point: ppp }
     }
 }
 
-/// Builds the panel top-down at the origin, then moves it to its corner.
+/// Builds the panel top-down at the origin, then moves it to its position.
 fn panel(fonts: &mut FontsView<'_>, state: &OverlayState, screen: Vec2) -> Vec<Shape> {
     let mut p = Painter { fonts, shapes: Vec::new(), y: PADDING };
     let inner = WIDTH - 2.0 * PADDING;
@@ -112,12 +121,9 @@ fn panel(fonts: &mut FontsView<'_>, state: &OverlayState, screen: Vec2) -> Vec<S
         Shape::rect_stroke(Rect::from_min_size(Pos2::ZERO, size), CornerRadius::same(10), Stroke::new(1.0, LINE), StrokeKind::Inside),
     ];
     shapes.append(&mut p.shapes);
-    let origin = match state.corner {
-        Corner::TopLeft => Vec2::new(MARGIN, MARGIN),
-        Corner::TopRight => Vec2::new(screen.x - MARGIN - size.x, MARGIN),
-        Corner::BottomLeft => Vec2::new(MARGIN, screen.y - MARGIN - size.y),
-        Corner::BottomRight => screen - Vec2::splat(MARGIN) - size,
-    };
+    let [x, y] = state.position.unwrap_or_else(|| state.corner.position()).map(|f| if f.is_finite() { f.clamp(0.0, 1.0) } else { 0.0 });
+    let room = (screen - Vec2::splat(2.0 * MARGIN) - size).max(Vec2::ZERO);
+    let origin = Vec2::splat(MARGIN) + Vec2::new(room.x * x, room.y * y);
     for shape in &mut shapes {
         shape.translate(origin);
     }
@@ -193,7 +199,7 @@ impl Painter<'_, '_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gameviber_common::overlay::{Event, Gauge};
+    use gameviber_common::overlay::{Corner, Event, Gauge};
 
     #[test]
     fn panel_fits_in_its_corner() {
@@ -216,7 +222,34 @@ mod tests {
         });
         assert!(bounds.max.x <= 1920.0 - MARGIN + 0.5 && bounds.max.y <= 1080.0 - MARGIN + 0.5, "{bounds:?}");
         assert!(bounds.width() > WIDTH - 1.0);
-        let hidden = hud.build(&OverlayState { visible: false, ..state }, 1920, 1080);
+        let hidden = hud.build(&OverlayState { visible: false, ..state.clone() }, 1920, 1080);
         assert!(hidden.primitives.is_empty());
+        let faded = hud.build(&OverlayState { alpha: 0.0, ..state }, 1920, 1080);
+        assert!(faded.primitives.is_empty());
+    }
+
+    fn bounds(frame: &Frame) -> Rect {
+        frame.primitives.iter().fold(Rect::NOTHING, |r, p| match &p.primitive {
+            epaint::Primitive::Mesh(m) => r.union(m.calc_bounds()),
+            epaint::Primitive::Callback(_) => r,
+        })
+    }
+
+    #[test]
+    fn panel_goes_where_it_is_placed() {
+        let mut hud = Hud::new();
+        let at = |position| OverlayState { mode: "Surge".into(), position, ..OverlayState::default() };
+        let center = bounds(&hud.build(&at(Some([0.5, 0.5])), 1920, 1080));
+        assert!((center.center().x - 960.0).abs() < 1.0 && (center.center().y - 540.0).abs() < 1.0, "{center:?}");
+        let corner = bounds(&hud.build(&OverlayState { corner: Corner::BottomRight, ..at(None) }, 1920, 1080));
+        let placed = bounds(&hud.build(&at(Some([1.0, 1.0])), 1920, 1080));
+        assert_eq!(corner, placed, "an older GameViber's corner");
+        let half = hud.build(&OverlayState { alpha: 0.5, ..at(None) }, 1920, 1080);
+        let full = hud.build(&at(None), 1920, 1080);
+        let first = |f: &Frame| match &f.primitives[0].primitive {
+            epaint::Primitive::Mesh(m) => m.vertices[0].color,
+            epaint::Primitive::Callback(_) => unreachable!(),
+        };
+        assert!(first(&half).a() < first(&full).a(), "faded");
     }
 }

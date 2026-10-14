@@ -1,12 +1,15 @@
 //! Overlay page: installing the in-game overlay (a Vulkan layer), enabling it
-//! per game, its appearance and the games showing it now.
+//! per game, its look (everywhere, in a game, in its phases) and the games
+//! showing it now.
 
-use eframe::egui::{self, Margin, RichText};
+use eframe::egui::{self, Color32, Margin, Pos2, Rect, RichText, Sense, Stroke, Vec2};
+use gameviber_common::overlay::Hello;
 
 use super::theme::*;
 use super::App;
-use crate::config::{Corner, OverlaySettings};
+use crate::config::{OverlayLook, OverlaySettings};
 use crate::engine::{Command, Shared};
+use crate::game::{Game, GameOverlay};
 use crate::overlay::{self, Arch, InstallState};
 
 const LAUNCH_OPTION: &str = "GAMEVIBER_OVERLAY=1 %command%";
@@ -24,12 +27,24 @@ pub struct State {
     error: Option<String>,
     /// Launch option last copied.
     copied: Option<String>,
+    /// The game whose look is set (by id); None: the one played.
+    pub game: Option<String>,
+    /// The phase whose own look is open.
+    phase: Option<String>,
 }
 
 impl State {
     pub fn forget_install_state(&mut self) {
         self.install = None;
     }
+}
+
+/// How the panel looks in a phase of a game.
+#[derive(Clone, Copy, PartialEq)]
+enum PhaseLook {
+    LikeTheGame,
+    Hidden,
+    Own,
 }
 
 impl App {
@@ -54,9 +69,11 @@ impl App {
                 if self.overlay.install.as_ref().is_some_and(|(_, archs)| overall(archs) != InstallState::NotInstalled) {
                     launch_options(ui, s.settings.overlay.all_games, &mut self.overlay.copied);
                     ui.add_space(8.0);
-                    if let Some(new) = appearance(ui, &s.settings.overlay) {
+                    if let Some(new) = appearance(ui, &s.settings.overlay, &s.overlay_clients) {
                         self.send(Command::SetOverlay(new));
                     }
+                    ui.add_space(8.0);
+                    self.game_look(ui, s);
                     ui.add_space(8.0);
                     connected_games(ui, s);
                 }
@@ -224,24 +241,254 @@ fn launch_options(ui: &mut egui::Ui, all_games: bool, copied: &mut Option<String
 }
 
 /// Returns the new settings when the user changed one.
-fn appearance(ui: &mut egui::Ui, current: &OverlaySettings) -> Option<OverlaySettings> {
+fn appearance(ui: &mut egui::Ui, current: &OverlaySettings, clients: &[Hello]) -> Option<OverlaySettings> {
     let mut s = current.clone();
     card(PANEL).show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.label(RichText::new("Appearance").strong());
-        ui.checkbox(&mut s.visible, "Show the overlay");
-        ui.horizontal(|ui| {
-            ui.label("Position");
-            egui::ComboBox::from_id_salt("overlay-corner").selected_text(s.corner.label()).show_ui(ui, |ui| {
-                for corner in Corner::ALL {
-                    ui.selectable_value(&mut s.corner, corner, corner.label());
-                }
-            });
-        });
-        ui.add(egui::Slider::new(&mut s.scale, 0.5..=2.0).text("Size").step_by(0.05).fixed_decimals(2));
-        ui.add(egui::Slider::new(&mut s.opacity, 0.0..=1.0).text("Background opacity").step_by(0.05).fixed_decimals(2));
+        ui.label(muted("In every game, unless a game has a look of its own (below)."));
+        older_overlays(ui, clients);
+        ui.checkbox(&mut s.look.visible, "Show the overlay");
+        if s.look.visible {
+            look_editor(ui, "everywhere", &mut s.look, false);
+        }
+        ui.add_space(4.0);
+        ui.checkbox(&mut s.mode_hides, "Hide it when the mode says it may (cutscenes, dialogues)");
+        ui.label(muted("Modes made for a game can tell when nothing happens on screen worth showing it.").size(12.0));
     });
     (s != *current).then_some(s)
+}
+
+impl App {
+    /// The look in a game (the one played by default), and in each of its phases.
+    fn game_look(&mut self, ui: &mut egui::Ui, s: &Shared) {
+        if s.games.is_empty() {
+            return;
+        }
+        let chosen = self.overlay.game.as_ref().and_then(|id| s.games.iter().find(|g| &g.id == id));
+        let Some(game) = chosen.or(s.game.as_ref()).or(s.games.first()) else { return };
+        let mut overlay = game.overlay.clone();
+        card(PANEL).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("In a game").strong());
+                egui::ComboBox::from_id_salt("overlay-game").selected_text(&game.name).width(240.0).show_ui(ui, |ui| {
+                    for g in &s.games {
+                        if ui.selectable_label(g.id == game.id, &g.name).clicked() {
+                            self.overlay.game = Some(g.id.clone());
+                            self.overlay.phase = None;
+                        }
+                    }
+                });
+            });
+            let mut own = overlay.look.is_some();
+            ui.horizontal(|ui| {
+                ui.radio_value(&mut own, false, "Like every game");
+                ui.radio_value(&mut own, true, "A look of its own");
+            });
+            match (own, &mut overlay.look) {
+                (true, None) => overlay.look = Some(s.settings.overlay.look),
+                (false, Some(_)) => overlay.look = None,
+                (true, Some(look)) => {
+                    ui.checkbox(&mut look.visible, format!("Show the overlay in {}", game.name));
+                    if look.visible {
+                        look_editor(ui, ("game", &game.id), look, false);
+                    }
+                }
+                (false, None) => {}
+            }
+            ui.add_space(6.0);
+            self.phase_looks(ui, s, game, &mut overlay);
+        });
+        if overlay != game.overlay {
+            self.send(Command::SetGameOverlay { game: game.id.clone(), overlay });
+        }
+    }
+
+    /// Each phase like the game, hidden (a cutscene) or with a look of its own.
+    fn phase_looks(&mut self, ui: &mut egui::Ui, s: &Shared, game: &Game, overlay: &mut GameOverlay) {
+        ui.label(RichText::new("In its phases").strong());
+        // The phases the active mode recognizes when it is one of the game's, and those set before.
+        let playing = super::library::mode_game(s).is_some_and(|g| g.id == game.id);
+        let mut phases: Vec<String> = if playing { s.phases.phases.iter().map(|(name, _)| name.clone()).collect() } else { Vec::new() };
+        phases.extend(overlay.phases.keys().filter(|p| !phases.contains(p)).cloned().collect::<Vec<_>>());
+        phases.sort();
+        if phases.is_empty() {
+            ui.label(muted(
+                "Its phases show here while one of its modes, with phases, is the active mode. The panel can then \
+                 move, fade or hide in some of them (a cutscene).",
+            ));
+            return;
+        }
+        let game_look = overlay.look.unwrap_or(s.settings.overlay.look);
+        for phase in &phases {
+            let current = match overlay.phases.get(phase) {
+                None => PhaseLook::LikeTheGame,
+                Some(look) if !look.visible => PhaseLook::Hidden,
+                Some(_) => PhaseLook::Own,
+            };
+            let mut chosen = current;
+            ui.horizontal(|ui| {
+                ui.add_sized([160.0, 18.0], egui::Label::new(phase.as_str()).truncate());
+                let label = |l: PhaseLook| match l {
+                    PhaseLook::LikeTheGame => "Like the game",
+                    PhaseLook::Hidden => "Hidden",
+                    PhaseLook::Own => "A look of its own",
+                };
+                egui::ComboBox::from_id_salt(("overlay-phase", phase)).selected_text(label(current)).width(150.0).show_ui(ui, |ui| {
+                    for option in [PhaseLook::LikeTheGame, PhaseLook::Hidden, PhaseLook::Own] {
+                        ui.selectable_value(&mut chosen, option, label(option));
+                    }
+                });
+                if current == PhaseLook::Own {
+                    let open = self.overlay.phase.as_ref() == Some(phase);
+                    if ui.selectable_label(open, "✏ Edit").clicked() {
+                        self.overlay.phase = (!open).then(|| phase.clone());
+                    }
+                }
+                if playing && s.phases.phase.as_ref() == Some(phase) {
+                    ui.label(RichText::new("● now").color(OK).size(12.0));
+                }
+            });
+            if chosen != current {
+                match chosen {
+                    PhaseLook::LikeTheGame => {
+                        overlay.phases.remove(phase);
+                    }
+                    PhaseLook::Hidden => {
+                        let look = overlay.phases.get(phase).copied().unwrap_or(game_look);
+                        overlay.phases.insert(phase.clone(), OverlayLook { visible: false, ..look });
+                    }
+                    PhaseLook::Own => {
+                        let look = overlay.phases.get(phase).copied().unwrap_or(game_look);
+                        overlay.phases.insert(phase.clone(), OverlayLook { visible: true, ..look });
+                        self.overlay.phase = Some(phase.clone());
+                    }
+                }
+            }
+            if let Some(look) = overlay.phases.get_mut(phase).filter(|l| l.visible && self.overlay.phase.as_ref() == Some(phase)) {
+                ui.indent(("overlay-phase-look", phase), |ui| look_editor(ui, ("phase", &game.id, phase), look, true));
+            }
+        }
+        ui.label(muted("A phase's look is the game's for every mode of the game recognizing a phase of that name.").size(12.0));
+    }
+}
+
+/// Games running an overlay older than this GameViber, which puts the panel
+/// in the corner nearest to its place and ignores the panel opacity.
+fn older_overlays(ui: &mut egui::Ui, clients: &[Hello]) {
+    let older: Vec<&str> = clients.iter().filter(|c| !c.places_freely()).map(|c| c.exe.as_str()).collect();
+    if older.is_empty() {
+        return;
+    }
+    ui.label(
+        RichText::new(format!(
+            "⚠ {} runs an older overlay: it puts the panel in the nearest corner and ignores the panel opacity. \
+             Update the overlay (or GameViber's package), then restart the game.",
+            older.join(", ")
+        ))
+        .color(WARN)
+        .size(12.5),
+    );
+}
+
+/// Panel size on a 1080p screen at size 1 (`gameviber-overlay`'s), its
+/// height with a phase and a gauge.
+const PANEL_SIZE: Vec2 = Vec2::new(240.0, 130.0);
+const PANEL_MARGIN: f32 = 20.0;
+
+/// Where the panel sits, its size and opacity, on a picture of the screen
+/// it is dragged on. `compact`: a smaller picture.
+fn look_editor(ui: &mut egui::Ui, id: impl std::hash::Hash + std::fmt::Debug, look: &mut OverlayLook, compact: bool) {
+    let id = egui::Id::new(id);
+    ui.horizontal(|ui| {
+        let width = if compact { 280.0_f32 } else { 400.0 }.min(ui.available_width() - 120.0).max(160.0);
+        screen_picture(ui, id, look, width);
+        ui.vertical(|ui| {
+            ui.label(muted("Drag it, or:").size(12.0));
+            egui::Grid::new(id.with("spots")).spacing([4.0, 4.0]).show(ui, |ui| {
+                for y in [0.0, 0.5, 1.0] {
+                    for x in [0.0, 0.5, 1.0] {
+                        if spot_button(ui, [x, y], look.position == [x, y]).clicked() {
+                            look.position = [x, y];
+                        }
+                    }
+                    ui.end_row();
+                }
+            });
+            ui.add_space(4.0);
+            let mut percent = look.position.map(|f| f * 100.0);
+            for (axis, label) in [(0, "Across"), (1, "Down")] {
+                ui.horizontal(|ui| {
+                    ui.add(egui::DragValue::new(&mut percent[axis]).range(0.0..=100.0).speed(0.25).suffix(" %").fixed_decimals(1));
+                    ui.label(muted(label).size(12.0));
+                });
+            }
+            look.position = percent.map(|p| p / 100.0);
+        });
+    });
+    ui.add(egui::Slider::new(&mut look.scale, 0.5..=2.0).text("Size").step_by(0.05).fixed_decimals(2));
+    ui.add(egui::Slider::new(&mut look.opacity, 0.0..=1.0).text("Background opacity").step_by(0.05).fixed_decimals(2));
+    ui.add(egui::Slider::new(&mut look.alpha, 0.1..=1.0).text("Panel opacity (text too)").step_by(0.05).fixed_decimals(2));
+}
+
+/// A 16:9 screen with the panel where it sits; dragging or clicking moves it.
+fn screen_picture(ui: &mut egui::Ui, id: egui::Id, look: &mut OverlayLook, width: f32) {
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, width * 9.0 / 16.0), Sense::click_and_drag());
+    let response = response.on_hover_text("Drag the panel where it should sit in the game; Shift: without snapping");
+    let unit = rect.height() / 1080.0;
+    let size = PANEL_SIZE * look.scale.clamp(0.25, 4.0) * unit;
+    let margin = Vec2::splat(PANEL_MARGIN * unit);
+    let room = (rect.size() - 2.0 * margin - size).max(Vec2::splat(1.0));
+    if let Some(pointer) = response.interact_pointer_pos().filter(|_| response.dragged() || response.clicked()) {
+        // The panel's center follows the pointer.
+        let offset = ui.ctx().memory(|m| m.data.get_temp::<Vec2>(id)).filter(|_| !response.drag_started()).unwrap_or(size / 2.0);
+        let origin = pointer - offset - rect.min - margin;
+        let snap = !ui.input(|i| i.modifiers.shift);
+        look.position = [origin.x / room.x, origin.y / room.y].map(|f| {
+            let f = f.clamp(0.0, 1.0);
+            let near = [0.0, 0.5, 1.0].into_iter().find(|s| (f - s).abs() < 0.02);
+            if snap { near.unwrap_or(f) } else { f }
+        });
+    }
+    let panel = Rect::from_min_size(rect.min + margin + Vec2::new(room.x * look.position[0], room.y * look.position[1]), size);
+    if response.drag_started() {
+        // Grabbed where the pointer is on it, or by its center when grabbed elsewhere.
+        let grab = response.interact_pointer_pos().filter(|p| panel.contains(*p)).map(|p| p - panel.min).unwrap_or(size / 2.0);
+        ui.ctx().memory_mut(|m| m.data.insert_temp(id, grab));
+    }
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 4.0, BG);
+    painter.rect_stroke(rect, 4.0, Stroke::new(1.0, LINE), egui::StrokeKind::Inside);
+    painter.text(rect.center(), egui::Align2::CENTER_CENTER, "Game", egui::FontId::proportional(14.0), IDLE);
+    let alpha = look.alpha.clamp(0.0, 1.0);
+    painter.rect_filled(panel, 3.0, Color32::from_rgb(0x16, 0x18, 0x1e).gamma_multiply(look.opacity.clamp(0.0, 1.0) * alpha));
+    let hovered = response.hovered() || response.dragged();
+    painter.rect_stroke(panel, 3.0, Stroke::new(1.0, if hovered { ACCENT } else { LINE }.gamma_multiply(alpha)), egui::StrokeKind::Inside);
+    // Its rows: the mode, the phase, the output and a gauge.
+    let pad = 12.0 * unit * look.scale;
+    let row = |at: f32, length: f32, height: f32, color: Color32| {
+        let min = panel.min + Vec2::new(pad, panel.height() * at);
+        painter.rect_filled(Rect::from_min_size(min, Vec2::new((panel.width() - 2.0 * pad) * length, height)), 1.0, color.gamma_multiply(alpha));
+    };
+    let thin = (3.0 * unit * look.scale).max(1.0);
+    row(0.12, 0.5, thin, MUTED);
+    row(0.28, 0.7, thin * 1.6, TEXT);
+    row(0.55, 0.8, thin * 1.3, ACCENT);
+    row(0.78, 0.5, thin * 1.3, GAME);
+}
+
+/// A small screen with a dot where the panel would sit.
+fn spot_button(ui: &mut egui::Ui, [x, y]: [f32; 2], selected: bool) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(26.0, 17.0), Sense::click());
+    let fill = if selected { SELECTED_BG } else if response.hovered() { RAISED } else { PANEL };
+    let painter = ui.painter();
+    painter.rect_filled(rect, 3.0, fill);
+    painter.rect_stroke(rect, 3.0, Stroke::new(1.0, if selected { ACCENT } else { LINE }), egui::StrokeKind::Inside);
+    let inner = rect.shrink(4.0);
+    let spot = Pos2::new(inner.left() + inner.width() * x, inner.top() + inner.height() * y);
+    painter.circle_filled(spot, 2.5, if selected { ACCENT } else { MUTED });
+    response
 }
 
 /// Without an overlay (Windows): the game's image comes from its window.
@@ -296,9 +543,12 @@ fn connected_games(ui: &mut egui::Ui, s: &Shared) {
                 dot(ui, OK);
                 ui.label(&client.exe);
                 ui.label(muted(format!("{} · pid {}", client.api, client.pid)).size(12.0));
+                if !client.places_freely() {
+                    ui.label(RichText::new("older overlay: restart the game after updating it").color(WARN).size(12.0));
+                }
             });
         }
         ui.add_space(4.0);
-        ui.label(muted("Mode authors: hud() and hud_event() add gauges and messages to it.").size(12.0));
+        ui.label(muted("Mode authors: hud() and hud_event() add gauges and messages to it, hud_hide() tells it may hide.").size(12.0));
     });
 }

@@ -193,6 +193,8 @@ pub struct TickOutput {
     pub hud: Vec<HudGauge>,
     /// Overlay messages raised with `hud_event()` during this tick.
     pub hud_events: Vec<String>,
+    /// The mode says the overlay may hide now (`hud_hide(true)`: a cutscene).
+    pub hud_hidden: bool,
     /// Strokes held, by channel (`stroke()`).
     pub strokes: BTreeMap<String, StrokeIntent>,
     /// Single strokes asked during this tick (`thrust()`), by channel.
@@ -227,6 +229,7 @@ struct Ctx {
     log_window: (f64, u32),
     hud: Vec<HudGauge>,
     hud_events: Vec<String>,
+    hud_hidden: bool,
     timers: Vec<Timer>,
     /// Timers cancelled during the current tick, possibly already collected as due.
     cancelled: HashSet<u64>,
@@ -364,6 +367,7 @@ impl ModeRuntime {
             log_window: (0.0, 0),
             hud: Vec::new(),
             hud_events: Vec::new(),
+            hud_hidden: false,
             timers: Vec::new(),
             cancelled: HashSet::new(),
             next_timer: 1,
@@ -638,6 +642,7 @@ impl ModeRuntime {
             let mut ctx = self.ctx.borrow_mut();
             ctx.timers.clear();
             ctx.hud.clear();
+            ctx.hud_hidden = false;
             ctx.rng = seed();
             if let Some(o) = ctx.outputs.as_mut() {
                 o.stop_all();
@@ -851,12 +856,12 @@ impl ModeRuntime {
         let mut ctx = self.ctx.borrow_mut();
         let plots = std::mem::take(&mut ctx.plots);
         let hud_events = std::mem::take(&mut ctx.hud_events);
-        let hud = ctx.hud.clone();
+        let (hud, hud_hidden) = (ctx.hud.clone(), ctx.hud_hidden);
         let outputs = ctx.outputs().map_err(lua_err)?;
         let motions = outputs.motions(time);
         let channels = outputs.evaluate(time);
         let (strokes, thrusts) = (outputs.strokes(), outputs.take_thrusts());
-        Ok(TickOutput { channels, plots, hud, hud_events, strokes, thrusts, motions })
+        Ok(TickOutput { channels, plots, hud, hud_events, hud_hidden, strokes, thrusts, motions })
     }
 
     /// What the current phase keeps from the mode.

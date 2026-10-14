@@ -290,6 +290,16 @@ prefix):
 `DISABLE_GAMEVIBER_OVERLAY=1 %command%` turns it off for one game. Games
 started before installing it need a restart.
 
+**Where it sits**: drag the panel on the picture of the screen in
+**Setup › In-game overlay** (or pick one of nine spots, or type its place in
+percent), and set its size, its background's opacity and the whole panel's.
+A game can have a look of its own, and so can each of its phases: hidden in
+cutscenes, moved aside or faded in battles (the game's page › Overlay ›
+**Set up**). A phase's look applies to every mode of the game recognizing a
+phase of that name. Modes made for a game can also say when the panel may
+hide (a cutscene, a dialogue); untick **Hide it when the mode says it may**
+to keep it shown.
+
 **Anti-cheats**: the overlay is loaded into the game's process, like MangoHud,
 vkBasalt or the Steam overlay. An anti-cheat could still mistake it for a
 cheat: do not enable it in online games with an anti-cheat (EasyAntiCheat,

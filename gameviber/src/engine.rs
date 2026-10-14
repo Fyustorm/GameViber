@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{mpsc as std_mpsc, Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
-use gameviber_common::overlay::{CaptureRequest, Event, Gauge, Hello, OverlayState};
+use gameviber_common::overlay::{CaptureRequest, Corner, Event, Gauge, Hello, OverlayState};
 
 use tokio::sync::mpsc;
 
@@ -24,7 +24,7 @@ use crate::mode::{HudGauge, ModeEvent, ModeInfo, ModeRuntime, ParamValue};
 use crate::models::{self, Model, ModelState};
 use crate::overlay;
 use crate::platform;
-use crate::game::Game;
+use crate::game::{Game, GameOverlay};
 use crate::package;
 use crate::screen::indicators::IndicatorReader;
 use crate::shortcuts::{Action, Shortcuts};
@@ -140,6 +140,8 @@ pub enum Command {
     /// First-launch setup done (or skipped).
     SetOnboarded(bool),
     SetOverlay(OverlaySettings),
+    /// The in-game panel's look in a game (by id) and its phases.
+    SetGameOverlay { game: String, overlay: GameOverlay },
     /// Records the game's rumble and the player's inputs until `StopRecording`.
     StartRecording,
     StopRecording,
@@ -1046,6 +1048,7 @@ impl Engine {
                     g.modes.push(mode);
                 }
             }),
+            Command::SetGameOverlay { game, overlay } => self.edit_game_by_id(&game, |g| g.overlay = overlay),
             Command::RemoveGameMode { game, mode } => self.edit_game_by_id(&game, |g| g.modes.retain(|m| *m != mode)),
             Command::CapturePhase(phase) => self.capture(phase, self.time()),
             Command::SaveInputs(mut inputs) => {
@@ -1486,6 +1489,7 @@ impl Engine {
         let mut motions: BTreeMap<String, MotionDrive> = BTreeMap::new();
         let mut plots = Vec::new();
         let mut hud = Vec::new();
+        let mut hud_hidden = false;
         let events = std::mem::take(&mut self.events);
         let input_idle = self.pad.input_idle(time);
         self.update_phases();
@@ -1506,6 +1510,7 @@ impl Engine {
                             }
                             plots = out.plots;
                             hud = out.hud;
+                            hud_hidden = out.hud_hidden;
                             self.overlay_events.extend(out.hud_events.into_iter().map(|e| (e, time)));
                         }
                         Err(e) => {
@@ -1597,7 +1602,7 @@ impl Engine {
         self.ticks += 1;
         // 25 updates per second are plenty for the overlay.
         if self.ticks % 2 == 0 {
-            let state = self.overlay_state(time, output, hud, &toys);
+            let state = self.overlay_state(time, output, hud, hud_hidden, &toys);
             self.overlay.update(&state);
         }
 
@@ -1653,9 +1658,14 @@ impl Engine {
     }
 
     /// What the in-game overlay shows.
-    fn overlay_state(&mut self, time: f64, output: f64, hud: Vec<HudGauge>, toys: &IntifaceStatus) -> OverlayState {
+    /// `hud_hidden`: the mode says the panel may hide now.
+    fn overlay_state(&mut self, time: f64, output: f64, hud: Vec<HudGauge>, hud_hidden: bool, toys: &IntifaceStatus) -> OverlayState {
         const EVENT_KEEP_SECS: f64 = 3.0;
         let s = &self.settings.overlay;
+        let phase = self.mode.as_ref().and_then(|m| m.runtime.as_ref()).and_then(|rt| rt.phase_state().0);
+        // The game's look, or its phase's.
+        let look = self.game.as_ref().map(|g| g.overlay.look(phase.as_deref(), &s.look)).unwrap_or(s.look);
+        let visible = s.look.visible && look.visible && !(s.mode_hides && hud_hidden);
         let (name, preset) = match &self.mode {
             Some(active) => (
                 active.runtime.as_ref().map(|rt| rt.info().name.clone()).unwrap_or_else(|| active.entry.key.clone()),
@@ -1687,17 +1697,19 @@ impl Engine {
         }
 
         OverlayState {
-            visible: s.visible,
-            corner: s.corner,
-            scale: s.scale,
-            opacity: s.opacity,
+            visible,
+            corner: Corner::nearest(look.position),
+            position: Some(look.position),
+            scale: look.scale,
+            opacity: look.opacity,
+            alpha: look.alpha,
             output: output as f32,
             cap: self.settings.global_cap as f32,
             panic: self.panic,
             mode: name,
             preset,
             mode_age: (time - self.overlay_title.2) as f32,
-            phase: self.mode.as_ref().and_then(|m| m.runtime.as_ref()).and_then(|rt| rt.phase_state().0),
+            phase,
             gauges: hud.into_iter().map(|g| Gauge { label: g.label, value: g.value as f32, max: g.max as f32 }).collect(),
             events: self.overlay_events.iter().map(|(text, t)| Event { text: text.clone(), age: (time - t) as f32 }).collect(),
             alerts,

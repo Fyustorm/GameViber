@@ -362,6 +362,16 @@ pub(super) fn register(lua: &Lua, ctx: &Rc<RefCell<Ctx>>) -> mlua::Result<()> {
             })?,
         )?;
     }
+    {
+        let ctx = ctx.clone();
+        g.set(
+            "hud_hide",
+            lua.create_function(move |_, hidden: Option<bool>| {
+                ctx.borrow_mut().hud_hidden = hidden.unwrap_or(true);
+                Ok(())
+            })?,
+        )?;
+    }
     for name in ["log", "print"] {
         let ctx = ctx.clone();
         g.set(

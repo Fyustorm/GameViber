@@ -173,23 +173,56 @@ impl ToySettings {
     }
 }
 
+/// How the in-game panel looks: everywhere, in a game, or in a phase of it.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OverlayLook {
+    pub visible: bool,
+    /// Where it sits, as fractions of the room the screen leaves it: [0, 0]
+    /// top left, [1, 1] bottom right.
+    pub position: [f32; 2],
+    pub scale: f32,
+    /// Panel background opacity, 0..1.
+    pub opacity: f32,
+    /// Opacity of the whole panel, text included, 0..1.
+    pub alpha: f32,
+}
+
+impl Default for OverlayLook {
+    fn default() -> Self {
+        Self { visible: true, position: Corner::TopLeft.position(), scale: 1.0, opacity: 0.75, alpha: 1.0 }
+    }
+}
+
 /// In-game overlay preferences.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct OverlaySettings {
-    /// Show the overlay in games where the layer is active.
-    pub visible: bool,
-    pub corner: Corner,
-    pub scale: f32,
-    /// Panel background opacity, 0..1.
-    pub opacity: f32,
+    /// The look in every game without one of its own; hidden here, the
+    /// overlay shows in no game.
+    #[serde(flatten)]
+    pub look: OverlayLook,
+    /// Before free positions: the corner the panel sat in, moved into the
+    /// look when loaded.
+    #[serde(skip_serializing)]
+    corner: Option<Corner>,
     /// The layer is installed for every Vulkan game rather than per game.
     pub all_games: bool,
+    /// Hide the panel while the mode says it may (`hud_hide`: a cutscene, a dialogue).
+    pub mode_hides: bool,
 }
 
 impl Default for OverlaySettings {
     fn default() -> Self {
-        Self { visible: true, corner: Corner::TopLeft, scale: 1.0, opacity: 0.75, all_games: false }
+        Self { look: OverlayLook::default(), corner: None, all_games: false, mode_hides: true }
+    }
+}
+
+impl OverlaySettings {
+    fn migrate(&mut self) {
+        if let Some(corner) = self.corner.take() {
+            self.look.position = corner.position();
+        }
     }
 }
 
@@ -282,7 +315,9 @@ impl Settings {
     }
 
     pub fn load() -> Self {
-        read_toml(&Self::path())
+        let mut settings: Self = read_toml(&Self::path());
+        settings.overlay.migrate();
+        settings
     }
 
     pub fn save(&self) {
@@ -644,6 +679,17 @@ mod tests {
         assert_eq!(lines[0], "2026-10-03 20:00 (version 1.0): the player reported: Dash: Too long");
         assert_eq!(lines[1], "d (version 1.0): quick fix for \"Dash: Too long\": Dash length (s) 0.4 -> 0.3");
         assert_eq!(lines[2], "d: the assistant's corrected mode was applied (1.0 -> 1.1)");
+    }
+
+    #[test]
+    fn overlay_settings_keep_the_older_corner() {
+        let mut older: Settings = toml::from_str("[overlay]\nvisible = false\ncorner = \"bottom-right\"\nscale = 1.5\n").unwrap();
+        older.overlay.migrate();
+        assert_eq!(older.overlay.look, OverlayLook { visible: false, position: [1.0, 1.0], scale: 1.5, ..OverlayLook::default() });
+        let text = toml::to_string_pretty(&older).unwrap();
+        assert!(!text.contains("corner"), "{text}");
+        let again: Settings = toml::from_str(&text).unwrap();
+        assert_eq!(again.overlay, older.overlay);
     }
 
     #[test]

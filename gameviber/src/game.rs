@@ -4,12 +4,13 @@
 //! that it becomes the active game by itself. One JSON file per game in
 //! `games/`, named after its id.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::{self, AudioSource};
+use crate::config::{self, AudioSource, OverlayLook};
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -29,6 +30,32 @@ pub struct Game {
     pub modes: Vec<String>,
     /// Which sound to listen to while it is played; None: the default (Setup).
     pub audio: Option<AudioSource>,
+    /// How the in-game panel looks in it.
+    #[serde(skip_serializing_if = "GameOverlay::is_empty")]
+    pub overlay: GameOverlay,
+}
+
+/// The in-game panel's look in a game, and in phases of it (a cutscene: hidden).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GameOverlay {
+    /// None: the look of every game (the Overlay page).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub look: Option<OverlayLook>,
+    /// By phase name, whichever mode of the game recognizes it.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub phases: BTreeMap<String, OverlayLook>,
+}
+
+impl GameOverlay {
+    pub fn is_empty(&self) -> bool {
+        self.look.is_none() && self.phases.is_empty()
+    }
+
+    /// The look in `phase`, `everywhere` being the look of every game.
+    pub fn look(&self, phase: Option<&str>, everywhere: &OverlayLook) -> OverlayLook {
+        phase.and_then(|p| self.phases.get(p)).or(self.look.as_ref()).copied().unwrap_or(*everywhere)
+    }
 }
 
 #[cfg(test)]
@@ -193,6 +220,22 @@ impl Game {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_phase_s_look_beats_the_game_s_which_beats_every_game_s() {
+        let everywhere = OverlayLook::default();
+        let mut overlay = GameOverlay::default();
+        assert_eq!(overlay.look(Some("battle"), &everywhere), everywhere);
+        let game = OverlayLook { position: [1.0, 0.0], ..everywhere };
+        overlay.look = Some(game);
+        let cutscene = OverlayLook { visible: false, ..game };
+        overlay.phases.insert("cutscene".into(), cutscene);
+        assert_eq!(overlay.look(Some("battle"), &everywhere), game);
+        assert_eq!(overlay.look(None, &everywhere), game);
+        assert_eq!(overlay.look(Some("cutscene"), &everywhere), cutscene);
+        let text = serde_json::to_string(&Game { overlay: GameOverlay::default(), ..Game::new("Metaphor") }).unwrap();
+        assert!(!text.contains("overlay"), "left out while empty: {text}");
+    }
 
     fn test_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("gameviber-games-{name}-{}", std::process::id()));

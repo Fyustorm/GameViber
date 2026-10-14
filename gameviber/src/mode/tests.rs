@@ -857,6 +857,26 @@ fn hud_gauges_persist_and_events_last_one_tick() {
 }
 
 #[test]
+fn hud_hide_lasts_until_shown_again_or_restarted() {
+    let src = wrap(
+        "function on_button(ev)
+           if ev.button == 'A' then hud_hide(true) end
+           if ev.button == 'B' then hud_hide(false) end
+           if ev.button == 'X' then hud_hide() end
+         end
+         function tick() end",
+    );
+    let mut rt = load(&src);
+    assert!(!step(&mut rt, rumble(0.0, 0.0)).hud_hidden);
+    assert!(press(&mut rt, "A").hud_hidden);
+    assert!(step(&mut rt, rumble(0.0, 0.0)).hud_hidden, "kept");
+    assert!(!press(&mut rt, "B").hud_hidden);
+    assert!(press(&mut rt, "X").hud_hidden, "no argument hides");
+    rt.start().unwrap();
+    assert!(!step(&mut rt, rumble(0.0, 0.0)).hud_hidden, "shown again on start");
+}
+
+#[test]
 fn apply_params_sets_all_values_and_defaults_the_rest() {
     let src = "mode { api = 1, name = 'T', params = {
                  x = number(1, 0, 2, 'X'), y = number(0.5, 0, 1, 'Y'), c = choice('a', { 'a', 'b' }, 'C') } }

@@ -179,7 +179,7 @@ impl App {
         }
     }
 
-    fn open_setup(&mut self, tab: setup::Tab) {
+    pub(super) fn open_setup(&mut self, tab: setup::Tab) {
         if self.page != Page::Setup {
             self.overlay.forget_install_state();
         }

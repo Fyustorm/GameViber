@@ -13,7 +13,9 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u32 = 1;
+/// 2: the panel sits anywhere ([`OverlayState::position`]) and fades
+/// ([`OverlayState::alpha`]); 1 knows corners only.
+pub const PROTOCOL_VERSION: u32 = 2;
 /// Overlays send a hello this often.
 pub const HELLO_SECS: f64 = 1.0;
 /// GameViber forgets an overlay after this long without a hello.
@@ -39,6 +41,14 @@ pub struct Hello {
     pub api: String,
     /// The datagram carries the frame memory's file descriptor (`SCM_RIGHTS`).
     pub frames: bool,
+}
+
+impl Hello {
+    /// The overlay places the panel anywhere, not only in corners (older overlays, still
+    /// in a game started before an update, do not).
+    pub fn places_freely(&self) -> bool {
+        self.version >= 2
+    }
 }
 
 /// GameViber wants copies of the game's frames.
@@ -78,6 +88,26 @@ impl Corner {
             Corner::BottomRight => "Bottom right",
         }
     }
+
+    /// The corner closest to a position, for overlays placing the panel in corners only.
+    pub fn nearest([x, y]: [f32; 2]) -> Corner {
+        match (x >= 0.5, y >= 0.5) {
+            (false, false) => Corner::TopLeft,
+            (true, false) => Corner::TopRight,
+            (false, true) => Corner::BottomLeft,
+            (true, true) => Corner::BottomRight,
+        }
+    }
+
+    /// The panel's position in this corner (see [`OverlayState::position`]).
+    pub fn position(self) -> [f32; 2] {
+        match self {
+            Corner::TopLeft => [0.0, 0.0],
+            Corner::TopRight => [1.0, 0.0],
+            Corner::BottomLeft => [0.0, 1.0],
+            Corner::BottomRight => [1.0, 1.0],
+        }
+    }
 }
 
 /// A gauge a mode shows with `hud(label, value, max)`.
@@ -104,11 +134,17 @@ pub struct Event {
 pub struct OverlayState {
     pub version: u32,
     pub visible: bool,
+    /// Where the panel sits when `position` is not given (older GameViber).
     pub corner: Corner,
+    /// Where the panel sits, as fractions of the room the screen leaves it
+    /// within the margins: [0, 0] top left, [1, 1] bottom right, [0.5, 0] top center.
+    pub position: Option<[f32; 2]>,
     /// Size multiplier (1 = default size at 1080p).
     pub scale: f32,
     /// Background opacity, 0..1.
     pub opacity: f32,
+    /// Opacity of the whole panel, text included, 0..1.
+    pub alpha: f32,
     /// Strongest toy output after the safety layer, 0..1.
     pub output: f32,
     /// Global intensity cap, 0..1.
@@ -136,8 +172,10 @@ impl Default for OverlayState {
             version: PROTOCOL_VERSION,
             visible: true,
             corner: Corner::default(),
+            position: None,
             scale: 1.0,
             opacity: 0.75,
+            alpha: 1.0,
             output: 0.0,
             cap: 1.0,
             panic: false,

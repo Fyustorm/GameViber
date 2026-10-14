@@ -592,6 +592,26 @@ impl App {
                     self.send(Command::SaveGame(Game { audio, ..game.clone() }));
                 }
                 ui.end_row();
+
+                ui.label(muted("Overlay"));
+                ui.horizontal_wrapped(|ui| {
+                    let look = match &game.overlay.look {
+                        None => "Like every game",
+                        Some(look) if !look.visible => "Hidden",
+                        Some(_) => "A look of its own",
+                    };
+                    let phases = match game.overlay.phases.len() {
+                        0 => String::new(),
+                        1 => " · 1 phase of its own".to_owned(),
+                        n => format!(" · {n} phases of their own"),
+                    };
+                    ui.label(format!("{look}{phases}"));
+                    if ui.small_button("Set up").on_hover_text("Where the in-game panel sits in this game, and in its phases").clicked() {
+                        self.overlay.game = Some(game.id.clone());
+                        self.open_setup(super::setup::Tab::Overlay);
+                    }
+                });
+                ui.end_row();
             });
             ui.add_space(6.0);
             ui.horizontal(|ui| {
