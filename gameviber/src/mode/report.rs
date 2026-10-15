@@ -481,7 +481,7 @@ function tick(dt, input)
 end
 "#;
         let session = Session {
-            header: Header { version: 1, started: "now".into(), game: None, mode: "T".into(), duration: 2.0, marks: 1, frames: 0, zones: None },
+            header: Header { version: 1, started: "now".into(), game: None, mode: "T".into(), duration: 2.0, marks: 1, frames: 0, zones: None, name: None },
             changes: vec![
                 (0.5, Change::Button { name: "LT".into(), pressed: true }),
                 (0.6, Change::Rumble { strong: 0.8, weak: 0.0 }),
@@ -514,7 +514,7 @@ function on_audio_hit(ev) pulse(ev.strength, 0.1) end
 function tick(dt, input) end
 "#;
         let session = Session {
-            header: Header { version: 2, started: "now".into(), game: None, mode: "T".into(), duration: 1.0, marks: 0, frames: 0, zones: None },
+            header: Header { version: 2, started: "now".into(), game: None, mode: "T".into(), duration: 1.0, marks: 0, frames: 0, zones: None, name: None },
             changes: vec![
                 (0.1, Change::Audio { level: 0.6, low: 0.5, mid: 0.2, high: 0.1, intensity: 0.3 }),
                 (0.3, Change::AudioHit { strength: 0.9, band: crate::audio::Band::Low }),
@@ -556,7 +556,7 @@ function tick(dt, input) end
         let zone = Zone { indicator: "battle_hud".into(), rect, reference: indicators::reference(&image(true), &Zone { rect, ..Zone::default() }), ..Zone::default() };
         let inputs = Inputs { zones: vec![zone], ..Inputs::default() };
         let session = |zones: Option<Vec<Zone>>| Session {
-            header: Header { version: 4, started: "now".into(), game: None, mode: "T".into(), duration: 2.0, marks: 0, frames: 3, zones },
+            header: Header { version: 4, started: "now".into(), game: None, mode: "T".into(), duration: 2.0, marks: 0, frames: 3, zones, name: None },
             // Shown all along, as read in the zones of the recording.
             changes: vec![(0.0, Change::Indicator { name: "battle_hud".into(), value: IndicatorValue::Visibility(true) })],
             frames: [(0.0, true), (1.0, false), (1.5, false)]
@@ -585,7 +585,7 @@ function tick(dt, input) end
     fn a_replay_stops_when_asked() {
         let source = "mode { api = 1, name = 'T' } function tick(dt, input) end";
         let session = Session {
-            header: Header { version: 1, started: "now".into(), game: None, mode: "T".into(), duration: 1.0, marks: 0, frames: 0, zones: None },
+            header: Header { version: 1, started: "now".into(), game: None, mode: "T".into(), duration: 1.0, marks: 0, frames: 0, zones: None, name: None },
             changes: Vec::new(),
             frames: Vec::new(),
         };
@@ -598,7 +598,7 @@ function tick(dt, input) end
     fn runtime_errors_are_reported() {
         let source = "mode { api = 1, name = 'T' } function tick(dt, input) if input.time > 0.1 then error('boom') end end";
         let session = Session {
-            header: Header { version: 1, started: "now".into(), game: None, mode: "T".into(), duration: 1.0, marks: 0, frames: 0, zones: None },
+            header: Header { version: 1, started: "now".into(), game: None, mode: "T".into(), duration: 1.0, marks: 0, frames: 0, zones: None, name: None },
             changes: Vec::new(),
             frames: Vec::new(),
         };

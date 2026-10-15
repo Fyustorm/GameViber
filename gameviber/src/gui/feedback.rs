@@ -220,7 +220,7 @@ impl App {
         let label = |path: &Option<PathBuf>| match path {
             None => "No session".to_owned(),
             Some(p) => s.recordings.iter().find(|r| r.path == *p).map_or("?".to_owned(), |r| {
-                let what = r.header.game.as_deref().unwrap_or(&r.header.mode);
+                let what = r.title();
                 let marks = match r.header.marks {
                     0 => String::new(),
                     n => format!(" · ⚑ {n}"),

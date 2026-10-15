@@ -11,7 +11,7 @@
 //! An indicator is picked first, then one of its zones. Leaving an indicator or a zone
 //! for another saves its changes; Save does it in place.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::{mpsc, Arc};
 
 use eframe::egui::{self, Color32, CornerRadius, Margin, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Vec2};
@@ -59,7 +59,9 @@ pub struct State {
     scroll_to: Option<Vec2>,
     /// An indicator was just opened: bring it into view.
     center_zone: bool,
-    /// The image outlines the other indicators' zones too; none at all.
+    /// The image outlines the indicator's other zones, the other indicators'
+    /// zones too; none at all (H, to see the image).
+    show_siblings: bool,
     show_others: bool,
     hide_zones: bool,
     /// When Save was last pressed, and whether deleting the indicator waits for confirmation.
@@ -82,10 +84,32 @@ pub struct State {
     import: Option<mpsc::Receiver<Option<(bool, String)>>>,
     import_message: Option<(bool, String)>,
     readings: Readings,
+    /// The captures score the indicator as a whole while one of its zones is edited, not that zone alone.
+    whole_indicator: bool,
+    /// Captures picked to mark, move or delete together (Ctrl/Shift + click), the
+    /// last one clicked (where Shift + click picks from), and whether deleting them waits for confirmation.
+    picked: BTreeSet<String>,
+    anchor: Option<String>,
+    confirm_delete_picked: bool,
+}
+
+/// What the indicator selected reads on a capture.
+#[derive(Clone, Default)]
+struct CaptureReading {
+    /// What it reads ("shown 0.82 · zone 2"), in what color...
+    text: String,
+    color: Color32,
+    /// ...each zone's reading and the rule deciding, for its tooltip...
+    detail: String,
+    /// ...and whether it reads shown, for a visibility.
+    shown: Option<bool>,
 }
 
 /// What the indicator selected reads on each capture, by capture file.
-type ReadingMap = HashMap<String, (String, Color32)>;
+type ReadingMap = HashMap<String, CaptureReading>;
+
+/// The zones scored on the captures, each named as the editor lists it ("zone 2", "new zone").
+type Scored = Vec<(String, Zone)>;
 
 /// What the indicator selected reads on each capture, worked out on another
 /// thread when its zones or the captures change: reading a gauge on dozens
@@ -94,18 +118,18 @@ type ReadingMap = HashMap<String, (String, Color32)>;
 struct Readings {
     /// The zones, the mode's zones (for a gauge's conditions) and the
     /// captures `values` was read with...
-    zones: Vec<Zone>,
+    zones: Scored,
     all: Vec<Zone>,
     files: Vec<String>,
     values: ReadingMap,
     /// ...and the reading under way, with its own.
-    job: Option<(Vec<Zone>, Vec<Zone>, Vec<String>, mpsc::Receiver<ReadingMap>)>,
+    job: Option<(Scored, Vec<Zone>, Vec<String>, mpsc::Receiver<ReadingMap>)>,
 }
 
 impl Readings {
     /// The readings of `zones` on `captures`, as last read: those read for
     /// zones or captures since changed stay until they are read again.
-    fn get(&mut self, ctx: &egui::Context, zones: &[&Zone], all: &[Zone], captures: &HashMap<String, (Arc<Frame>, egui::TextureHandle)>) -> &ReadingMap {
+    fn get(&mut self, ctx: &egui::Context, zones: &Scored, all: &[Zone], captures: &HashMap<String, (Arc<Frame>, egui::TextureHandle)>) -> &ReadingMap {
         if let Some((_, _, _, rx)) = &self.job {
             match rx.try_recv() {
                 Ok(values) => {
@@ -122,22 +146,19 @@ impl Readings {
         }
         let mut files: Vec<String> = captures.keys().cloned().collect();
         files.sort();
-        let read = |z: &[Zone], f: &[String]| z.len() == zones.len() && z.iter().zip(zones).all(|(a, b)| a == *b) && f == files.as_slice();
         // One reading at a time: a change made while one is under way is read once it ends.
-        if (read(&self.zones, &self.files) && self.all == all) || self.job.is_some() {
+        if (self.zones == *zones && self.files == files && self.all == all) || self.job.is_some() {
             return &self.values;
         }
-        let owned: Vec<Zone> = zones.iter().map(|z| (*z).clone()).collect();
         let frames: Vec<(String, Arc<Frame>)> = captures.iter().map(|(file, (frame, _))| (file.clone(), frame.clone())).collect();
         let (tx, rx) = mpsc::channel();
-        let (job_zones, job_all, ctx) = (owned.clone(), all.to_vec(), ctx.clone());
+        let (job_zones, job_all, ctx) = (zones.clone(), all.to_vec(), ctx.clone());
         std::thread::spawn(move || {
-            let zones: Vec<&Zone> = job_zones.iter().collect();
-            let values = frames.iter().map(|(file, frame)| (file.clone(), reading_zones(&zones, &job_all, frame))).collect();
+            let values = frames.iter().map(|(file, frame)| (file.clone(), read_capture(&job_zones, &job_all, frame))).collect();
             let _ = tx.send(values);
             ctx.request_repaint();
         });
-        self.job = Some((owned, all.to_vec(), files, rx));
+        self.job = Some((zones.clone(), all.to_vec(), files, rx));
         &self.values
     }
 }
@@ -154,6 +175,7 @@ impl Default for State {
             view_center: Pos2::new(0.5, 0.5),
             scroll_to: None,
             center_zone: false,
+            show_siblings: true,
             show_others: true,
             hide_zones: false,
             saved_at: f64::NEG_INFINITY,
@@ -168,6 +190,10 @@ impl Default for State {
             import: None,
             import_message: None,
             readings: Readings::default(),
+            whole_indicator: false,
+            picked: BTreeSet::new(),
+            anchor: None,
+            confirm_delete_picked: false,
         }
     }
 }
@@ -179,8 +205,8 @@ enum Target {
     Planned(String, IndicatorKind),
     /// An indicator, none of its zones (one is then picked, or a new one drawn).
     Indicator(String),
-    /// A zone, by index; true: shown on its capture.
-    Zone(usize, bool),
+    /// A zone, by index.
+    Zone(usize),
 }
 
 impl State {
@@ -193,7 +219,7 @@ impl State {
 impl State {
     /// Opens a zone (index `i`) on the capture shown (the screenshot tour).
     pub(super) fn edit_zone(&mut self, i: usize, inputs: &Inputs) {
-        self.open_zone(i, inputs, false);
+        self.open_zone(i, inputs);
     }
 
     /// A new visibility indicator, not drawn yet (the screenshot tour).
@@ -210,39 +236,16 @@ impl State {
             Target::NewIndicator => self.draft = Draft { zoom: self.draft.zoom, ..Draft::default() },
             Target::Planned(name, kind) => self.draft = Draft { zoom: self.draft.zoom, name, kind, kind_chosen: true, ..Draft::default() },
             Target::Indicator(name) => self.select_indicator(&name, g),
-            Target::Zone(i, on_capture) => self.open_zone(i, g, on_capture),
+            Target::Zone(i) => self.open_zone(i, g),
         }
         save
     }
 
-    /// A zone, and its capture when `on_capture`: the one it was drawn on,
-    /// else one it is found on (its phase's first).
-    fn open_zone(&mut self, i: usize, inputs: &Inputs, on_capture: bool) {
+    /// A zone, on the capture shown ("Show the capture it was drawn on" goes to that one).
+    fn open_zone(&mut self, i: usize, inputs: &Inputs) {
         let Some(zone) = inputs.zones.get(i) else { return };
         self.draft = Draft::edit(self.draft.zoom, i, zone);
         self.center_zone = true;
-        if !on_capture {
-            return;
-        }
-        if let Some(file) = zone.capture.as_ref().filter(|f| self.captures.contains_key(*f)) {
-            self.selected = Some(file.clone());
-            return;
-        }
-        let captures = &self.captures;
-        let found = |file: &str| {
-            captures.get(file).is_some_and(|(frame, _)| match zone.kind {
-                IndicatorKind::Gauge => indicators::fill_anywhere(&[zone], frame).is_some(),
-                IndicatorKind::Visibility => indicators::measure(zone, frame).is_some_and(|m| m >= zone.threshold),
-            })
-        };
-        if self.selected.as_deref().is_some_and(found) {
-            return;
-        }
-        let in_phase = |c: &&package::Capture| zone.phase.as_ref().is_none_or(|s| c.phase == *s);
-        let best = inputs.captures.iter().filter(in_phase).find(|c| found(&c.file)).or_else(|| inputs.captures.iter().find(|c| found(&c.file)));
-        if let Some(capture) = best {
-            self.selected = Some(capture.file.clone());
-        }
     }
 
     /// An indicator, none of its zones: its settings from its first zone.
@@ -614,6 +617,19 @@ impl Default for Draft {
 }
 
 impl Draft {
+    /// Marks `files` as showing the zone edited (true), as not (false), or
+    /// neither; `drawn`, the capture it was drawn on, shows it whatever is marked.
+    fn mark(&mut self, files: &[String], shown: Option<bool>, drawn: Option<&str>) {
+        self.shown_on.retain(|f| !files.contains(f));
+        self.hidden_on.retain(|f| !files.contains(f));
+        let files = files.iter().filter(|f| Some(f.as_str()) != drawn).cloned();
+        match shown {
+            Some(true) => self.shown_on.extend(files),
+            Some(false) => self.hidden_on.extend(files),
+            None => {}
+        }
+    }
+
     /// What it is now is what it was opened as.
     fn mark_opened(&mut self) {
         self.opened = None;
@@ -978,18 +994,129 @@ fn tag(ui: &egui::Ui, at: Pos2, align: egui::Align2, text: String, color: Color3
     painter.galley(rect.min + Vec2::new(5.0, 2.0), galley, color);
 }
 
-/// What an indicator drawn in `zones` reads on an image, as text and color;
-/// `all`: the mode's zones, for a gauge's conditions.
-fn reading_zones(indicator_zones: &[&Zone], all: &[Zone], frame: &Frame) -> (String, Color32) {
-    let Some(first) = indicator_zones.first() else { return (String::new(), MUTED) };
+/// What the scores under the captures are, for the line above them.
+#[derive(Default)]
+struct Scores {
+    /// What is scored ("zone 2 (edited) of battle_hud, alone"); None: nothing.
+    title: Option<String>,
+    /// How a score is decided.
+    rule: String,
+    /// Some(whether the whole indicator is scored) when it can switch to the zone edited alone, or back.
+    switch: Option<bool>,
+    /// The zone edited is scored alone: the captures marked shown or not are compared with what it reads...
+    judged: bool,
+    /// ...and how many agree.
+    agree: usize,
+    disagree: usize,
+}
+
+/// The scores of `scored` (out of the indicator's zones, `whole`; `edited`: the zone edited among them).
+fn scores_of(d: &Draft, whole: &Scored, scored: &Scored, edited: Option<usize>, tested: Option<&Zone>, readings: &ReadingMap) -> Scores {
+    let Some((_, first)) = scored.first() else { return Scores::default() };
+    let name = if d.name.is_empty() { "the new indicator" } else { d.name.as_str() };
+    let alone = scored.len() == 1 && whole.len() > 1;
+    let title = match (alone, whole.len()) {
+        (true, _) => format!("{} of {name}, alone", scored[0].0),
+        (false, 1) => name.to_owned(),
+        (false, n) => format!("{name}, its {n} zones together"),
+    };
+    let rule = match (first.kind, scored.len() > 1, first.all_zones) {
+        (IndicatorKind::Visibility, false, _) => "Shown when its similarity reaches its threshold. Hover a score for the detail.",
+        (IndicatorKind::Visibility, true, false) => "Shown when one of its zones shows it; the score is the best zone's, named after it. Hover a score for each zone's.",
+        (IndicatorKind::Visibility, true, true) => "Shown when all its zones show it; the score is the worst zone's, named after it. Hover a score for each zone's.",
+        (IndicatorKind::Gauge, false, _) => "How full its bar is; unknown where it is not found. Hover a score for the detail.",
+        (IndicatorKind::Gauge, true, _) => "How full its bar is, in the zone where it is found best, named after it. Hover a score for each zone's.",
+    };
+    let judged = first.kind == IndicatorKind::Visibility && scored.len() == 1 && edited.is_some();
+    let (mut agree, mut disagree) = (0, 0);
+    if judged {
+        for (file, reading) in readings {
+            let mark = if tested.and_then(|z| z.capture.as_ref()) == Some(file) || d.shown_on.contains(file) {
+                Some(true)
+            } else {
+                d.hidden_on.contains(file).then_some(false)
+            };
+            if let (Some(mark), Some(shown)) = (mark, reading.shown) {
+                if mark == shown { agree += 1 } else { disagree += 1 }
+            }
+        }
+    }
+    Scores {
+        title: Some(title),
+        rule: rule.to_owned(),
+        switch: (whole.len() > 1 && edited.is_some()).then_some(!alone),
+        judged,
+        agree,
+        disagree,
+    }
+}
+
+/// The capture the zone edited was drawn on: shown there, whatever is marked.
+fn drawn_capture(d: &Draft, inputs: &Inputs) -> Option<String> {
+    d.drawn_on.clone().or_else(|| d.editing.and_then(|i| inputs.zones.get(i)).and_then(|z| z.capture.clone()))
+}
+
+/// What an indicator read in `zones` reads on an image, which zone decided
+/// and why; `all`: the mode's zones, for a gauge's conditions.
+fn read_capture(zones: &Scored, all: &[Zone], frame: &Frame) -> CaptureReading {
+    let Some((_, first)) = zones.first() else { return CaptureReading::default() };
+    let several = zones.len() > 1;
+    // "zone 2 (edited)" → "zone 2".
+    let short = |label: &str| label.split(" (").next().unwrap_or(label).to_owned();
     match first.kind {
         IndicatorKind::Visibility => {
-            let (shown, best) = indicators::is_shown(indicator_zones, frame, false);
-            if shown { (format!("shown {best:.2}"), ACCENT_TEXT) } else { (format!("hidden {best:.2}"), MUTED) }
+            let measures: Vec<f32> = zones.iter().map(|(_, z)| indicators::measure(z, frame).unwrap_or(0.0)).collect();
+            let (shown, _) = indicators::is_shown(&zones.iter().map(|(_, z)| z).collect::<Vec<_>>(), frame, false);
+            // The zone that decided, as `is_shown` does: the best one, the worst when all must show it.
+            let order = |a: &&f32, b: &&f32| a.total_cmp(b);
+            let decided = if first.all_zones { measures.iter().enumerate().min_by(|a, b| order(&a.1, &b.1)) } else { measures.iter().enumerate().max_by(|a, b| order(&a.1, &b.1)) };
+            let (k, m) = decided.map_or((0, 0.0), |(k, m)| (k, *m));
+            let word = if shown { "shown" } else { "hidden" };
+            let text = if several { format!("{word} {m:.2} · {}", short(&zones[k].0)) } else { format!("{word} {m:.2}") };
+            let mut detail: Vec<String> = zones
+                .iter()
+                .zip(&measures)
+                .map(|((label, z), m)| format!("{} {label}: {m:.2}, threshold {:.2}", if *m >= z.threshold { "✓" } else { "✗" }, z.threshold))
+                .collect();
+            detail.push(String::new());
+            detail.push(match (several, first.all_zones) {
+                (false, _) => "Shown when its similarity reaches its threshold.".to_owned(),
+                (true, false) => "Shown when one of its zones shows it: the score is the best zone's.".to_owned(),
+                (true, true) => "Shown when all its zones show it: the score is the worst zone's.".to_owned(),
+            });
+            CaptureReading { text, color: if shown { ACCENT_TEXT } else { MUTED }, detail: detail.join("\n"), shown: Some(shown) }
         }
-        IndicatorKind::Gauge if unmet_on(first, all, frame).is_some() => reading(first, None),
-        IndicatorKind::Gauge => reading(first, indicators::fill_anywhere(indicator_zones, frame)),
+        IndicatorKind::Gauge => {
+            if let Some(why) = unmet_on(first, all, frame) {
+                let detail = format!("Not read on this capture: it is read only when {}, and here {why}.", conditions_text(first));
+                return CaptureReading { text: "unknown".to_owned(), color: WARN, detail, shown: None };
+            }
+            let found: Vec<Option<(f32, f32)>> = zones.iter().map(|(_, z)| indicators::bar_reading(z, frame)).collect();
+            let decided = found.iter().enumerate().filter_map(|(k, f)| Some((k, (*f)?))).max_by(|a, b| a.1 .1.total_cmp(&b.1 .1));
+            let text = match decided {
+                Some((k, (fill, _))) if several => format!("{:.0}% · {}", fill * 100.0, short(&zones[k].0)),
+                Some((_, (fill, _))) => format!("{:.0}%", fill * 100.0),
+                None => "unknown".to_owned(),
+            };
+            let mut detail: Vec<String> = zones
+                .iter()
+                .zip(&found)
+                .map(|((label, _), f)| match f {
+                    Some((fill, sure)) => format!("✓ {label}: {:.0}%, bar found at {:.0}%", fill * 100.0, sure * 100.0),
+                    None => format!("✗ {label}: bar not found"),
+                })
+                .collect();
+            detail.push(String::new());
+            detail.push(if several { "Reads in the zone where its bar is found best." } else { "Unknown when its bar is not found." }.to_owned());
+            CaptureReading { text, color: if decided.is_some() { ACCENT_TEXT } else { WARN }, detail: detail.join("\n"), shown: None }
+        }
     }
+}
+
+/// "battle_hud shown and menu hidden"
+fn conditions_text(zone: &Zone) -> String {
+    let each: Vec<String> = zone.read_when.iter().map(|c| format!("{} {}", c.indicator, if c.shown { "shown" } else { "hidden" })).collect();
+    each.join(" and ")
 }
 
 /// The first of a gauge's conditions that does not hold on an image, as text.
@@ -1029,26 +1156,36 @@ impl App {
              and checked on all of them. Captures stay on your computer.",
         ));
         ui.add_space(4.0);
-        // What the indicator selected reads on each capture: its zones, the one edited as drawn now.
+        // What the indicator selected reads on each capture: its zones, numbered as
+        // the editor lists them, the one edited as drawn now, the others with the
+        // indicator's settings as edited; or the zone edited alone.
         let st = &mut self.screen;
         let tested = st.draft_zone(inputs);
         let d = &st.draft;
-        // Its other zones with the indicator's settings as edited.
-        let others: Vec<Zone> = inputs
-            .zones
-            .iter()
-            .enumerate()
-            .filter(|(i, z)| d.indicator.as_ref() == Some(&z.indicator) && Some(*i) != d.editing)
-            .map(|(_, z)| {
+        let mut whole: Scored = Vec::new();
+        let mut edited = None;
+        for (n, (i, z)) in inputs.zones.iter().enumerate().filter(|(_, z)| d.indicator.as_ref() == Some(&z.indicator)).enumerate() {
+            if Some(i) != d.editing {
                 let mut zone = z.clone();
                 st.shared(&mut zone);
-                zone
-            })
-            .collect();
-        let mut indicator_zones: Vec<&Zone> = others.iter().collect();
-        indicator_zones.extend(tested.as_ref());
-        let readings = st.readings.get(ui.ctx(), &indicator_zones, &inputs.zones, &st.captures).clone();
+                whole.push((format!("zone {}", n + 1), zone));
+            } else if let Some(zone) = &tested {
+                edited = Some(whole.len());
+                whole.push((format!("zone {} (edited)", n + 1), zone.clone()));
+            }
+        }
+        if let (None, Some(zone)) = (d.editing, &tested) {
+            edited = Some(whole.len());
+            whole.push(("new zone".to_owned(), zone.clone()));
+        }
+        let alone = edited.filter(|_| whole.len() > 1 && !st.whole_indicator);
+        let scored: Scored = match alone {
+            Some(k) => vec![whole[k].clone()],
+            None => whole.clone(),
+        };
+        let readings = st.readings.get(ui.ctx(), &scored, &inputs.zones, &st.captures).clone();
         let d = &st.draft;
+        let scores = scores_of(d, &whole, &scored, edited, tested.as_ref(), &readings);
         // The captures its zones were drawn on.
         let marked: HashSet<String> = inputs.zones.iter().filter(|z| d.indicator.as_ref() == Some(&z.indicator)).filter_map(|z| z.capture.clone()).collect();
         let mut changed = None;
@@ -1061,7 +1198,7 @@ impl App {
             let layout = egui::Layout::top_down(egui::Align::Min);
             ui.allocate_ui_with_layout(Vec2::new(side, height), layout, |ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
-                self.captures_panel(ui, s, game, inputs, &readings, &marked);
+                self.captures_panel(ui, s, game, inputs, &readings, &marked, &scores);
             });
             ui.allocate_ui_with_layout(Vec2::new(main, height), layout, |ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
@@ -1086,6 +1223,7 @@ impl App {
         }
         let Some(loaded) = loaded else { return };
         st.captures.retain(|file, _| loaded.captures.iter().any(|c| c.file == *file));
+        st.picked.retain(|file| loaded.captures.iter().any(|c| c.file == *file));
         for capture in &loaded.captures {
             if st.captures.contains_key(&capture.file) {
                 continue;
@@ -1105,7 +1243,8 @@ impl App {
     }
 
     /// The left column: the captures by phase (scrolling if they must), then how to add some.
-    fn captures_panel(&mut self, ui: &mut egui::Ui, s: &Shared, game: &Game, inputs: &Inputs, readings: &ReadingMap, marked: &HashSet<String>) {
+    #[allow(clippy::too_many_arguments)]
+    fn captures_panel(&mut self, ui: &mut egui::Ui, s: &Shared, game: &Game, inputs: &Inputs, readings: &ReadingMap, marked: &HashSet<String>, scores: &Scores) {
         let inner = ui.available_size() - Vec2::splat(2.0 * PANEL_MARGIN + 2.0);
         card(PANEL).inner_margin(Margin::same(PANEL_MARGIN as i8)).show(ui, |ui| {
             ui.set_width(inner.x);
@@ -1113,6 +1252,8 @@ impl App {
             ui.label(RichText::new("Captures").strong().size(16.0));
             if !inputs.captures.is_empty() {
                 self.capture_filters(ui, inputs);
+                self.scores_line(ui, scores);
+                self.capture_actions(ui, inputs);
             }
             // The grid takes what the part below it took on the last frame leaves.
             let height = (ui.available_height() - self.screen.captures_below).max(60.0);
@@ -1122,7 +1263,7 @@ impl App {
                 });
             } else {
                 egui::ScrollArea::vertical().id_salt("captures").auto_shrink([false, false]).max_height(height).min_scrolled_height(height).show(ui, |ui| {
-                    self.capture_grid(ui, inputs, readings, marked);
+                    self.capture_grid(ui, inputs, readings, marked, scores);
                 });
             }
             let top = ui.cursor().top();
@@ -1154,22 +1295,157 @@ impl App {
                 let text = if filter.as_deref() == Some("") { RichText::new(label).color(WARN) } else { RichText::new(label) };
                 if ui.selectable_label(on, text).clicked() {
                     self.screen.filter = filter;
+                    self.screen.picked.clear();
                 }
             }
         });
     }
 
+    /// What the scores under the captures are, how they are decided, whether
+    /// the captures marked agree with them, and the switch between the zone
+    /// edited and the whole indicator.
+    fn scores_line(&mut self, ui: &mut egui::Ui, scores: &Scores) {
+        let Some(title) = &scores.title else { return };
+        let st = &mut self.screen;
+        egui::Frame::new().fill(BG).corner_radius(CornerRadius::same(8)).inner_margin(Margin::symmetric(8, 5)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                ui.label(muted("Scores:").size(12.0));
+                ui.label(RichText::new(title).strong().size(12.0));
+                if let Some(whole) = scores.switch {
+                    let (to, help) = if whole {
+                        ("Score the zone edited alone", "Each capture then shows what the zone you are editing reads there, without the other zones")
+                    } else {
+                        ("Score the whole indicator", "Each capture then shows what the indicator reads there with all its zones, as in the game")
+                    };
+                    if ui.small_button(to).on_hover_text(help).clicked() {
+                        st.whole_indicator = !whole;
+                    }
+                }
+            });
+            ui.label(muted(&scores.rule).size(11.5));
+            if scores.agree + scores.disagree > 0 {
+                let text = match scores.disagree {
+                    0 => RichText::new(format!("✔ The {} captures marked agree", scores.agree)).color(OK),
+                    n => RichText::new(format!("✗ {n} of the {} captures marked disagree (in red)", scores.agree + n)).color(DANGER_TEXT),
+                };
+                ui.label(text.size(11.5)).on_hover_text("Captures marked 👁 Shown that read hidden, or ⊘ Not shown that read shown: move the threshold, or the zone");
+            }
+        });
+    }
+
+    /// What can be done with the captures picked (marking them, moving them,
+    /// deleting them), else picking them all, and marking a whole phase.
+    fn capture_actions(&mut self, ui: &mut egui::Ui, inputs: &Inputs) {
+        let shown: Vec<String> =
+            inputs.captures.iter().filter(|c| self.screen.filter.as_ref().is_none_or(|f| c.phase == *f)).map(|c| c.file.clone()).collect();
+        let marking = self.screen.draft.kind == IndicatorKind::Visibility && self.screen.draft.rect().is_some();
+        let drawn = drawn_capture(&self.screen.draft, inputs);
+        let st = &mut self.screen;
+        let picked: Vec<String> = st.picked.iter().cloned().collect();
+        let mut delete = Vec::new();
+        let mut moved = Vec::new();
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = Vec2::new(4.0, 4.0);
+            if picked.is_empty() {
+                let pick = ui.small_button(format!("Pick all {}", shown.len())).on_hover_text(
+                    "To mark, move or delete them together. Ctrl + click picks a capture, Shift + click those from the last one clicked",
+                );
+                if pick.clicked() {
+                    st.picked = shown.iter().cloned().collect();
+                }
+            } else {
+                ui.label(RichText::new(format!("{} picked", picked.len())).strong().size(12.0));
+                if marking {
+                    if ui.small_button("👁 Shown").on_hover_text("The indicator edited is on these captures, in its zone").clicked() {
+                        st.draft.mark(&picked, Some(true), drawn.as_deref());
+                    }
+                    if ui.small_button("⊘ Not shown").on_hover_text("The indicator edited is not on these captures").clicked() {
+                        st.draft.mark(&picked, Some(false), drawn.as_deref());
+                    }
+                    if ui.small_button("Unmark").clicked() {
+                        st.draft.mark(&picked, None, drawn.as_deref());
+                    }
+                }
+                ui.menu_button(RichText::new("Move to ▾").size(12.0), |ui| {
+                    for phase in inputs.phase_names() {
+                        if ui.button(&phase).clicked() {
+                            moved.extend(picked.iter().map(|f| (f.clone(), phase.clone())));
+                            ui.close();
+                        }
+                    }
+                });
+                if st.confirm_delete_picked {
+                    if ui.small_button(RichText::new(format!("Delete {} captures", picked.len())).color(DANGER_TEXT)).clicked() {
+                        delete = picked.clone();
+                        st.confirm_delete_picked = false;
+                    }
+                    if ui.small_button("Cancel").clicked() {
+                        st.confirm_delete_picked = false;
+                    }
+                } else if ui.small_button("🗑").on_hover_text("Delete the captures picked").clicked() {
+                    st.confirm_delete_picked = true;
+                }
+                if ui.small_button("✕").on_hover_text("Unpick them").clicked() {
+                    st.picked.clear();
+                    st.confirm_delete_picked = false;
+                }
+            }
+            if marking {
+                ui.menu_button(RichText::new("Mark by phase ▾").size(12.0), |ui| {
+                    ui.label(muted("Whether the indicator edited is on every capture of a phase").size(11.5));
+                    egui::Grid::new("mark-by-phase").num_columns(4).spacing([6.0, 4.0]).show(ui, |ui| {
+                        for phase in inputs.phase_names() {
+                            let files: Vec<String> = inputs.captures.iter().filter(|c| c.phase == phase).map(|c| c.file.clone()).collect();
+                            if files.is_empty() {
+                                continue;
+                            }
+                            let d = &mut st.draft;
+                            let all = |list: &[String]| files.iter().all(|f| list.contains(f) || drawn.as_ref() == Some(f));
+                            let (shown, hidden) = (all(&d.shown_on), all(&d.hidden_on));
+                            ui.label(format!("{phase} · {}", files.len()));
+                            if ui.selectable_label(shown, "👁 Shown").clicked() {
+                                d.mark(&files, (!shown).then_some(true), drawn.as_deref());
+                            }
+                            if ui.selectable_label(hidden, "⊘ Not shown").clicked() {
+                                d.mark(&files, (!hidden).then_some(false), drawn.as_deref());
+                            }
+                            if ui.small_button("Unmark").clicked() {
+                                d.mark(&files, None, drawn.as_deref());
+                            }
+                            ui.end_row();
+                        }
+                    });
+                });
+            }
+        });
+        if !delete.is_empty() {
+            self.screen.picked.clear();
+        }
+        for file in delete {
+            self.send(Command::DeleteCapture { dir: inputs.dir.clone(), file });
+        }
+        if !moved.is_empty() {
+            self.screen.picked.clear();
+        }
+        for (file, phase) in moved {
+            self.send(Command::MoveCapture { dir: inputs.dir.clone(), file, phase });
+        }
+    }
+
     /// The captures shown by the phase filter, three per row, each with what
     /// the indicator selected reads on it (📍: a zone of it was drawn there); a
-    /// click opens one in the editor.
-    fn capture_grid(&mut self, ui: &mut egui::Ui, inputs: &Inputs, readings: &ReadingMap, marked: &HashSet<String>) {
+    /// click opens one in the editor, Ctrl or Shift + click picks it.
+    fn capture_grid(&mut self, ui: &mut egui::Ui, inputs: &Inputs, readings: &ReadingMap, marked: &HashSet<String>, scores: &Scores) {
         let shown: Vec<&package::Capture> =
             inputs.captures.iter().filter(|c| self.screen.filter.as_ref().is_none_or(|f| c.phase == *f)).collect();
         let targets = inputs.phase_names();
         // A visibility zone being edited: whether it shows on each capture can be marked.
         let marking = self.screen.draft.kind == IndicatorKind::Visibility && self.screen.draft.rect().is_some();
-        let mut delete = None;
-        let mut moved = None;
+        let drawn = drawn_capture(&self.screen.draft, inputs);
+        let mut delete = Vec::new();
+        let mut moved = Vec::new();
         let gap = 6.0;
         let columns = 3;
         let width = ((ui.available_width() - gap * (columns as f32 - 1.0)) / columns as f32).floor();
@@ -1177,59 +1453,94 @@ impl App {
             ui.horizontal_top(|ui| {
                 ui.spacing_mut().item_spacing.x = gap;
                 for capture in row {
-                    let Some((frame, texture)) = self.screen.captures.get(&capture.file) else { continue };
-                    let selected = self.screen.selected.as_deref() == Some(capture.file.as_str());
+                    let st = &mut self.screen;
+                    let Some((frame, texture)) = st.captures.get(&capture.file) else { continue };
+                    let selected = st.selected.as_deref() == Some(capture.file.as_str());
+                    let picked = st.picked.contains(&capture.file);
                     ui.allocate_ui_with_layout(Vec2::new(width, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
                         ui.set_width(width);
                         ui.spacing_mut().item_spacing.y = 2.0;
-                        let response = thumbnail(ui, texture, image_size(width, frame), selected)
-                            .on_hover_text(if marking {
-                                "Open it in the editor; right-click to mark whether the indicator shows on it, file it under another phase or delete it"
-                            } else {
-                                "Open it in the editor; right-click to file it under another phase or delete it"
-                            });
+                        let response = thumbnail(ui, texture, image_size(width, frame), selected, picked).on_hover_text(if marking {
+                            "Open it in the editor; Ctrl or Shift + click to pick several; right-click to mark whether the indicator shows on it, file it under another phase or delete it"
+                        } else {
+                            "Open it in the editor; Ctrl or Shift + click to pick several; right-click to file it under another phase or delete it"
+                        });
                         if marked.contains(&capture.file) {
                             tag(ui, response.rect.right_top() + Vec2::new(-3.0, 3.0), egui::Align2::RIGHT_TOP, "📍".to_owned(), ACCENT_TEXT);
                         }
-                        let draft = &mut self.screen.draft;
-                        let (shown, hidden) = (draft.shown_on.contains(&capture.file), draft.hidden_on.contains(&capture.file));
-                        if marking && (shown || hidden) {
-                            let (text, color) = if shown { ("👁", OK) } else { ("⊘", DANGER) };
-                            tag(ui, response.rect.left_top() + Vec2::new(3.0, 3.0), egui::Align2::LEFT_TOP, text.to_owned(), color);
+                        let reading = readings.get(&capture.file);
+                        let draft = &st.draft;
+                        let mark = if drawn.as_ref() == Some(&capture.file) || draft.shown_on.contains(&capture.file) {
+                            Some(true)
+                        } else {
+                            draft.hidden_on.contains(&capture.file).then_some(false)
+                        };
+                        if let Some(mark) = mark.filter(|_| marking) {
+                            // Red when what it reads says otherwise.
+                            let wrong = scores.judged && reading.and_then(|r| r.shown).is_some_and(|r| r != mark);
+                            let text = match (mark, wrong) {
+                                (true, false) => "👁",
+                                (true, true) => "👁 reads hidden",
+                                (false, false) => "⊘",
+                                (false, true) => "⊘ reads shown",
+                            };
+                            tag(ui, response.rect.left_top() + Vec2::new(3.0, 3.0), egui::Align2::LEFT_TOP, text.to_owned(), if wrong { DANGER_TEXT } else if mark { OK } else { MUTED });
+                        }
+                        if picked {
+                            tag(ui, response.rect.left_bottom() + Vec2::new(3.0, -3.0), egui::Align2::LEFT_BOTTOM, "✔".to_owned(), ACCENT_TEXT);
                         }
                         if response.clicked() {
-                            self.screen.selected = Some(capture.file.clone());
+                            let modifiers = ui.input(|i| i.modifiers);
+                            if modifiers.command {
+                                if !st.picked.remove(&capture.file) {
+                                    st.picked.insert(capture.file.clone());
+                                }
+                            } else if modifiers.shift {
+                                let at = |file: Option<&String>| shown.iter().position(|c| Some(&c.file) == file);
+                                let (from, to) = (at(st.anchor.as_ref()).unwrap_or(0), at(Some(&capture.file)).unwrap_or(0));
+                                st.picked.extend(shown[from.min(to)..=from.max(to)].iter().map(|c| c.file.clone()));
+                            } else {
+                                st.picked.clear();
+                                st.selected = Some(capture.file.clone());
+                            }
+                            st.anchor = Some(capture.file.clone());
+                            st.confirm_delete_picked = false;
                         }
+                        // On a capture picked, for all those picked.
+                        let group: Vec<String> = if picked { st.picked.iter().cloned().collect() } else { vec![capture.file.clone()] };
+                        let several = if group.len() > 1 { format!(" ({})", group.len()) } else { String::new() };
                         response.context_menu(|ui| {
                             if marking {
-                                let draft = &mut self.screen.draft;
-                                if ui.selectable_label(shown, "👁 Shown here").on_hover_text("The indicator edited is on this capture, in its zone").clicked() {
-                                    draft.hidden_on.retain(|f| *f != capture.file);
-                                    if shown { draft.shown_on.retain(|f| *f != capture.file) } else { draft.shown_on.push(capture.file.clone()) }
+                                let draft = &mut st.draft;
+                                let all = |list: &[String]| group.iter().all(|f| list.contains(f) || drawn.as_ref() == Some(f));
+                                let (shown, hidden) = (all(&draft.shown_on), all(&draft.hidden_on));
+                                let help = "The indicator edited is on this capture, in its zone (again: unmark)";
+                                if ui.selectable_label(shown, format!("👁 Shown here{several}")).on_hover_text(help).clicked() {
+                                    draft.mark(&group, (!shown).then_some(true), drawn.as_deref());
                                     ui.close();
                                 }
-                                if ui.selectable_label(hidden, "⊘ Not shown here").on_hover_text("The indicator edited is not on this capture").clicked() {
-                                    draft.shown_on.retain(|f| *f != capture.file);
-                                    if hidden { draft.hidden_on.retain(|f| *f != capture.file) } else { draft.hidden_on.push(capture.file.clone()) }
+                                let help = "The indicator edited is not on this capture (again: unmark)";
+                                if ui.selectable_label(hidden, format!("⊘ Not shown here{several}")).on_hover_text(help).clicked() {
+                                    draft.mark(&group, (!hidden).then_some(false), drawn.as_deref());
                                     ui.close();
                                 }
                                 ui.separator();
                             }
                             for other in targets.iter().filter(|o| **o != capture.phase) {
-                                if ui.button(format!("Move to {other}")).clicked() {
-                                    moved = Some((capture.file.clone(), other.clone()));
+                                if ui.button(format!("Move to {other}{several}")).clicked() {
+                                    moved.extend(group.iter().map(|f| (f.clone(), other.clone())));
                                 }
                             }
-                            if ui.button("Delete").clicked() {
-                                delete = Some(capture.file.clone());
+                            if ui.button(format!("Delete{several}")).clicked() {
+                                delete.extend(group.iter().cloned());
                             }
                         });
                         let (phase, color) = if capture.phase.is_empty() { ("to sort", WARN) } else { (capture.phase.as_str(), MUTED) };
                         ui.horizontal_wrapped(|ui| {
                             ui.spacing_mut().item_spacing = Vec2::new(4.0, 0.0);
                             ui.label(RichText::new(phase).color(color).size(11.5));
-                            if let Some((text, color)) = readings.get(&capture.file) {
-                                ui.label(RichText::new(text).color(*color).size(11.5).strong());
+                            if let Some(r) = reading {
+                                ui.label(RichText::new(&r.text).color(r.color).size(11.5).strong()).on_hover_text(&r.detail);
                             }
                         });
                     });
@@ -1237,10 +1548,13 @@ impl App {
             });
             ui.add_space(4.0);
         }
-        if let Some(file) = delete {
+        if !delete.is_empty() || !moved.is_empty() {
+            self.screen.picked.clear();
+        }
+        for file in delete {
             self.send(Command::DeleteCapture { dir: inputs.dir.clone(), file });
         }
-        if let Some((file, phase)) = moved {
+        for (file, phase) in moved {
             self.send(Command::MoveCapture { dir: inputs.dir.clone(), file, phase });
         }
     }
@@ -1500,9 +1814,9 @@ impl App {
                                 for (n, &i) in indicator_zones.iter().enumerate() {
                                     let on = draft.editing == Some(i);
                                     let phase = inputs.zones[i].phase.as_deref().unwrap_or("any phase");
-                                    let hover = if on { "Leave this zone" } else { "Edit this zone, on its capture" };
+                                    let hover = if on { "Leave this zone" } else { "Edit this zone" };
                                     if ui.selectable_label(on, format!("{} · {phase}", n + 1)).on_hover_text(hover).clicked() {
-                                        target = Some(if on { Target::Indicator(name.clone()) } else { Target::Zone(i, true) });
+                                        target = Some(if on { Target::Indicator(name.clone()) } else { Target::Zone(i) });
                                     }
                                 }
                                 let adding = draft.editing.is_none() && draft.rect().is_some();
@@ -1561,8 +1875,13 @@ impl App {
                             .on_hover_text("Also Ctrl + wheel over the image; drag with the middle button to move around");
                         ui.label(muted("Zoom"));
                         ui.add_space(8.0);
-                        ui.checkbox(&mut st.hide_zones, "Hide zones").on_hover_text("Hide every zone drawn, to see the image (also H)");
-                        ui.add_enabled(!st.hide_zones, egui::Checkbox::new(&mut st.show_others, "Other indicators")).on_hover_text("Also outline the other indicators' zones; click one to edit it");
+                        ui.add_enabled(!st.hide_zones, egui::Checkbox::new(&mut st.show_others, "Other indicators"))
+                            .on_hover_text("Also outline the other indicators' zones; click one to edit it");
+                        ui.add_enabled(!st.hide_zones, egui::Checkbox::new(&mut st.show_siblings, "Other zones"))
+                            .on_hover_text("Also outline this indicator's other zones, not only the one edited; click one to edit it");
+                        if st.hide_zones && ui.small_button("Zones hidden (H)").on_hover_text("Show the zones again").clicked() {
+                            st.hide_zones = false;
+                        }
                     });
                 });
 
@@ -1715,6 +2034,11 @@ impl App {
                             draft.grab = None;
                         }
                     }
+                    // Whether the image outlines a zone other than the one edited.
+                    let outlined = |zone: &Zone| {
+                        let same = indicator_name.as_deref() == Some(zone.indicator.as_str());
+                        !st.hide_zones && if same { st.show_siblings } else { st.show_others }
+                    };
                     // A click on another indicator's zone, or one of this indicator, opens it (not while clicking a path).
                     if response.clicked() && draft.picking.is_none() && !(can_draw && draft.traced()) {
                         if let Some(p) = response.interact_pointer_pos() {
@@ -1722,19 +2046,18 @@ impl App {
                                 .zones
                                 .iter()
                                 .enumerate()
-                                .filter(|(i, z)| draft.editing != Some(*i) && on_image(area, z.rect).expand(3.0).contains(p))
+                                .filter(|(i, z)| draft.editing != Some(*i) && outlined(z) && on_image(area, z.rect).expand(3.0).contains(p))
                                 .min_by(|(_, a), (_, b)| (a.rect[2] * a.rect[3]).total_cmp(&(b.rect[2] * b.rect[3])))
                                 .map(|(i, _)| i);
                             if let Some(i) = hit {
-                                target = Some(Target::Zone(i, false));
+                                target = Some(Target::Zone(i));
                             }
                         }
                     }
                     // The other zones; their name and reading when hovered.
                     for (i, zone) in inputs.zones.iter().enumerate() {
                         let same = indicator_name.as_deref() == Some(zone.indicator.as_str());
-                        let shown = !st.hide_zones && (same || st.show_others);
-                        if draft.editing == Some(i) || !shown {
+                        if draft.editing == Some(i) || !outlined(zone) {
                             continue;
                         }
                         let r = on_image(area, zone.rect);
@@ -2593,7 +2916,7 @@ impl App {
             if let Some((g, place)) = st.applied(inputs) {
                 let name = st.draft.name.clone();
                 match place {
-                    Some(i) => st.open_zone(i, &g, false),
+                    Some(i) => st.open_zone(i, &g),
                     None => st.select_indicator(&name, &g),
                 }
                 st.saved_at = now;
@@ -2602,7 +2925,7 @@ impl App {
         }
         if cancel {
             match (indicator_name, st.draft.editing) {
-                (Some(_), Some(i)) => st.open_zone(i, inputs, false),
+                (Some(_), Some(i)) => st.open_zone(i, inputs),
                 (Some(name), None) => st.select_indicator(&name, inputs),
                 (None, _) => st.draft = Draft { zoom: st.draft.zoom, ..Draft::default() },
             }
@@ -2616,11 +2939,14 @@ impl App {
 }
 
 /// A capture's thumbnail, outlined when selected.
-fn thumbnail(ui: &mut egui::Ui, texture: &egui::TextureHandle, size: Vec2, selected: bool) -> egui::Response {
+fn thumbnail(ui: &mut egui::Ui, texture: &egui::TextureHandle, size: Vec2, selected: bool, picked: bool) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     egui::Image::new(texture).corner_radius(4.0).paint_at(ui, rect);
     let painter = ui.painter();
-    if selected {
+    if picked {
+        painter.rect_filled(rect, 4.0, ACCENT.gamma_multiply(0.25));
+        painter.rect_stroke(rect, 4.0, Stroke::new(2.0, ACCENT_TEXT), StrokeKind::Outside);
+    } else if selected {
         painter.rect_stroke(rect, 4.0, Stroke::new(2.0, ACCENT), StrokeKind::Outside);
     } else if response.hovered() {
         painter.rect_stroke(rect, 4.0, Stroke::new(1.0, TEXT), StrokeKind::Outside);

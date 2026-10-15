@@ -566,7 +566,7 @@ pub fn measure(zone: &Zone, frame: &Frame) -> Option<f32> {
 
 /// How full a bar is, and how much of its drawn length was found (1 without
 /// the empty color); None when too little was found.
-fn bar_reading(zone: &Zone, frame: &Frame) -> Option<(f32, f32)> {
+pub fn bar_reading(zone: &Zone, frame: &Frame) -> Option<(f32, f32)> {
     if has_look(zone) {
         let (fill, cost, _) = look_fill(zone, frame);
         return (cost <= zone.tolerance * LOOK_FOUND).then_some((fill, 1.0 - cost / zone.tolerance));

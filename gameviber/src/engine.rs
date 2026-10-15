@@ -155,6 +155,8 @@ pub enum Command {
     PlaySession { path: PathBuf, outputs: SessionOutputs, from: f64, speed: f64 },
     StopSession,
     DeleteRecording(PathBuf),
+    /// Gives a recording a name (None: named after its game) and a game.
+    EditRecording { path: PathBuf, name: Option<String>, game: Option<String> },
     /// Where the game's sound is captured from.
     SetAudio(AudioSource),
     /// Downloads a phase model.
@@ -967,6 +969,16 @@ impl Engine {
                 match session::delete(&path) {
                     Ok(()) => log::info!("recording {} deleted", path.display()),
                     Err(e) => log::error!("cannot delete {}: {e}", path.display()),
+                }
+                self.refresh_recordings();
+            }
+            Command::EditRecording { path, name, game } => {
+                let edited = session::edit(&path, |header| {
+                    header.name = name;
+                    header.game = game;
+                });
+                if let Err(e) = edited {
+                    log::error!("cannot change {}: {e:#}", path.display());
                 }
                 self.refresh_recordings();
             }

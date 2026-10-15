@@ -55,10 +55,61 @@ const INDICATOR: egui::Color32 = egui::Color32::from_rgb(0xb4, 0x8c, 0xff);
 /// About what an image of the game takes as JPEG, for the estimates.
 const IMAGE_BYTES: f64 = 35_000.0;
 
+/// How the recordings are listed.
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum Grouping {
+    #[default]
+    Game,
+    Mode,
+    Month,
+    None,
+}
+
+impl Grouping {
+    const ALL: [Grouping; 4] = [Grouping::Game, Grouping::Mode, Grouping::Month, Grouping::None];
+
+    fn label(self) -> &'static str {
+        match self {
+            Grouping::Game => "By game",
+            Grouping::Mode => "By mode",
+            Grouping::Month => "By month",
+            Grouping::None => "All together",
+        }
+    }
+
+    /// The group a recording is listed in.
+    fn of(self, info: &RecordingInfo) -> String {
+        match self {
+            Grouping::Game => info.header.game.clone().unwrap_or_else(|| NO_GAME.to_owned()),
+            Grouping::Mode => info.header.mode.clone(),
+            Grouping::Month => info.header.started.get(..7).unwrap_or(&info.header.started).to_owned(),
+            Grouping::None => String::new(),
+        }
+    }
+}
+
+/// The group of the recordings made without a game.
+const NO_GAME: &str = "No game";
+
+/// A recording being renamed or given another game.
+struct Edit {
+    path: PathBuf,
+    name: String,
+    game: Option<String>,
+    /// Just opened: the name takes the keyboard.
+    fresh: bool,
+}
+
 #[derive(Default)]
 pub struct State {
     /// Recording whose deletion is being confirmed.
     deleting: Option<PathBuf>,
+    /// Group whose recordings are all being deleted, once confirmed.
+    deleting_group: Option<String>,
+    editing: Option<Edit>,
+    grouping: Grouping,
+    /// Only the recordings whose name, game, mode or date contain it.
+    search: String,
     /// The recording open in the player.
     player: Option<Player>,
     /// The indicator followed in the timeline, kept from one recording to the next.
@@ -487,45 +538,84 @@ impl App {
         eyebrow(ui, "Recordings");
         if s.recordings.is_empty() {
             ui.label(muted("No recording yet."));
+            return;
         }
-        let mut command = None;
+        let state = &mut self.creator.sessions;
+        ui.horizontal(|ui| {
+            egui::ComboBox::from_id_salt("recordings-grouping").selected_text(state.grouping.label()).show_ui(ui, |ui| {
+                for grouping in Grouping::ALL {
+                    ui.selectable_value(&mut state.grouping, grouping, grouping.label());
+                }
+            });
+            ui.add(egui::TextEdit::singleline(&mut state.search).hint_text("🔍 Search a name, a game, a mode, a date").desired_width(260.0));
+            let total: u64 = s.recordings.iter().map(|r| r.size).sum();
+            ui.label(muted(format!("{} recordings · {}", s.recordings.len(), bytes(total as f64))).size(12.0));
+        });
+        ui.add_space(4.0);
+
+        let search = state.search.trim().to_lowercase();
+        let found: Vec<&RecordingInfo> = s.recordings.iter().filter(|r| search.is_empty() || matches(r, &search)).collect();
+        if found.is_empty() {
+            ui.label(muted("No recording matches."));
+        }
+        // The active mode's game (or the mode) first, then the groups by their newest recording; without a game last.
+        let first = match state.grouping {
+            Grouping::Game => super::library::mode_game(s).map(|g| g.name.clone()),
+            Grouping::Mode => s.mode.info.as_ref().map(|m| m.name.clone()),
+            Grouping::Month | Grouping::None => None,
+        };
+        let mut groups: Vec<(String, Vec<&RecordingInfo>)> = Vec::new();
+        for info in found {
+            let group = state.grouping.of(info);
+            match groups.iter_mut().find(|(g, _)| *g == group) {
+                Some((_, list)) => list.push(info),
+                None => groups.push((group, vec![info])),
+            }
+        }
+        groups.sort_by_key(|(g, _)| (first.as_ref() != Some(g), state.grouping == Grouping::Game && g == NO_GAME));
+
+        let games: Vec<&str> = s.games.iter().map(|g| g.name.as_str()).collect();
+        let grouping = state.grouping;
+        let few = groups.len() <= 3;
+        let mut commands = Vec::new();
         let mut open = None;
-        for info in &s.recordings {
-            card(PANEL).inner_margin(Margin::same(8)).show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.horizontal(|ui| {
-                    ui.vertical(|ui| {
-                        ui.label(RichText::new(title(info)).strong());
-                        let mut details = format!("{} · {} · mode {}", info.header.started, clock(info.header.duration), info.header.mode);
-                        if info.header.frames > 0 {
-                            details.push_str(&format!(" · {} images", info.header.frames));
-                        }
-                        if info.header.marks > 0 {
-                            details.push_str(&format!(" · {} marked", info.header.marks));
-                        }
-                        details.push_str(&format!(" · {}", bytes(info.size as f64)));
-                        ui.label(muted(details).size(12.0));
-                    });
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if self.creator.sessions.deleting.as_ref() == Some(&info.path) {
-                            if ui.button(RichText::new("Delete").color(DANGER_TEXT)).clicked() {
-                                command = Some(Command::DeleteRecording(info.path.clone()));
-                                self.creator.sessions.deleting = None;
+        for (i, (group, list)) in groups.iter().enumerate() {
+            if grouping == Grouping::None {
+                for info in list {
+                    recording_row(ui, state, info, grouping, &games, &mut commands, &mut open);
+                }
+                continue;
+            }
+            let size: u64 = list.iter().map(|r| r.size).sum();
+            let count = if list.len() == 1 { "1 recording".to_owned() } else { format!("{} recordings", list.len()) };
+            let header = RichText::new(format!("{group}  ·  {count} · {}", bytes(size as f64))).strong();
+            let mut collapsing = egui::CollapsingHeader::new(header).id_salt(("recordings-group", grouping as u8, group)).default_open(few || i == 0);
+            if !search.is_empty() {
+                collapsing = collapsing.open(Some(true));
+            }
+            collapsing.show(ui, |ui| {
+                for info in list {
+                    recording_row(ui, state, info, grouping, &games, &mut commands, &mut open);
+                }
+                if list.len() > 1 {
+                    ui.horizontal(|ui| {
+                        if state.deleting_group.as_ref() == Some(group) {
+                            ui.label(RichText::new(format!("Delete these {} recordings and their images?", list.len())).color(DANGER_TEXT));
+                            if ui.button(RichText::new("Delete them").color(DANGER_TEXT)).clicked() {
+                                commands.extend(list.iter().map(|r| Command::DeleteRecording(r.path.clone())));
+                                state.deleting_group = None;
                             }
                             if ui.button("Cancel").clicked() {
-                                self.creator.sessions.deleting = None;
+                                state.deleting_group = None;
                             }
-                        } else if ui.button("🗑").on_hover_text("Delete this recording").clicked() {
-                            self.creator.sessions.deleting = Some(info.path.clone());
-                        }
-                        if ui.add(primary("▶ Watch")).on_hover_text("Replayed into the active mode, as it is now").clicked() {
-                            open = Some(info.clone());
+                        } else if ui.small_button(format!("🗑 Delete these {}", list.len())).on_hover_text("Every recording listed here, to free space").clicked() {
+                            state.deleting_group = Some(group.clone());
                         }
                     });
-                });
+                }
             });
         }
-        if let Some(command) = command {
+        for command in commands {
             self.send(command);
         }
         if let Some(info) = open {
@@ -587,6 +677,10 @@ impl App {
         let key = self.replayed_mode(s);
         let commands = self.commands.clone();
         let Some(p) = self.creator.sessions.player.as_mut() else { return };
+        // Renamed or filed under another game meanwhile.
+        if let Some(info) = s.recordings.iter().find(|r| r.path == p.info.path && r.header != p.info.header) {
+            p.info.header = info.header.clone();
+        }
         p.poll(key);
         if p.playing {
             // The toys' clock leads once they play from where the player is.
@@ -628,7 +722,7 @@ impl App {
         let info = p.info.clone();
         ui.horizontal_wrapped(|ui| {
             close = ui.button("‹ Recordings").clicked();
-            ui.label(RichText::new(title(&info)).size(17.0).strong());
+            ui.label(RichText::new(info.title()).size(17.0).strong());
             ui.label(muted(format!("{} · recorded with {}", info.header.started, info.header.mode)));
         });
         let replayed = match (&p.simulating, &p.simulation, &s.mode.info) {
@@ -1458,6 +1552,115 @@ fn legend(ui: &mut egui::Ui, color: egui::Color32, text: &str) {
     ui.label(muted(text).size(11.0));
 }
 
+/// A recording in the list: what it is, renaming it, watching it, deleting it.
+fn recording_row(
+    ui: &mut egui::Ui,
+    state: &mut State,
+    info: &RecordingInfo,
+    grouping: Grouping,
+    games: &[&str],
+    commands: &mut Vec<Command>,
+    open: &mut Option<RecordingInfo>,
+) {
+    card(PANEL).inner_margin(Margin::same(8)).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        if let Some(edit) = state.editing.as_mut().filter(|e| e.path == info.path) {
+            let (save, cancel) = edit_row(ui, edit, info, games);
+            if save {
+                let name = Some(edit.name.trim().to_owned()).filter(|n| !n.is_empty());
+                commands.push(Command::EditRecording { path: info.path.clone(), name, game: edit.game.clone() });
+            }
+            if save || cancel {
+                state.editing = None;
+            }
+            return;
+        }
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(info.title()).strong());
+                    if ui.small_button("✏").on_hover_text("Rename it, or file it under another game").clicked() {
+                        let name = info.header.name.clone().unwrap_or_default();
+                        state.editing = Some(Edit { path: info.path.clone(), name, game: info.header.game.clone(), fresh: true });
+                    }
+                });
+                let mut details = format!("{} · {}", info.header.started, clock(info.header.duration));
+                if let Some(game) = info.header.game.as_ref().filter(|_| grouping != Grouping::Game && info.header.name.is_some()) {
+                    details.push_str(&format!(" · {game}"));
+                }
+                if grouping != Grouping::Mode {
+                    details.push_str(&format!(" · mode {}", info.header.mode));
+                }
+                if info.header.frames > 0 {
+                    details.push_str(&format!(" · {} images", info.header.frames));
+                }
+                if info.header.marks > 0 {
+                    details.push_str(&format!(" · {} marked", info.header.marks));
+                }
+                details.push_str(&format!(" · {}", bytes(info.size as f64)));
+                ui.label(muted(details).size(12.0));
+            });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if state.deleting.as_ref() == Some(&info.path) {
+                    if ui.button(RichText::new("Delete").color(DANGER_TEXT)).clicked() {
+                        commands.push(Command::DeleteRecording(info.path.clone()));
+                        state.deleting = None;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        state.deleting = None;
+                    }
+                } else if ui.button("🗑").on_hover_text("Delete this recording").clicked() {
+                    state.deleting = Some(info.path.clone());
+                }
+                if ui.add(primary("▶ Watch")).on_hover_text("Replayed into the active mode, as it is now").clicked() {
+                    *open = Some(info.clone());
+                }
+            });
+        });
+    });
+}
+
+/// A recording's name and game being edited; whether to save them, or to give up.
+fn edit_row(ui: &mut egui::Ui, edit: &mut Edit, info: &RecordingInfo, games: &[&str]) -> (bool, bool) {
+    let mut save = false;
+    let mut cancel = false;
+    ui.horizontal_wrapped(|ui| {
+        let unnamed = info.header.game.as_deref().unwrap_or(&info.header.mode);
+        let field = ui.add(egui::TextEdit::singleline(&mut edit.name).hint_text(unnamed).desired_width(240.0));
+        if std::mem::take(&mut edit.fresh) {
+            field.request_focus();
+        }
+        save |= field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        cancel |= ui.input(|i| i.key_pressed(egui::Key::Escape));
+        ui.label(muted("game"));
+        let mut choices: Vec<&str> = games.to_vec();
+        // The executable it was recorded with, when no game was linked to it.
+        if let Some(game) = info.header.game.as_deref().filter(|g| !choices.contains(g)) {
+            choices.push(game);
+        }
+        egui::ComboBox::from_id_salt(("recording-game", &info.path))
+            .selected_text(edit.game.as_deref().unwrap_or(NO_GAME))
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut edit.game, None, NO_GAME);
+                for game in choices {
+                    ui.selectable_value(&mut edit.game, Some(game.to_owned()), game);
+                }
+            })
+            .response
+            .on_hover_text("Its images are offered as captures to the modes of this game");
+        save |= ui.add(primary("Save")).clicked();
+        cancel |= ui.button("Cancel").clicked();
+    });
+    ui.label(muted(format!("{} · {} · mode {}", info.header.started, clock(info.header.duration), info.header.mode)).size(12.0));
+    (save, cancel)
+}
+
+/// A recording's name, game, mode or date contains `search` (lowercase).
+fn matches(info: &RecordingInfo, search: &str) -> bool {
+    let h = &info.header;
+    [h.name.as_deref(), h.game.as_deref(), Some(&h.mode), Some(&h.started)].into_iter().flatten().any(|t| t.to_lowercase().contains(search))
+}
+
 /// The recordings of `game` with images of it, newest first.
 pub(super) fn game_recordings<'a>(s: &'a Shared, game: &'a str) -> impl Iterator<Item = &'a RecordingInfo> {
     s.recordings.iter().filter(move |r| r.header.frames > 0 && r.header.game.as_deref() == Some(game))
@@ -1483,11 +1686,6 @@ pub(super) fn situations(ui: &mut egui::Ui, inputs: &Inputs) {
         lines.push("fights, exploring, cutscenes, menus, full and low health, dying".to_owned());
     }
     ui.label(RichText::new(format!("Go through {}.", lines.join("; "))).size(12.5));
-}
-
-/// The game a recording comes from, else its mode.
-fn title(info: &RecordingInfo) -> &str {
-    info.header.game.as_deref().unwrap_or(&info.header.mode)
 }
 
 /// "35 MB"

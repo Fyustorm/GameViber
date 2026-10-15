@@ -68,6 +68,9 @@ pub struct Header {
     /// its images when it is replayed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub zones: Option<Vec<Zone>>,
+    /// The name the player gave it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -119,6 +122,13 @@ pub struct RecordingInfo {
     pub size: u64,
 }
 
+impl RecordingInfo {
+    /// The name the player gave it, else the game it comes from, else its mode.
+    pub fn title(&self) -> &str {
+        self.header.name.as_deref().or(self.header.game.as_deref()).unwrap_or(&self.header.mode)
+    }
+}
+
 pub fn recordings_dir() -> PathBuf {
     config::config_dir().join("recordings")
 }
@@ -140,6 +150,21 @@ pub fn delete(path: &Path) -> io::Result<()> {
     if frames.is_dir() {
         fs::remove_dir_all(frames)?;
     }
+    Ok(())
+}
+
+/// Changes the header of the recording at `path` (its name, its game); its
+/// changes and images stay as they are.
+pub fn edit(path: &Path, change: impl FnOnce(&mut Header)) -> anyhow::Result<()> {
+    let text = fs::read_to_string(path)?;
+    let (first, rest) = text.split_once('\n').unwrap_or((&text, ""));
+    let mut header: Header = serde_json::from_str(first)?;
+    anyhow::ensure!(header.version <= FORMAT_VERSION, "recording made by a newer GameViber");
+    change(&mut header);
+    // Written beside it, then moved over it: a recording is never left half written.
+    let new = path.with_extension(format!("{EXTENSION}.new"));
+    config::write_file(&new, &format!("{}\n{rest}", serde_json::to_string(&header)?))?;
+    fs::rename(&new, path)?;
     Ok(())
 }
 
@@ -632,6 +657,7 @@ impl Recorder {
                 marks,
                 frames: frames.len() as u32,
                 zones: self.zones.0.clone().filter(|_| self.zones.1 <= from),
+                name: None,
             },
             changes,
             frames,
@@ -764,6 +790,15 @@ mod tests {
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].header.game.as_deref(), Some("Game"));
         assert_eq!(listed[0].header.duration, 2.0);
+
+        edit(&path, |h| {
+            h.name = Some("Boss fight".into());
+            h.game = Some("Other game".into());
+        })
+        .unwrap();
+        let listed = list_in(&dir);
+        assert_eq!((listed[0].title(), listed[0].header.game.as_deref()), ("Boss fight", Some("Other game")));
+        assert_eq!(listed[0].path, path, "renamed in its header, not on the disk");
 
         let mut player = Player::new(Session::open(&path).unwrap(), 100.0);
         let mut pad = PadState::default();
