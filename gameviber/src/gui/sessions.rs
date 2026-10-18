@@ -40,6 +40,8 @@ const RECENT_EVENTS_SECS: f64 = 2.0;
 const SPEEDS: [f64; 4] = [0.25, 0.5, 1.0, 2.0];
 /// Seconds Shift + an arrow moves by.
 const JUMP_SECS: f64 = 5.0;
+/// The shortest part of the session the timeline zooms on.
+const MIN_VIEW_SECS: f64 = 5.0;
 /// The player's keyboard shortcuts, as shown to players.
 const SHORTCUTS: &str = "Space: play or pause\n\
     Left / Right: previous or next image\n\
@@ -49,7 +51,8 @@ const SHORTCUTS: &str = "Space: play or pause\n\
     + −: faster or slower\n\
     P: pick the image shown (or unpick it)\n\
     A: add the images picked (else the one shown) to the captures\n\
-    Esc: unpick all";
+    Esc: unpick all\n\
+    Ctrl + wheel on the timeline: zoom · Shift + wheel: scroll";
 /// The indicator followed in the timeline.
 const INDICATOR: egui::Color32 = egui::Color32::from_rgb(0xb4, 0x8c, 0xff);
 /// About what an image of the game takes as JPEG, for the estimates.
@@ -168,6 +171,10 @@ struct Player {
     outputs: Option<SessionOutputs>,
     /// Seconds into the session.
     position: f64,
+    /// The part of the session the timeline shows: from, length (s); and
+    /// whether it moves to the moment shown, gone elsewhere (a seek).
+    view: (f64, f64),
+    follow: bool,
     playing: bool,
     speed: f64,
     /// What the toys were asked to play (the channels, at what speed), whether
@@ -195,6 +202,7 @@ impl Player {
         std::thread::spawn(move || {
             let _ = tx.send(Session::open(&path).map_err(|e| format!("{e:#}")));
         });
+        let view = (0.0, info.header.duration.max(0.001));
         Self {
             info,
             session: None,
@@ -211,6 +219,8 @@ impl Player {
             embedding_progress: Arc::default(),
             outputs: None,
             position: 0.0,
+            view,
+            follow: false,
             playing: false,
             speed: 1.0,
             sent: None,
@@ -367,6 +377,21 @@ impl Player {
     fn seek(&mut self, t: f64) {
         self.position = t.clamp(0.0, self.duration());
         self.jumped = true;
+        self.follow = true;
+    }
+
+    /// Whether the timeline is zoomed on a part of the session.
+    fn zoomed(&self) -> bool {
+        self.view.1 < self.duration()
+    }
+
+    /// Moves the timeline to the moment shown, while it plays or after a seek.
+    fn follow(&mut self) {
+        let (from, length) = self.view;
+        if (self.playing || self.follow) && (self.position < from || self.position > from + length) {
+            self.view.0 = (self.position - length * 0.2).clamp(0.0, (self.duration() - length).max(0.0));
+        }
+        self.follow = false;
     }
 
     fn toggle(&mut self) {
@@ -1101,8 +1126,12 @@ fn transport(ui: &mut egui::Ui, p: &mut Player, cap: f64, session: &Session) {
         };
         (names, track)
     };
+    p.follow();
+    let mut view = p.view;
     let followed = p.indicator.as_deref().map(|name| (name, track.as_slice()));
-    if let Some(t) = timeline(ui, p, cap, session, followed) {
+    let seek = timeline(ui, p, &mut view, cap, session, followed);
+    p.view = view;
+    if let Some(t) = seek {
         p.seek(t);
     }
     ui.horizontal(|ui| {
@@ -1140,6 +1169,13 @@ fn transport(ui: &mut egui::Ui, p: &mut Player, cap: f64, session: &Session) {
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.label(muted("⌨ Shortcuts").size(11.0)).on_hover_text(SHORTCUTS);
+            if p.zoomed() {
+                if ui.small_button("Whole session").on_hover_text("Zoom the timeline out (Ctrl + wheel zooms in)").clicked() {
+                    p.view = (0.0, p.duration().max(0.001));
+                }
+            } else {
+                ui.label(muted("Ctrl + wheel: zoom").size(11.0));
+            }
         });
     });
 }
@@ -1170,24 +1206,66 @@ fn indicator_text(value: IndicatorValue) -> String {
     }
 }
 
-/// The whole session: the game's rumble and what the mode sent, the indicator
-/// followed (its name and when it changed), marked moments, images picked, and
-/// the moment shown; returns where it was clicked or dragged to.
-fn timeline(ui: &mut egui::Ui, p: &Player, cap: f64, session: &Session, indicator: Option<(&str, &[(f64, IndicatorValue)])>) -> Option<f64> {
+/// The session, or the part of it zoomed on (`view`): the game's rumble and
+/// what the mode sent, the indicator followed (its name and when it changed),
+/// marked moments, images picked, and the moment shown; under it, when zoomed,
+/// the whole session and the part shown, to drag; returns where it was clicked
+/// or dragged to.
+fn timeline(
+    ui: &mut egui::Ui,
+    p: &Player,
+    view: &mut (f64, f64),
+    cap: f64,
+    session: &Session,
+    indicator: Option<(&str, &[(f64, IndicatorValue)])>,
+) -> Option<f64> {
     let duration = p.duration().max(0.001);
     let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 64.0), Sense::click_and_drag());
+    // Zoom around the pointer (Ctrl+wheel, pinch), scroll sideways (Shift+wheel);
+    // the wheel alone scrolls the page.
+    if response.hovered() {
+        let (zoom, scroll, pointer) = ui.input(|i| (i.zoom_delta(), i.smooth_scroll_delta, i.pointer.hover_pos()));
+        let (from, length) = *view;
+        if zoom != 1.0 {
+            let at = pointer.map_or(from + length / 2.0, |pos| from + ((pos.x - rect.left()) / rect.width()) as f64 * length);
+            let new = (length / zoom as f64).clamp(MIN_VIEW_SECS.min(duration), duration);
+            *view = (at - (at - from) * new / length, new);
+        } else if scroll.x != 0.0 {
+            view.0 -= scroll.x as f64 / rect.width() as f64 * length;
+        }
+    }
+    view.1 = view.1.min(duration);
+    view.0 = view.0.clamp(0.0, duration - view.1);
+    let (from, length) = *view;
+    let to = from + length;
+    let shown = |t: f64| (from..=to).contains(&t);
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, CornerRadius::same(6), BG);
     painter.rect_stroke(rect, CornerRadius::same(6), Stroke::new(1.0, LINE), StrokeKind::Inside);
-    let x_of = |t: f64| rect.left() + (t / duration).clamp(0.0, 1.0) as f32 * rect.width();
+    let x_of = |t: f64| rect.left() + ((t - from) / length).clamp(0.0, 1.0) as f32 * rect.width();
+    let t_of = |x: f32| from + ((x - rect.left()) / rect.width()) as f64 * length;
     // Under the phases' band.
     let y_of = |v: f64| rect.bottom() - 3.0 - v.clamp(0.0, 1.0) as f32 * (rect.height() - 19.0);
+    // When zoomed, a line every so often, labeled.
+    if length < duration {
+        let step = [1.0, 5.0, 10.0, 30.0, 60.0, 300.0, 600.0].into_iter().find(|s| length / s <= 8.0).unwrap_or(1800.0);
+        let mut t = (from / step).ceil() * step;
+        while t <= to {
+            let x = x_of(t);
+            painter.line_segment([Pos2::new(x, rect.top() + 15.0), Pos2::new(x, rect.bottom())], Stroke::new(1.0, LINE.gamma_multiply(0.6)));
+            painter.text(Pos2::new(x + 2.0, rect.top() + 15.0), egui::Align2::LEFT_TOP, clock(t), egui::FontId::proportional(9.5), MUTED);
+            t += step;
+        }
+    }
     // The indicator followed: a gauge as a line, shown as the background, not found as a faint warning.
     if let Some((_, track)) = indicator {
         let mut line = Vec::new();
-        for (i, (from, value)) in track.iter().enumerate() {
-            let to = track.get(i + 1).map_or(duration, |(t, _)| *t);
-            let (x0, x1) = (x_of(*from), x_of(to));
+        for (i, (start, value)) in track.iter().enumerate() {
+            let end = track.get(i + 1).map_or(duration, |(t, _)| *t);
+            if end < from || *start > to {
+                continue;
+            }
+            let (x0, x1) = (x_of(*start), x_of(end));
             let back = Rect::from_x_y_ranges(x0..=x1, rect.top() + 15.0..=rect.bottom() - 1.0);
             match value {
                 IndicatorValue::Gauge(v) => {
@@ -1206,37 +1284,27 @@ fn timeline(ui: &mut egui::Ui, p: &Player, cap: f64, session: &Session, indicato
         }
         painter.line(line, Stroke::new(1.4, INDICATOR));
     }
-    if let Some(Ok(sim)) = &p.simulation {
+    let sim = p.simulation.as_ref().and_then(|s| s.as_ref().ok());
+    let ticks = sim.map(Simulation::ticks).unwrap_or_default();
+    let names = ticks.last().map(|k| k.phases.as_slice()).unwrap_or_default();
+    let phases = phase_spans(ticks, duration);
+    if sim.is_some() {
         // The phase recognized, as a band along the top.
-        let ticks = sim.ticks();
-        let names = ticks.last().map(|k| k.phases.as_slice()).unwrap_or_default();
-        let band = |from: f64, to: f64, phase: &str| {
-            let r = Rect::from_x_y_ranges(x_of(from)..=x_of(to), rect.top() + 2.0..=rect.top() + 13.0);
+        for (start, end, phase) in phases.iter().filter(|(start, end, _)| *end >= from && *start <= to) {
+            let r = Rect::from_x_y_ranges(x_of(*start)..=x_of(*end), rect.top() + 2.0..=rect.top() + 13.0);
             painter.rect_filled(r, 2.0, phase_color(names, phase).gamma_multiply(0.45));
-            let text = painter.layout_no_wrap(phase.to_owned(), egui::FontId::proportional(10.0), TEXT);
+            let text = painter.layout_no_wrap((*phase).to_owned(), egui::FontId::proportional(10.0), TEXT);
             if text.size().x + 6.0 < r.width() {
                 painter.galley(Pos2::new(r.left() + 3.0, r.center().y - text.size().y / 2.0), text, TEXT);
             }
-        };
-        let mut start: Option<(f64, &str)> = None;
-        for k in ticks {
-            if start.map(|(_, name)| name) != k.phase.as_deref() {
-                if let Some((from, name)) = start {
-                    band(from, k.t, name);
-                }
-                start = k.phase.as_deref().map(|name| (k.t, name));
-            }
-        }
-        if let Some((from, name)) = start {
-            band(from, duration, name);
         }
         // The highest value of each column of pixels.
         let columns = (rect.width() / 2.0).max(1.0) as usize;
         let mut rumble = Vec::with_capacity(columns);
         let mut sent = Vec::with_capacity(columns);
-        let mut start = 0;
+        let mut start = ticks.partition_point(|k| k.t < from);
         for c in 0..columns {
-            let t1 = duration * (c + 1) as f64 / columns as f64;
+            let t1 = from + length * (c + 1) as f64 / columns as f64;
             let end = start + ticks[start..].partition_point(|k| k.t < t1);
             let bucket = &ticks[start..end];
             if !bucket.is_empty() {
@@ -1250,24 +1318,26 @@ fn timeline(ui: &mut egui::Ui, p: &Player, cap: f64, session: &Session, indicato
         painter.line(sent, Stroke::new(1.4, ACCENT));
     }
     for (t, change) in &session.changes {
-        if *change == Change::Mark {
+        if *change == Change::Mark && shown(*t) {
             let x = x_of(*t);
             painter.line_segment([Pos2::new(x, rect.top()), Pos2::new(x, rect.bottom())], Stroke::new(1.0, WARN.gamma_multiply(0.6)));
             painter.text(Pos2::new(x + 2.0, rect.top() + 1.0), egui::Align2::LEFT_TOP, "⚑", egui::FontId::proportional(11.0), WARN);
         }
     }
     for &i in &p.picked {
-        if let Some(frame) = session.frames.get(i) {
+        if let Some(frame) = session.frames.get(i).filter(|f| shown(f.t)) {
             let x = x_of(frame.t);
             painter.rect_filled(Rect::from_min_size(Pos2::new(x - 1.0, rect.bottom() - 6.0), Vec2::new(3.0, 6.0)), 0.0, OK);
         }
     }
-    let x = x_of(p.position);
-    painter.line_segment([Pos2::new(x, rect.top()), Pos2::new(x, rect.bottom())], Stroke::new(2.0, TEXT));
+    if shown(p.position) {
+        let x = x_of(p.position);
+        painter.line_segment([Pos2::new(x, rect.top()), Pos2::new(x, rect.bottom())], Stroke::new(2.0, TEXT));
+    }
     if response.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
-    let hover = response.hover_pos().map(|pos| ((pos.x - rect.left()) / rect.width()) as f64 * duration);
+    let hover = response.hover_pos().map(|pos| t_of(pos.x));
     let response = match hover {
         Some(t) => {
             let t = t.clamp(0.0, duration);
@@ -1279,8 +1349,56 @@ fn timeline(ui: &mut egui::Ui, p: &Player, cap: f64, session: &Session, indicato
         }
         None => response,
     };
+    if length < duration {
+        overview(ui, view, duration, p.position, &phases, names);
+    }
     let seek = response.clicked() || response.dragged();
-    seek.then(|| response.interact_pointer_pos()).flatten().map(|pos| ((pos.x - rect.left()) / rect.width()) as f64 * duration)
+    seek.then(|| response.interact_pointer_pos()).flatten().map(|pos| t_of(pos.x).clamp(0.0, duration))
+}
+
+/// When each phase was recognized: from, to (s), its name.
+fn phase_spans(ticks: &[Tick], duration: f64) -> Vec<(f64, f64, &str)> {
+    let mut spans = Vec::new();
+    let mut start: Option<(f64, &str)> = None;
+    for k in ticks {
+        if start.map(|(_, name)| name) != k.phase.as_deref() {
+            if let Some((from, name)) = start {
+                spans.push((from, k.t, name));
+            }
+            start = k.phase.as_deref().map(|name| (k.t, name));
+        }
+    }
+    if let Some((from, name)) = start {
+        spans.push((from, duration, name));
+    }
+    spans
+}
+
+/// The whole session under the zoomed timeline: its phases, the moment shown,
+/// and the part shown, which a click or a drag moves there.
+fn overview(ui: &mut egui::Ui, view: &mut (f64, f64), duration: f64, position: f64, phases: &[(f64, f64, &str)], names: &[(String, f64)]) {
+    ui.add_space(2.0);
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 12.0), Sense::click_and_drag());
+    let x_of = |t: f64| rect.left() + (t / duration).clamp(0.0, 1.0) as f32 * rect.width();
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, CornerRadius::same(3), BG);
+    for (from, to, phase) in phases {
+        let r = Rect::from_x_y_ranges(x_of(*from)..=x_of(*to), rect.top() + 2.0..=rect.bottom() - 2.0);
+        painter.rect_filled(r, 0.0, phase_color(names, phase).gamma_multiply(0.35));
+    }
+    let x = x_of(position);
+    painter.line_segment([Pos2::new(x, rect.top()), Pos2::new(x, rect.bottom())], Stroke::new(1.5, TEXT));
+    let shown = Rect::from_x_y_ranges(x_of(view.0)..=x_of(view.0 + view.1).max(x_of(view.0) + 3.0), rect.y_range());
+    painter.rect_filled(shown, CornerRadius::same(3), ACCENT.gamma_multiply(0.25));
+    painter.rect_stroke(shown, CornerRadius::same(3), Stroke::new(1.0, ACCENT), StrokeKind::Inside);
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+    }
+    let response = response.on_hover_text("The whole session: drag to move the part the timeline shows");
+    if let Some(pos) = (response.clicked() || response.dragged()).then(|| response.interact_pointer_pos()).flatten() {
+        let t = ((pos.x - rect.left()) / rect.width()) as f64 * duration;
+        view.0 = (t - view.1 / 2.0).clamp(0.0, (duration - view.1).max(0.0));
+    }
 }
 
 /// What the mode's inputs said at the moment shown, and what just happened.
