@@ -269,6 +269,10 @@ to set some up.
   of its value. When a menu over the bar looks like it empty (a dark empty
   color), set **Read only when** a visibility indicator is shown (an icon next
   to the bar) or hidden (the menu's button): the gauge is unknown otherwise.
+  A bar shown in another place in another layout (in battle and out of it)
+  gets a zone for each place, each with its own **This zone only when** (the
+  battle's interface shown, or hidden): the gauge reads in the zones whose
+  conditions hold.
   A bar in a gradient, in
   segments or made of hearts is read by its look: draw the rectangle exactly on it
   (not its icon), take its look on a capture where it is full, then add its

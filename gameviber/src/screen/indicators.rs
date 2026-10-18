@@ -647,17 +647,19 @@ pub fn reading_key(zone: &Zone) -> Zone {
         shown_on: Vec::new(),
         hidden_on: Vec::new(),
         read_when: Vec::new(),
+        zone_read_when: Vec::new(),
         phase: None,
         capture: None,
         ..zone.clone()
     }
 }
 
-/// The first of a gauge's conditions (`Zone::read_when`) that does not hold,
-/// given whether each visibility indicator is shown (None: no such
-/// indicator, its condition left out); None when they all hold.
-pub fn unmet(zone: &Zone, shown: impl Fn(&str) -> Option<bool>) -> Option<&Condition> {
-    zone.read_when.iter().find(|c| shown(&c.indicator).is_some_and(|s| s != c.shown))
+/// The first of a gauge's conditions (`Zone::read_when`, or a zone's own,
+/// `Zone::zone_read_when`) that does not hold, given whether each visibility
+/// indicator is shown (None: no such indicator, its condition left out); None
+/// when they all hold.
+pub fn unmet(conditions: &[Condition], shown: impl Fn(&str) -> Option<bool>) -> Option<&Condition> {
+    conditions.iter().find(|c| shown(&c.indicator).is_some_and(|s| s != c.shown))
 }
 
 /// Whether the visibility indicator `name` is shown on `frame` (None: no such indicator in `zones`).
@@ -1099,11 +1101,12 @@ impl IndicatorReader {
                 }
                 IndicatorKind::Gauge => {
                     let shown = |n: &str| self.seen.get(n).copied();
-                    let bars = indices.iter().map(|&k| match read(k) {
+                    // Read in the zones whose own conditions hold too.
+                    let bars = indices.iter().filter(|&&k| unmet(&zones[k].zone_read_when, shown).is_none()).map(|&k| match read(k) {
                         ZoneReading::Bar(bar) => bar,
                         ZoneReading::Similarity(_) => None,
                     });
-                    let measure = if unmet(of_indicator[0], shown).is_none() { fill_anywhere(bars) } else { None };
+                    let measure = if unmet(&of_indicator[0].read_when, shown).is_none() { fill_anywhere(bars) } else { None };
                     let missing = self.missing.entry(name.to_owned()).or_default();
                     *missing = if measure.is_none() { *missing + 1 } else { 0 };
                     let value = match (measure, previous) {
@@ -1599,6 +1602,45 @@ mod tests {
         let alone = [zones[0].clone()];
         let mut reader = IndicatorReader::default();
         assert_eq!(reader.update(&alone, &menu, 0.0), vec![("hp".to_owned(), IndicatorValue::Gauge(0.0))]);
+    }
+
+    /// The health bar is at the top in battle and at the bottom outside, where
+    /// the battle's interface leaves a full green strip: each zone is read
+    /// only in its layout.
+    #[test]
+    fn zones_are_read_only_under_their_own_conditions() {
+        let (green, dark) = ([40, 170, 130], [20, 20, 25]);
+        let strip = |x: u32, level: f32| if ((x - 10) as f32) < level * 60.0 { green } else { dark };
+        let battle = |level: f32| {
+            frame(move |x, y| match (x, y) {
+                (140..=149, 75..=84) if (x + y) % 3 != 0 => [240, 240, 240],
+                (10..=69, 10..=15) => strip(x, level),
+                (10..=69, 60..=65) => green,
+                _ => [60, 50, 40],
+            })
+        };
+        let field = |level: f32| {
+            frame(move |x, y| match (x, y) {
+                (10..=69, 60..=65) => strip(x, level),
+                _ => [60, 50, 40],
+            })
+        };
+        let button = [135.0 / 160.0, 70.0 / 90.0, 20.0 / 160.0, 18.0 / 90.0];
+        let in_battle = Zone { indicator: "battle".into(), rect: button, reference: reference(&battle(0.5), &Zone { rect: button, ..Zone::default() }), ..Zone::default() };
+        let hp = |y: f32, shown: bool| {
+            let rect = [10.0 / 160.0, y / 90.0, 60.0 / 160.0, 6.0 / 90.0];
+            let zone = Zone { indicator: "hp".into(), kind: IndicatorKind::Gauge, rect, color: green, empty_color: Some(dark), tolerance: 30.0, ..Zone::default() };
+            let zone_read_when = vec![Condition { indicator: "battle".into(), shown }];
+            Zone { length: bar_length(&zone, &battle(0.5)), zone_read_when, ..zone }
+        };
+        let zones = [hp(10.0, true), hp(60.0, false), in_battle];
+        assert_eq!(fill_anywhere([&zones[0], &zones[1]].iter().map(|z| bar_reading(z, &battle(0.25)))), Some(1.0), "the strip reads as a full bar");
+        let mut reader = IndicatorReader::default();
+        let first = reader.update(&zones, &battle(0.25), 0.0);
+        assert!(first.contains(&("hp".to_owned(), IndicatorValue::Gauge(0.25))), "{first:?}");
+        let mut reader = IndicatorReader::default();
+        let first = reader.update(&zones, &field(0.75), 0.0);
+        assert!(first.contains(&("hp".to_owned(), IndicatorValue::Gauge(0.75))), "{first:?}");
     }
 
     /// Metaphor: a character's stance shifts its health bar sideways, and the

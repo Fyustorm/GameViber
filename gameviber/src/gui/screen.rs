@@ -312,6 +312,7 @@ impl State {
                     _ => Vec::new(),
                 };
                 (zone.shown_on, zone.hidden_on) = (d.shown_on.clone(), d.hidden_on.clone());
+                zone.zone_read_when.clear();
             }
             IndicatorKind::Gauge => {
                 zone.reference.clear();
@@ -319,6 +320,7 @@ impl State {
                 zone.weights.clear();
                 (zone.reading, zone.palette) = (Reading::Look, Vec::new());
                 (zone.shown_on, zone.hidden_on) = (Vec::new(), Vec::new());
+                zone.zone_read_when = d.zone_read_when.clone();
                 if d.full.is_empty() {
                     zone.color = match drawn {
                         Some(frame) => indicators::bar_color(&zone, frame),
@@ -400,7 +402,8 @@ impl State {
                 self.shared(zone);
             }
             if *old != d.name {
-                g.zones.iter_mut().flat_map(|z| z.read_when.iter_mut()).filter(|c| c.indicator == *old).for_each(|c| c.indicator = d.name.clone());
+                let conditions = g.zones.iter_mut().flat_map(|z| z.read_when.iter_mut().chain(z.zone_read_when.iter_mut()));
+                conditions.filter(|c| c.indicator == *old).for_each(|c| c.indicator = d.name.clone());
                 g.phases.iter_mut().flat_map(|sc| sc.indicators.iter_mut()).filter(|z| *z == old).for_each(|z| *z = d.name.clone());
             }
         }
@@ -518,8 +521,10 @@ struct Draft {
     empty: Vec<[u8; 3]>,
     /// The colors of its next tiers (`Zone::tiers`; one being picked may have none yet).
     tiers: Vec<Vec<[u8; 3]>>,
-    /// The visibility indicators it is read under (`Zone::read_when`).
+    /// The visibility indicators it is read under (`Zone::read_when`)...
     read_when: Vec<Condition>,
+    /// ...and the zone edited (`Zone::zone_read_when`).
+    zone_read_when: Vec<Condition>,
     /// Visibility: shown in all its zones rather than one (`Zone::all_zones`)...
     all_zones: bool,
     /// ...compared in color (`Zone::compare_colors`).
@@ -603,6 +608,7 @@ impl Default for Draft {
             empty: Vec::new(),
             tiers: Vec::new(),
             read_when: Vec::new(),
+            zone_read_when: Vec::new(),
             all_zones: false,
             compare_colors: false,
             by_look: false,
@@ -653,6 +659,7 @@ impl Draft {
             || self.empty != o.empty
             || self.tiers != o.tiers
             || self.read_when != o.read_when
+            || self.zone_read_when != o.zone_read_when
             || self.all_zones != o.all_zones
             || self.compare_colors != o.compare_colors
             || self.by_look != o.by_look
@@ -717,6 +724,7 @@ impl Draft {
         self.outline = zone.outline;
         self.palette = (!zone.palette.is_empty()).then(|| (zone.rect, zone.palette.clone()));
         (self.shown_on, self.hidden_on) = (zone.shown_on.clone(), zone.hidden_on.clone());
+        self.zone_read_when = if zone.kind == IndicatorKind::Gauge { zone.zone_read_when.clone() } else { Vec::new() };
         self.tracing = indicators::has_path(zone);
         self.path = zone.path.iter().map(|p| Pos2::new(p[0], p[1])).collect();
         self.ring = zone.kind == IndicatorKind::Visibility && zone.ring;
@@ -727,7 +735,7 @@ impl Draft {
             (o.editing, o.start, o.end, o.threshold, o.drawn_on) = (self.editing, self.start, self.end, self.threshold, None);
             (o.by_look, o.look, o.weights) = (self.by_look, self.look.clone(), self.weights.clone());
             (o.reading, o.outline, o.palette) = (self.reading, self.outline, self.palette.clone());
-            (o.shown_on, o.hidden_on) = (self.shown_on.clone(), self.hidden_on.clone());
+            (o.shown_on, o.hidden_on, o.zone_read_when) = (self.shown_on.clone(), self.hidden_on.clone(), self.zone_read_when.clone());
             (o.tracing, o.path, o.ring, o.thickness) = (self.tracing, self.path.clone(), self.ring, self.thickness);
         }
     }
@@ -903,35 +911,49 @@ fn remember_height(ui: &egui::Ui, height: &mut f32, top: f32) {
 
 /// The visibility indicators a gauge is read under: each shown or hidden.
 fn read_when(ui: &mut egui::Ui, draft: &mut Draft, inputs: &Inputs) {
+    let help = "Outside the game's interface (a menu, a map), the screen where the bar is may look like an empty bar \
+                (a dark empty color): read it only while a visibility indicator is shown (the frame or an icon next \
+                to the bar), or hidden (a menu's button). Otherwise it reads unknown (nil), as when the bar is not found. \
+                Each zone can also be read only under its own conditions.";
+    conditions(ui, &mut draft.read_when, inputs, "read-when", "Read only when", help);
+}
+
+/// The visibility indicators the zone edited of a gauge is read under, besides its indicator's.
+fn zone_read_when(ui: &mut egui::Ui, draft: &mut Draft, inputs: &Inputs) {
+    let help = "A bar the game shows in another place in another layout (in battle and out of it): a zone for each place, \
+                each read only while a visibility indicator of its layout is shown (or another one hidden). The gauge \
+                reads in the zones whose conditions hold, and unknown (nil) when none does.";
+    conditions(ui, &mut draft.zone_read_when, inputs, "zone-read-when", "This zone only when", help);
+}
+
+/// Conditions on the visibility indicators, edited: each shown or hidden.
+fn conditions(ui: &mut egui::Ui, conditions: &mut Vec<Condition>, inputs: &Inputs, id: &str, label: &str, help: &str) {
     let mut visibility: Vec<&str> = Vec::new();
     for zone in inputs.zones.iter().filter(|z| z.kind == IndicatorKind::Visibility) {
         if !visibility.contains(&zone.indicator.as_str()) {
             visibility.push(&zone.indicator);
         }
     }
-    let help = "Outside the game's interface (a menu, a map), the screen where the bar is may look like an empty bar \
-                (a dark empty color): read it only while a visibility indicator is shown (the frame or an icon next \
-                to the bar), or hidden (a menu's button). Otherwise it reads unknown (nil), as when the bar is not found.";
     ui.horizontal_wrapped(|ui| {
-        ui.label("Read only when").on_hover_text(help);
-        if visibility.is_empty() && draft.read_when.is_empty() {
+        ui.label(label).on_hover_text(help);
+        if visibility.is_empty() && conditions.is_empty() {
             ui.label(muted("always (draw a visibility indicator to read it only while it is shown or hidden)").size(12.0));
             return;
         }
-        if draft.read_when.is_empty() {
+        if conditions.is_empty() {
             ui.label(muted("always").size(12.0));
         }
         let mut remove = None;
-        for (k, condition) in draft.read_when.iter_mut().enumerate() {
+        for (k, condition) in conditions.iter_mut().enumerate() {
             if k > 0 {
                 ui.label("and");
             }
-            egui::ComboBox::from_id_salt(("read-when", k)).selected_text(condition.indicator.as_str()).show_ui(ui, |ui| {
+            egui::ComboBox::from_id_salt((id, k)).selected_text(condition.indicator.as_str()).show_ui(ui, |ui| {
                 for name in &visibility {
                     ui.selectable_value(&mut condition.indicator, (*name).to_owned(), *name);
                 }
             });
-            egui::ComboBox::from_id_salt(("read-when-shown", k)).selected_text(if condition.shown { "is shown" } else { "is hidden" }).show_ui(ui, |ui| {
+            egui::ComboBox::from_id_salt((id, "shown", k)).selected_text(if condition.shown { "is shown" } else { "is hidden" }).show_ui(ui, |ui| {
                 ui.selectable_value(&mut condition.shown, true, "is shown");
                 ui.selectable_value(&mut condition.shown, false, "is hidden");
             });
@@ -943,11 +965,11 @@ fn read_when(ui: &mut egui::Ui, draft: &mut Draft, inputs: &Inputs) {
             }
         }
         if let Some(k) = remove {
-            draft.read_when.remove(k);
+            conditions.remove(k);
         }
         if let Some(first) = visibility.first() {
             if ui.small_button("+ Condition").on_hover_text(help).clicked() {
-                draft.read_when.push(Condition { indicator: (*first).to_owned(), shown: true });
+                conditions.push(Condition { indicator: (*first).to_owned(), shown: true });
             }
         }
     });
@@ -1094,11 +1116,13 @@ fn read_capture(zones: &Scored, all: &[Zone], frame: &Frame) -> CaptureReading {
             CaptureReading { text, color: if shown { ACCENT_TEXT } else { MUTED }, detail: detail.join("\n"), shown: Some(shown) }
         }
         IndicatorKind::Gauge => {
-            if let Some(why) = unmet_on(first, all, frame) {
-                let detail = format!("Not read on this capture: it is read only when {}, and here {why}.", conditions_text(first));
+            if let Some(why) = unmet_on(&first.read_when, all, frame) {
+                let detail = format!("Not read on this capture: it is read only when {}, and here {why}.", conditions_text(&first.read_when));
                 return CaptureReading { text: "unknown".to_owned(), color: WARN, detail, shown: None };
             }
-            let found: Vec<Option<(f32, f32)>> = zones.iter().map(|(_, z)| indicators::bar_reading(z, frame)).collect();
+            // Zones whose own conditions do not hold are left out.
+            let unmet: Vec<Option<String>> = zones.iter().map(|(_, z)| unmet_on(&z.zone_read_when, all, frame)).collect();
+            let found: Vec<Option<(f32, f32)>> = zones.iter().zip(&unmet).map(|((_, z), u)| if u.is_none() { indicators::bar_reading(z, frame) } else { None }).collect();
             let decided = found.iter().enumerate().filter_map(|(k, f)| Some((k, (*f)?))).max_by(|a, b| a.1 .1.total_cmp(&b.1 .1));
             let text = match decided {
                 Some((k, (fill, _))) if several => format!("{:.0}% · {}", fill * 100.0, short(&zones[k].0)),
@@ -1107,10 +1131,11 @@ fn read_capture(zones: &Scored, all: &[Zone], frame: &Frame) -> CaptureReading {
             };
             let mut detail: Vec<String> = zones
                 .iter()
-                .zip(&found)
-                .map(|((label, _), f)| match f {
-                    Some((fill, sure)) => format!("✓ {label}: {:.0}%, bar found at {:.0}%", fill * 100.0, sure * 100.0),
-                    None => format!("✗ {label}: bar not found"),
+                .zip(found.iter().zip(&unmet))
+                .map(|((label, z), (f, u))| match (f, u) {
+                    (_, Some(why)) => format!("✗ {label}: not read here, read only when {}, and here {why}", conditions_text(&z.zone_read_when)),
+                    (Some((fill, sure)), _) => format!("✓ {label}: {:.0}%, bar found at {:.0}%", fill * 100.0, sure * 100.0),
+                    (None, _) => format!("✗ {label}: bar not found"),
                 })
                 .collect();
             detail.push(String::new());
@@ -1121,22 +1146,22 @@ fn read_capture(zones: &Scored, all: &[Zone], frame: &Frame) -> CaptureReading {
 }
 
 /// "battle_hud shown and menu hidden"
-fn conditions_text(zone: &Zone) -> String {
-    let each: Vec<String> = zone.read_when.iter().map(|c| format!("{} {}", c.indicator, if c.shown { "shown" } else { "hidden" })).collect();
+fn conditions_text(conditions: &[Condition]) -> String {
+    let each: Vec<String> = conditions.iter().map(|c| format!("{} {}", c.indicator, if c.shown { "shown" } else { "hidden" })).collect();
     each.join(" and ")
 }
 
 /// The first of a gauge's conditions that does not hold on an image, as text.
-fn unmet_on(zone: &Zone, all: &[Zone], frame: &Frame) -> Option<String> {
-    let condition = indicators::unmet(zone, |name| indicators::shown_on(name, all, frame))?;
+fn unmet_on(conditions: &[Condition], all: &[Zone], frame: &Frame) -> Option<String> {
+    let condition = indicators::unmet(conditions, |name| indicators::shown_on(name, all, frame))?;
     Some(format!("{} {}", condition.indicator, if condition.shown { "hidden" } else { "shown" }))
 }
 
 /// What a zone reads on an image as `reading` says, and that it reads unknown
-/// there when one of its gauge's conditions does not hold.
+/// there when one of its gauge's conditions, or its own, does not hold.
 fn reading_here(zone: &Zone, all: &[Zone], frame: &Frame) -> (String, Color32) {
     let (text, color) = reading(zone, indicators::measure(zone, frame));
-    match unmet_on(zone, all, frame) {
+    match unmet_on(&zone.read_when, all, frame).or_else(|| unmet_on(&zone.zone_read_when, all, frame)) {
         Some(why) => (format!("{text} · unknown here: {why}"), WARN),
         None => (text, color),
     }
@@ -2538,6 +2563,7 @@ impl App {
                     // How the bar is read: by its colors or its look.
                     if can_draw {
                         if draft.kind == IndicatorKind::Gauge {
+                            zone_read_when(ui, draft, inputs);
                             ui.horizontal(|ui| {
                                 ui.label("Read by");
                                 ui.selectable_value(&mut draft.by_look, false, "Colors");
@@ -2936,7 +2962,10 @@ impl App {
             if let Some(name) = &indicator_name {
                 let mut g = inputs.clone();
                 g.zones.retain(|z| z.indicator != *name);
-                g.zones.iter_mut().for_each(|z| z.read_when.retain(|c| c.indicator != *name));
+                g.zones.iter_mut().for_each(|z| {
+                    z.read_when.retain(|c| c.indicator != *name);
+                    z.zone_read_when.retain(|c| c.indicator != *name);
+                });
                 g.phases.iter_mut().for_each(|sc| sc.indicators.retain(|z| z != name));
                 st.draft = Draft { zoom: st.draft.zoom, ..Draft::default() };
                 st.confirm_delete = false;

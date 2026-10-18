@@ -272,6 +272,12 @@ pub struct Zone {
     /// whose empty color is also the menus' background reads empty there.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub read_when: Vec<Condition>,
+    /// Gauge: this zone read only under these conditions, besides its
+    /// indicator's: a bar the game shows in another place in another layout
+    /// (in battle and out of it), a zone for each place, each read while
+    /// that layout's visibility indicator is shown.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub zone_read_when: Vec<Condition>,
     /// Gauge: share of the zone's length it covered when drawn. Much less of its
     /// colors found means it is not on screen (menus): its value is unknown.
     pub length: f32,
@@ -335,6 +341,7 @@ impl Default for Zone {
             more_empty: Vec::new(),
             tiers: Vec::new(),
             read_when: Vec::new(),
+            zone_read_when: Vec::new(),
             length: 0.0,
             full_look: Vec::new(),
             empty_look: Vec::new(),
@@ -349,8 +356,8 @@ impl Default for Zone {
     }
 }
 
-/// A condition a gauge is read under (`Zone::read_when`): a visibility
-/// indicator shown, or hidden.
+/// A condition a gauge, or one of its zones, is read under (`Zone::read_when`,
+/// `Zone::zone_read_when`): a visibility indicator shown, or hidden.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Condition {
     pub indicator: String,
