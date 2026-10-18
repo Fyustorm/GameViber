@@ -246,6 +246,7 @@ fn phases(clips: mpsc::Receiver<Vec<f32>>, tx: mpsc::Sender<Output>) {
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         };
         if encoder.is_none() && !failed {
+            log::info!("loading the audio phase model");
             match clap::AudioEncoder::load() {
                 Ok(e) => {
                     log::info!("audio phase model loaded");

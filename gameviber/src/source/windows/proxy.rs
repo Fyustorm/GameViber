@@ -8,7 +8,7 @@
 //! The real gamepad can be hidden from games with HidHide, before the virtual
 //! one comes: games then only see the virtual controller.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -28,6 +28,9 @@ use crate::source::{changes, ActiveSource, EventSender, PadInfo, PadLayout, Sour
 const POLL: Duration = Duration::from_millis(4);
 /// How long the virtual controller may take to show in XInput.
 const PLUG_WAIT: Duration = Duration::from_secs(2);
+/// A turn of the loop this long is logged (the gamepad then lags in games), at most this often.
+const SLOW_TURN: Duration = Duration::from_millis(50);
+const SLOW_LOG_EVERY: Duration = Duration::from_secs(5);
 const XINPUT_SLOTS: u32 = 4;
 /// XInput's buttons, by our names.
 const XBOX_BUTTONS: [(&str, u16); 15] = [
@@ -190,7 +193,7 @@ impl ProxySource {
                     }
                     hiding.store(false, Ordering::Relaxed);
                 }
-                let mut proxy = Proxy { real, shape, raw, shared_raw, out: PadOutput::default(), tx, device: real_path, rumble_thread: None };
+                let mut proxy = Proxy { real, shape, raw, shared_raw, out: PadOutput::default(), tx, device: real_path, rumble_thread: None, rumbles: Arc::default() };
                 if let Err(e) = proxy.run(client, &stop, &status, &name) {
                     log::error!("proxy stopped: {e:#}");
                     *status.lock().unwrap() = format!("proxy stopped: {e:#}");
@@ -264,6 +267,18 @@ struct Proxy {
     tx: EventSender,
     device: String,
     rumble_thread: Option<JoinHandle<()>>,
+    /// Rumble notifications games sent since the last slow turn logged.
+    rumbles: Arc<AtomicU32>,
+}
+
+/// How long each part of the slowest turn of the loop took, since the last one logged.
+#[derive(Default)]
+struct Timing {
+    turns: u32,
+    slowest: Duration,
+    read: Duration,
+    report: Duration,
+    logged: Option<Instant>,
 }
 
 impl Proxy {
@@ -273,8 +288,10 @@ impl Proxy {
             None => None,
         };
         let mut last_packet = None;
+        let mut timing = Timing::default();
         while !stop.load(Ordering::Relaxed) {
             let started = Instant::now();
+            let read;
             match &mut self.real {
                 Real::XInput(slot) => {
                     let mut state = XINPUT_STATE::default();
@@ -282,6 +299,7 @@ impl Proxy {
                     if unsafe { XInputGetState(*slot, &mut state) } != ERROR_SUCCESS.0 {
                         anyhow::bail!("real gamepad disconnected");
                     }
+                    read = started.elapsed();
                     if last_packet != Some(state.dwPacketNumber) {
                         last_packet = Some(state.dwPacketNumber);
                         self.raw = xbox_raw(&state.Gamepad);
@@ -301,7 +319,9 @@ impl Proxy {
                     }
                 }
                 Real::Hid(pad) => {
-                    if pad.poll(&mut self.raw).context("real gamepad disconnected")? {
+                    let polled = pad.poll(&mut self.raw).context("real gamepad disconnected")?;
+                    read = started.elapsed();
+                    if polled {
                         self.shared_raw.lock().unwrap().clone_from(&self.raw);
                         if let Shape::Mapped(mapping) = &self.shape {
                             let out = mapping.apply(&self.raw);
@@ -313,6 +333,7 @@ impl Proxy {
                     }
                 }
             }
+            self.timed(&mut timing, started.elapsed(), read);
             std::thread::sleep(POLL.saturating_sub(started.elapsed()));
         }
         // Unplugs it, which ends the rumble thread.
@@ -353,14 +374,21 @@ impl Proxy {
             Real::XInput(slot) => Some(slot),
             Real::Hid(_) => None,
         };
-        let (tx, device) = (self.tx.clone(), self.device.clone());
+        let (tx, device, rumbles) = (self.tx.clone(), self.device.clone(), self.rumbles.clone());
         let notifications = virt.request_notification().map_err(|e| anyhow::anyhow!("cannot hear the virtual controller's rumble: {e}"))?;
         let mut uploaded = false;
+        let mut last = None;
         self.rumble_thread = Some(notifications.spawn_thread(move |_, n| {
+            rumbles.fetch_add(1, Ordering::Relaxed);
             let send = |kind| {
                 let _ = tx.send(SourceEvent { device: device.clone(), kind });
             };
             let (strong, weak) = (u16::from(n.large_motor) * 257, u16::from(n.small_motor) * 257);
+            // Games often send the same rumble every frame: writing it to the
+            // real gamepad each time slows its reading down.
+            if last.replace((strong, weak)) == Some((strong, weak)) {
+                return;
+            }
             if strong > 0 || weak > 0 || uploaded {
                 send(SourceKind::Upload { id: 0, effect: Effect { kind: EffectKind::Rumble { strong, weak }, length_ms: 0, delay_ms: 0 } });
                 uploaded = true;
@@ -373,6 +401,27 @@ impl Proxy {
             }
         }));
         Ok(virt)
+    }
+
+    /// Logs the slowest turns of the loop: the gamepad lags in games when they last.
+    fn timed(&self, timing: &mut Timing, turn: Duration, read: Duration) {
+        timing.turns += 1;
+        if turn > timing.slowest {
+            (timing.slowest, timing.read, timing.report) = (turn, read, turn - read);
+        }
+        if timing.slowest < SLOW_TURN || timing.logged.is_some_and(|t| t.elapsed() < SLOW_LOG_EVERY) {
+            return;
+        }
+        let since = timing.logged.map(|t| format!("{:.0} s", t.elapsed().as_secs_f64())).unwrap_or_else(|| "start".into());
+        log::warn!(
+            "gamepad loop slow: {} ms at worst (reading the gamepad {} ms, the virtual controller and GameViber {} ms); {} turns and {} rumble notifications since {since}",
+            timing.slowest.as_millis(),
+            timing.read.as_millis(),
+            timing.report.as_millis(),
+            timing.turns,
+            self.rumbles.swap(0, Ordering::Relaxed),
+        );
+        *timing = Timing { logged: Some(Instant::now()), ..Timing::default() };
     }
 
     /// What GameViber hears of the gamepad now.

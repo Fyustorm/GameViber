@@ -20,7 +20,11 @@ use windows::Win32::Foundation::{CloseHandle, HMODULE};
 use windows::Win32::System::Diagnostics::Debug::{SetUnhandledExceptionFilter, EXCEPTION_POINTERS, LPTOP_LEVEL_EXCEPTION_FILTER};
 use windows::Win32::System::LibraryLoader::{GetModuleFileNameW, GetModuleHandleExW, GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT};
 use windows::Win32::System::SystemInformation::GetLocalTime;
-use windows::Win32::System::Threading::{OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION};
+use windows::Win32::System::Threading::{
+    GetCurrentProcess, OpenProcess, ProcessPowerThrottling, QueryFullProcessImageNameW, SetProcessInformation, PROCESS_NAME_WIN32,
+    PROCESS_POWER_THROTTLING_CURRENT_VERSION, PROCESS_POWER_THROTTLING_EXECUTION_SPEED, PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION,
+    PROCESS_POWER_THROTTLING_STATE, PROCESS_QUERY_LIMITED_INFORMATION,
+};
 
 fn known_dir(var: &str, fallback: &[&str]) -> PathBuf {
     std::env::var_os(var).map(PathBuf::from).unwrap_or_else(|| {
@@ -74,6 +78,23 @@ unsafe extern "system" fn on_crash(info: *const EXCEPTION_POINTERS) -> i32 {
     match PREVIOUS_FILTER.get().copied().flatten() {
         Some(previous) => previous(info),
         None => 0, // EXCEPTION_CONTINUE_SEARCH
+    }
+}
+
+/// GameViber keeps its speed and its timers' precision while a game is in
+/// front: Windows otherwise slows background processes down (power throttling).
+pub fn full_speed() {
+    let state = PROCESS_POWER_THROTTLING_STATE {
+        Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+        ControlMask: PROCESS_POWER_THROTTLING_EXECUTION_SPEED | PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION,
+        StateMask: 0,
+    };
+    // SAFETY: the state and its size, for this process.
+    let result = unsafe {
+        SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &state as *const _ as _, std::mem::size_of_val(&state) as u32)
+    };
+    if let Err(e) = result {
+        log::debug!("cannot turn power throttling off: {e}");
     }
 }
 

@@ -22,6 +22,8 @@ pub fn chown_to_caller(_path: &Path) {}
 
 pub fn log_crashes() {}
 
+pub fn full_speed() {}
+
 pub fn open_file(_title: &str, _kind: &str, _extension: &str) -> anyhow::Result<Option<PathBuf>> {
     anyhow::bail!("file dialogs are not available on this system yet")
 }

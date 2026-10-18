@@ -102,6 +102,7 @@ fn main() -> anyhow::Result<()> {
     }
     let args = Args::parse();
     let logs = logging::init(args.verbose);
+    platform::full_speed();
     // One GameViber at a time: a second start hands its link to the first one.
     let instance = if args.headless {
         None

@@ -40,6 +40,9 @@ use crate::source::{ActiveSource, EventSender, PadInfo, SourceEvent, SourceKind,
 const SESSION_SECS: f64 = 120.0;
 
 const TICK: Duration = Duration::from_millis(20);
+/// Handling one event, command or tick this long is logged, at most this often.
+const SLOW_STEP: Duration = Duration::from_millis(200);
+const SLOW_LOG_EVERY: Duration = Duration::from_secs(5);
 /// How often user mode files are checked for changes.
 const RELOAD_CHECK: Duration = Duration::from_secs(1);
 /// Length of the history kept for the GUI graphs.
@@ -630,15 +633,32 @@ async fn run_async(
     let mut tick = tokio::time::interval(TICK);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut stop = platform::StopSignals::new()?;
+    let mut slow_logged: Option<Instant> = None;
     loop {
-        tokio::select! {
+        let started = Instant::now();
+        let what = tokio::select! {
             _ = stop.recv() => break,
-            Some(ev) = rx.recv() => engine.on_source_event(ev),
+            Some(ev) = rx.recv() => {
+                engine.on_source_event(ev);
+                "a gamepad event"
+            }
             command = commands.recv() => match command {
                 Some(Command::Shutdown) | None => break,
-                Some(command) => engine.on_command(command),
+                Some(command) => {
+                    engine.on_command(command);
+                    "a command"
+                }
             },
-            _ = tick.tick() => engine.tick(),
+            _ = tick.tick() => {
+                engine.tick();
+                "a tick"
+            }
+        };
+        // The gamepad, the toys and the GUI wait meanwhile (`started` includes up to a tick of waiting).
+        let took = started.elapsed();
+        if took > SLOW_STEP && slow_logged.is_none_or(|t| t.elapsed() > SLOW_LOG_EVERY) {
+            log::warn!("the engine took {} ms over {what}", took.as_millis());
+            slow_logged = Some(Instant::now());
         }
     }
     engine.shutdown().await;

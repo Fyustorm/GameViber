@@ -14,7 +14,7 @@
 pub mod linux;
 #[cfg(target_os = "linux")]
 pub use linux::{
-    chown_to_caller, config_dir, data_dir, keep_private, local_time, log_crashes, open_file, open_files, privileged_subcommand, save_file, steam_app_id, window_closing,
+    chown_to_caller, config_dir, data_dir, full_speed, keep_private, local_time, log_crashes, open_file, open_files, privileged_subcommand, save_file, steam_app_id, window_closing,
     window_created, window_expected, window_focused, StopSignals,
 };
 
@@ -22,7 +22,7 @@ pub use linux::{
 pub mod windows;
 #[cfg(target_os = "windows")]
 pub use self::windows::{
-    chown_to_caller, config_dir, data_dir, keep_private, local_time, log_crashes, open_file, open_files, privileged_subcommand, save_file, steam_app_id, window_closing,
+    chown_to_caller, config_dir, data_dir, full_speed, keep_private, local_time, log_crashes, open_file, open_files, privileged_subcommand, save_file, steam_app_id, window_closing,
     window_created, window_expected, window_focused, StopSignals,
 };
 
@@ -30,6 +30,6 @@ pub use self::windows::{
 mod unsupported;
 #[cfg(not(any(target_os = "linux", target_os = "windows")))]
 pub use unsupported::{
-    chown_to_caller, config_dir, data_dir, keep_private, local_time, log_crashes, open_file, open_files, privileged_subcommand, save_file, steam_app_id, window_closing,
+    chown_to_caller, config_dir, data_dir, full_speed, keep_private, local_time, log_crashes, open_file, open_files, privileged_subcommand, save_file, steam_app_id, window_closing,
     window_created, window_expected, window_focused, StopSignals,
 };

@@ -59,6 +59,9 @@ pub fn runtime_dir() -> PathBuf {
 /// Nothing to add: crashes show in the journal (`coredumpctl`).
 pub fn log_crashes() {}
 
+/// Nothing to do: Linux does not slow down applications in the background.
+pub fn full_speed() {}
+
 /// Only its owner may read or write the file `path` (a secret in it).
 pub fn keep_private(path: &Path) {
     use std::os::unix::fs::PermissionsExt;
