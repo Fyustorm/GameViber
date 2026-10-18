@@ -19,7 +19,7 @@ use super::{pad_view, App};
 use crate::audio::AudioLevels;
 use crate::config::ModeEntry;
 use crate::engine::{Command, SessionOutputs, Shared, HISTORY_SECS, RECENT_SECS};
-use crate::mode::report::{self, Simulation, Tick};
+use crate::mode::report::{self, Simulation, Tick, ZoneReadings};
 use crate::mode::{IndicatorValue, ParamValue};
 use crate::models::Model;
 use crate::package::Inputs;
@@ -151,6 +151,8 @@ struct Player {
     simulation: Option<Result<Simulation, String>>,
     simulated: Option<ModeKey>,
     simulating: Option<(ModeKey, Pending<Simulation>, Arc<Progress>)>,
+    /// What the mode's zones read on its images, kept from one replay to the next.
+    readings: Arc<ZoneReadings>,
     /// The mode as it is now, when it changed since the replay: replayed again
     /// once the player applies it (`apply`), the player paused meanwhile and
     /// playing again after (`resume`).
@@ -201,6 +203,7 @@ impl Player {
             simulation: None,
             simulated: None,
             simulating: None,
+            readings: Arc::default(),
             changed: None,
             resume: false,
             embedding: None,
@@ -317,10 +320,10 @@ impl Player {
             let session = Session::clone(session);
             let run = key.clone();
             let progress = Arc::new(Progress::default());
-            let progressing = progress.clone();
+            let (progressing, readings) = (progress.clone(), self.readings.clone());
             std::thread::spawn(move || {
                 let entry = ModeEntry::from_id(&run.id);
-                let simulation = report::simulate(&entry.chunk_name(), &run.source, &run.values, &Inputs::of(&entry), session, &progressing);
+                let simulation = report::simulate(&entry.chunk_name(), &run.source, &run.values, &Inputs::of(&entry), session, &readings, &progressing);
                 let _ = tx.send(simulation);
             });
             self.simulating = Some((key, rx, progress));

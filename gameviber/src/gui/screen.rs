@@ -24,6 +24,8 @@ use crate::package::{self, valid_name, Condition, Direction, IndicatorKind, Inpu
 use crate::models::Model;
 use crate::screen::{indicators, Frame};
 
+mod check;
+
 /// Images are never shown wider than this (before zooming).
 const MAX_ZOOM: f32 = 10.0;
 /// Width of the captures column.
@@ -91,6 +93,9 @@ pub struct State {
     picked: BTreeSet<String>,
     anchor: Option<String>,
     confirm_delete_picked: bool,
+    /// The column shows the indicator selected checked on the game's recordings rather than the captures.
+    in_recordings: bool,
+    check: check::Check,
 }
 
 /// What the indicator selected reads on a capture.
@@ -194,6 +199,8 @@ impl Default for State {
             picked: BTreeSet::new(),
             anchor: None,
             confirm_delete_picked: false,
+            in_recordings: false,
+            check: check::Check::default(),
         }
     }
 }
@@ -1198,7 +1205,7 @@ impl App {
             let layout = egui::Layout::top_down(egui::Align::Min);
             ui.allocate_ui_with_layout(Vec2::new(side, height), layout, |ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
-                self.captures_panel(ui, s, game, inputs, &readings, &marked, &scores);
+                self.captures_panel(ui, s, game, inputs, &readings, &marked, &scores, &scored);
             });
             ui.allocate_ui_with_layout(Vec2::new(main, height), layout, |ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
@@ -1244,12 +1251,36 @@ impl App {
 
     /// The left column: the captures by phase (scrolling if they must), then how to add some.
     #[allow(clippy::too_many_arguments)]
-    fn captures_panel(&mut self, ui: &mut egui::Ui, s: &Shared, game: &Game, inputs: &Inputs, readings: &ReadingMap, marked: &HashSet<String>, scores: &Scores) {
+    #[allow(clippy::too_many_arguments)]
+    fn captures_panel(
+        &mut self,
+        ui: &mut egui::Ui,
+        s: &Shared,
+        game: &Game,
+        inputs: &Inputs,
+        readings: &ReadingMap,
+        marked: &HashSet<String>,
+        scores: &Scores,
+        scored: &Scored,
+    ) {
         let inner = ui.available_size() - Vec2::splat(2.0 * PANEL_MARGIN + 2.0);
         card(PANEL).inner_margin(Margin::same(PANEL_MARGIN as i8)).show(ui, |ui| {
             ui.set_width(inner.x);
             ui.set_height(inner.y);
-            ui.label(RichText::new("Captures").strong().size(16.0));
+            ui.horizontal(|ui| {
+                let st = &mut self.screen;
+                if ui.selectable_label(!st.in_recordings, RichText::new("Captures").strong().size(16.0)).clicked() {
+                    st.in_recordings = false;
+                }
+                let help = "What the indicator selected reads on every image of your recordings of this game: the scenes it reads wrong, to add to the captures";
+                if ui.selectable_label(st.in_recordings, RichText::new("In recordings").strong().size(16.0)).on_hover_text(help).clicked() {
+                    st.in_recordings = true;
+                }
+            });
+            if self.screen.in_recordings {
+                self.recordings_check(ui, s, game, inputs, scored);
+                return;
+            }
             if !inputs.captures.is_empty() {
                 self.capture_filters(ui, inputs);
                 self.scores_line(ui, scores);

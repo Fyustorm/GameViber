@@ -189,6 +189,8 @@ pub enum Command {
     SaveInputs(package::Inputs),
     /// Adds images (from files) to the captures of a mode (by package), under a phase ("" to sort them later).
     AddCaptures { dir: PathBuf, phase: String, frames: Vec<Frame> },
+    /// Adds an image of a recording to a mode's captures, named `file` (once).
+    AddCaptureAs { dir: PathBuf, phase: String, file: String, frame: Frame },
     /// Deletes a capture of a mode (by file name).
     DeleteCapture { dir: PathBuf, file: String },
     /// Files a capture under another phase.
@@ -1076,6 +1078,11 @@ impl Engine {
                     if let Err(e) = i.add_capture(&phase, frame) {
                         log::error!("cannot save the capture: {e}");
                     }
+                }
+            }),
+            Command::AddCaptureAs { dir, phase, file, frame } => self.edit_inputs(&dir, |i| {
+                if let Err(e) = i.add_capture_as(&phase, &file, &frame) {
+                    log::error!("cannot save the capture: {e}");
                 }
             }),
             Command::DeleteCapture { dir, file } => self.edit_inputs(&dir, |i| i.remove_capture(&file)),

@@ -256,7 +256,13 @@ to set some up.
   closing itself). Both together, in two zones with
   **Shown in all its zones**, make it surer still. A visibility indicator changes
   once its zones have said so for 0.3 s, so that a flash does not make it
-  blink. A bar of one color is
+  blink. A few dozen captures do not show every scene: **In recordings**,
+  above the captures, reads the visibility indicator selected on every image
+  of your recordings of the game, as a histogram of how far each reads from
+  the threshold (click a bar, Shift + click for several: at first those
+  nearest the threshold), with the images of the bars picked zoomed on the
+  zones; **👁** or **⊘** under one adds it to the captures (under the phase
+  chosen there), marked, to learn from it and set the threshold again. A bar of one color is
   read by its colors (pick its full and empty parts); a bar filled again over
   itself in another color once full (green, then yellow over the green) by
   its colors with a **tier** for each color (**+ Tier**), each an equal share

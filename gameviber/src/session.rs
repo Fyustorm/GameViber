@@ -138,6 +138,11 @@ pub fn frames_dir(path: &Path) -> PathBuf {
     path.with_extension(FRAMES_EXTENSION)
 }
 
+/// The images of the recording at `path`, by time.
+pub fn images(path: &Path) -> Vec<SessionFrame> {
+    read_frames(&frames_dir(path))
+}
+
 /// Where the images of the recording in progress are written until it is saved.
 fn spool_dir() -> PathBuf {
     recordings_dir().join(format!(".recording.{FRAMES_EXTENSION}"))

@@ -443,24 +443,38 @@ pub fn capture_path(dir: &Path, file: &str) -> PathBuf {
 
 /// Saves `frame` as a PNG capture in the package `dir`; returns its file name.
 pub fn save_capture(dir: &Path, phase: &str, frame: &Frame) -> std::io::Result<String> {
-    let dir = dir.join(CAPTURES_DIR);
-    config::create_dir(&dir)?;
+    let captures = dir.join(CAPTURES_DIR);
     let stamp = crate::platform::local_time().replace([' ', ':'], "-");
     let label = if phase.is_empty() { "capture" } else { phase };
     let mut file = format!("{label}-{stamp}.png");
     let mut n = 2;
-    while dir.join(&file).exists() {
+    while captures.join(&file).exists() {
         file = format!("{label}-{stamp}-{n}.png");
         n += 1;
     }
-    let out = fs::File::create(dir.join(&file))?;
-    let mut encoder = png::Encoder::new(std::io::BufWriter::new(out), frame.width, frame.height);
+    write_capture(dir, &file, frame)?;
+    Ok(file)
+}
+
+/// Writes `frame` as the PNG capture `file` of the package `dir`.
+fn write_capture(dir: &Path, file: &str, frame: &Frame) -> std::io::Result<()> {
+    if file.contains(['/', '\\']) || !file.ends_with(".png") {
+        return Err(std::io::Error::other(format!("not a capture's name: {file}")));
+    }
+    let dir = dir.join(CAPTURES_DIR);
+    config::create_dir(&dir)?;
+    encode_capture(frame, std::io::BufWriter::new(fs::File::create(dir.join(file))?))
+}
+
+/// `frame` as a capture's PNG (RGBA, as `load_capture` reads it).
+pub fn encode_capture(frame: &Frame, out: impl std::io::Write) -> std::io::Result<()> {
+    let mut encoder = png::Encoder::new(out, frame.width, frame.height);
     encoder.set_color(png::ColorType::Rgba);
     encoder.set_depth(png::BitDepth::Eight);
     let mut writer = encoder.write_header().map_err(std::io::Error::other)?;
     writer.write_image_data(&frame.pixels).map_err(std::io::Error::other)?;
     writer.finish().map_err(std::io::Error::other)?;
-    Ok(file)
+    Ok(())
 }
 
 /// Image files `read_image` reads.
@@ -636,18 +650,43 @@ impl Inputs {
         inputs
     }
 
-    /// Captures `frame` as an example of `phase`; the oldest of the phase goes past `MAX_CAPTURES`.
+    /// Captures `frame` as an example of `phase`; past `MAX_CAPTURES`, the
+    /// phase's oldest capture no indicator marks goes (`keep_capture`).
     pub fn add_capture(&mut self, phase: &str, frame: &Frame) -> std::io::Result<()> {
         if !self.has_package() {
             return Err(std::io::Error::other("built-in modes keep no captures"));
         }
         let file = save_capture(&self.dir, phase, frame)?;
+        self.keep_capture(file, phase);
+        Ok(())
+    }
+
+    /// The same, named `file` (an image of a recording, named after it and
+    /// its time): nothing when it already is a capture.
+    pub fn add_capture_as(&mut self, phase: &str, file: &str, frame: &Frame) -> std::io::Result<()> {
+        if !self.has_package() {
+            return Err(std::io::Error::other("built-in modes keep no captures"));
+        }
+        if self.captures.iter().any(|c| c.file == file) {
+            return Ok(());
+        }
+        write_capture(&self.dir, file, frame)?;
+        self.keep_capture(file.to_owned(), phase);
+        Ok(())
+    }
+
+    /// Lists a capture saved; past `MAX_CAPTURES` in its phase, the oldest
+    /// one goes, those an indicator was drawn on or marks last.
+    fn keep_capture(&mut self, file: String, phase: &str) {
         self.captures.push(Capture { file, phase: phase.to_owned(), embedding: Vec::new() });
         let of_phase: Vec<usize> = self.captures.iter().enumerate().filter(|(_, c)| c.phase == phase).map(|(i, _)| i).collect();
         if of_phase.len() > MAX_CAPTURES {
-            self.remove_capture(&self.captures[of_phase[0]].file.clone());
+            let used = |file: &String| self.zones.iter().any(|z| z.capture.as_ref() == Some(file) || z.shown_on.contains(file) || z.hidden_on.contains(file));
+            // Not the one just added: it is marked once the indicator edited is saved.
+            let older = &of_phase[..of_phase.len() - 1];
+            let oldest = older.iter().find(|&&i| !used(&self.captures[i].file)).unwrap_or(&of_phase[0]);
+            self.remove_capture(&self.captures[*oldest].file.clone());
         }
-        Ok(())
     }
 
     /// Forgets a capture and deletes its file.
@@ -906,6 +945,17 @@ mod tests {
         inputs.remove_capture(&story);
         assert!(load_capture(&inputs.dir, &story).is_none(), "its file is deleted");
         assert!(load_capture(&copy.dir, &story).is_some(), "not the copy's");
+
+        // Images of recordings keep their names; the captures an indicator marks stay longest.
+        let marked = inputs.captures[0].file.clone();
+        inputs.zones[0].hidden_on.push(marked.clone());
+        inputs.add_capture_as("battle", "session-000001500.png", &frame(201)).unwrap();
+        inputs.add_capture_as("battle", "session-000001500.png", &frame(202)).unwrap();
+        assert_eq!(inputs.captures.iter().filter(|c| c.file == "session-000001500.png").count(), 1, "added once");
+        assert_eq!(load_capture(&inputs.dir, "session-000001500.png").unwrap().pixels, vec![201; 32]);
+        assert!(inputs.captures.iter().any(|c| c.file == marked), "the oldest, marked, stays");
+        assert_eq!(inputs.captures.iter().filter(|c| c.phase == "battle").count(), MAX_CAPTURES);
+        assert!(inputs.add_capture_as("battle", "../out.png", &frame(1)).is_err());
 
         assert!(!Inputs::of(&ModeEntry::from_id("builtin:simple")).has_package());
         let mut builtin = Inputs::default();

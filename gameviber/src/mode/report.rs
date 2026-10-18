@@ -6,15 +6,17 @@
 
 use std::collections::BTreeMap;
 use std::fmt::Write;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 use super::rumble_events::{RumbleEvent, RumbleTracker};
 use super::phases::Sense;
 use super::{ModeEvent, ModeRuntime, ParamValue, IndicatorValue};
 use crate::models::{self, Model};
-use crate::package::Inputs;
+use crate::package::{Inputs, Zone};
 use crate::gamepad::PadState;
-use crate::screen::indicators::IndicatorReader;
-use crate::session::{Change, Player, Progress, Session};
+use crate::screen::indicators::{self, IndicatorReader, ZoneReading};
+use crate::session::{Change, Player, Progress, Session, SessionFrame};
 
 const DT: f64 = 0.02;
 /// The timeline has at most this many rows (before identical rows are dropped).
@@ -23,6 +25,10 @@ const MIN_ROW_SECS: f64 = 0.25;
 const MAX_VIBRATIONS: usize = 150;
 const MAX_PRESSES: usize = 200;
 const MAX_PLOTS: usize = 6;
+/// Share of the progress the session's images take, when its zones are read on them.
+const IMAGES_PROGRESS: f64 = 0.3;
+/// Zones whose readings are kept (`ZoneReadings`): a mode's, and a few edits of each.
+const KEPT_ZONES: usize = 64;
 
 /// What the mode did during one step.
 pub struct Tick {
@@ -75,13 +81,15 @@ pub struct Simulation {
 /// Replays `session` into a freshly loaded mode with `params` and the inputs
 /// the player set up for it (`inputs`: its phases, captures and indicators, as
 /// they are now: indicators whose zones changed since the recording are read
-/// again from its images). Tells how far it got in `progress`, and gives up once it is stopped.
+/// again from its images, on all cores but one, those read in earlier replays
+/// kept in `readings`). Tells how far it got in `progress`, and gives up once it is stopped.
 pub fn simulate(
     chunk_name: &str,
     source: &str,
     params: &BTreeMap<String, ParamValue>,
     inputs: &Inputs,
     session: Session,
+    readings: &ZoneReadings,
     progress: &Progress,
 ) -> Result<Simulation, String> {
     let mut rt = ModeRuntime::load_with(chunk_name, source, params, None, crate::package::funscripts(&inputs.dir))?;
@@ -91,6 +99,9 @@ pub fn simulate(
     let marks = session.changes.iter().filter(|(_, c)| *c == Change::Mark).map(|(t, _)| *t).collect();
     let reread = !session.frames.is_empty() && session.header.zones.as_ref() != Some(&inputs.zones);
     let frames = if reread { session.frames.clone() } else { Vec::new() };
+    // Each zone's readings, image after image (None: the image cannot be read).
+    let read = if frames.is_empty() || inputs.zones.is_empty() { Vec::new() } else { readings.of(&inputs.zones, &frames, progress)? };
+    let started = progress.done() as f64;
     let mut reader = IndicatorReader::default();
     let mut next_frame = 0;
     let mut player = Player::new(session, 0.0);
@@ -145,7 +156,7 @@ pub fn simulate(
             return Err("stopped".into());
         }
         if step % 50 == 0 {
-            progress.set(t / duration);
+            progress.set(started + (1.0 - started) * t / duration);
         }
         step += 1;
         let buttons = player.advance(t, &mut pad);
@@ -167,17 +178,14 @@ pub fn simulate(
         if reread {
             replayed.retain(|e| !matches!(e, ModeEvent::Indicator { .. }));
             while let Some(frame) = frames.get(next_frame).filter(|f| f.t <= t) {
+                let k = next_frame;
                 next_frame += 1;
-                if inputs.zones.is_empty() {
+                let Some(on_image) = read.iter().map(|zone| zone.get(k).copied().flatten()).collect::<Option<Vec<_>>>() else { continue };
+                if on_image.is_empty() {
                     continue;
                 }
-                match frame.data.load() {
-                    Ok(image) => {
-                        let read = reader.update(&inputs.zones, &image, frame.t);
-                        replayed.extend(read.into_iter().map(|(name, value)| ModeEvent::Indicator { name, value }));
-                    }
-                    Err(e) => log::warn!("cannot read an image of the session: {e:#}"),
-                }
+                let changed = reader.update_with(&inputs.zones, frame.t, |z| on_image[z]);
+                replayed.extend(changed.into_iter().map(|(name, value)| ModeEvent::Indicator { name, value }));
             }
         }
         for event in &replayed {
@@ -223,6 +231,92 @@ pub fn simulate(
         });
     }
     Ok(sim)
+}
+
+/// What each zone read on each image of one session, kept between its
+/// replays: only the zones changed since (`indicators::reading_key`) are read again.
+#[derive(Default)]
+pub struct ZoneReadings(Mutex<Vec<(Zone, Readings)>>);
+
+/// A zone's readings, image after image (None: the image cannot be read).
+type Readings = Arc<[Option<ZoneReading>]>;
+
+impl ZoneReadings {
+    /// The readings of each of `zones` on `frames`, read on them for those not kept yet.
+    fn of(&self, zones: &[Zone], frames: &[SessionFrame], progress: &Progress) -> Result<Vec<Readings>, String> {
+        let keys: Vec<Zone> = zones.iter().map(indicators::reading_key).collect();
+        let find = |cache: &[(Zone, Readings)], key: &Zone| cache.iter().find(|(z, _)| z == key).map(|(_, r)| r.clone());
+        let kept: Vec<Option<Readings>> = {
+            let cache = self.0.lock().unwrap();
+            keys.iter().map(|key| find(&cache, key)).collect()
+        };
+        let mut missing: Vec<&Zone> = Vec::new();
+        for (key, kept) in keys.iter().zip(&kept) {
+            if kept.is_none() && !missing.contains(&key) {
+                missing.push(key);
+            }
+        }
+        let mut new: Vec<(Zone, Readings)> = Vec::new();
+        if !missing.is_empty() {
+            let read = read_frames(&missing, frames, progress)?;
+            new = missing.into_iter().cloned().zip(read.into_iter().map(Arc::from)).collect();
+        }
+        let all: Vec<Readings> =
+            keys.iter().zip(kept).map(|(key, kept)| kept.or_else(|| find(&new, key)).unwrap_or_else(|| Arc::from([]))).collect();
+        // The zones used last are kept longest.
+        let mut cache = self.0.lock().unwrap();
+        cache.retain(|(z, _)| !keys.contains(z));
+        for (key, read) in keys.into_iter().zip(&all) {
+            if find(&cache, &key).is_none() {
+                cache.push((key, read.clone()));
+            }
+        }
+        let excess = cache.len().saturating_sub(KEPT_ZONES);
+        cache.drain(..excess);
+        Ok(all)
+    }
+}
+
+/// What each of `zones` reads on each of `frames` (None: the image cannot be
+/// read), on all cores but one; `progress` up to `IMAGES_PROGRESS`.
+fn read_frames(zones: &[&Zone], frames: &[SessionFrame], progress: &Progress) -> Result<Vec<Vec<Option<ZoneReading>>>, String> {
+    let threads = std::thread::available_parallelism().map_or(2, |n| n.get().saturating_sub(1).max(1));
+    let chunk = frames.len().div_ceil(threads).max(1);
+    let done = AtomicUsize::new(0);
+    let read: Vec<Option<Vec<ZoneReading>>> = std::thread::scope(|scope| {
+        let workers: Vec<_> = frames
+            .chunks(chunk)
+            .map(|part| {
+                let done = &done;
+                scope.spawn(move || {
+                    let mut read = Vec::with_capacity(part.len());
+                    for frame in part {
+                        if progress.stopped() {
+                            break;
+                        }
+                        read.push(match frame.data.load() {
+                            Ok(image) => Some(zones.iter().map(|z| indicators::read(z, &image)).collect()),
+                            Err(e) => {
+                                log::warn!("cannot read an image of the session: {e:#}");
+                                None
+                            }
+                        });
+                        let n = done.fetch_add(1, Ordering::Relaxed) + 1;
+                        if n % 20 == 0 {
+                            progress.set(IMAGES_PROGRESS * n as f64 / frames.len() as f64);
+                        }
+                    }
+                    read
+                })
+            })
+            .collect();
+        workers.into_iter().flat_map(|w| w.join().unwrap_or_default()).collect()
+    });
+    if progress.stopped() || read.len() != frames.len() {
+        return Err("stopped".into());
+    }
+    progress.set(IMAGES_PROGRESS);
+    Ok((0..zones.len()).map(|z| read.iter().map(|image| image.as_ref().map(|r| r[z])).collect()).collect())
 }
 
 impl Simulation {
@@ -492,7 +586,7 @@ end
             frames: Vec::new(),
         };
         let params = [("gain".to_owned(), ParamValue::Number(0.5))].into_iter().collect();
-        let sim = simulate("t.luau", source, &params, &Inputs::default(), session, &Progress::default()).unwrap();
+        let sim = simulate("t.luau", source, &params, &Inputs::default(), session, &ZoneReadings::default(), &Progress::default()).unwrap();
         let report = sim.report();
         assert!(report.contains("### Vibrations sent by the game (1)"), "{report}");
         assert!(report.contains("- 0.60 s: 0.30 s long, peak 0.80"), "{report}");
@@ -522,7 +616,7 @@ function tick(dt, input) end
             ],
             frames: Vec::new(),
         };
-        let report = simulate("t.luau", source, &BTreeMap::new(), &Inputs::default(), session, &Progress::default()).unwrap().report();
+        let report = simulate("t.luau", source, &BTreeMap::new(), &Inputs::default(), session, &ZoneReadings::default(), &Progress::default()).unwrap().report();
         assert!(report.contains("### The game's sound\n\n1 hits heard"), "{report}");
         assert!(report.contains("| sound | phase |"), "{report}");
         assert!(report.contains("| 0.25 | 0.00 | - | 0.60 | - | 0.90 |"), "{report}");
@@ -565,7 +659,7 @@ function tick(dt, input) end
                 .collect(),
         };
         let source = "mode { api = 1, name = 'T' } function tick(dt, input) set(input.indicators.battle_hud and 1 or 0) end";
-        let replay = |zones| simulate("t.luau", source, &BTreeMap::new(), &inputs, session(zones), &Progress::default()).unwrap();
+        let replay = |zones| simulate("t.luau", source, &BTreeMap::new(), &inputs, session(zones), &ZoneReadings::default(), &Progress::default()).unwrap();
         let shown = |sim: &Simulation, t: f64| sim.indicators_at(t).get("battle_hud").copied();
 
         let same = replay(Some(inputs.zones.clone()));
@@ -579,6 +673,24 @@ function tick(dt, input) end
         assert_eq!(shown(&changed, 1.8), Some(IndicatorValue::Visibility(false)), "read from the images");
         let out = |t: f64| changed.ticks().iter().find(|k| k.t >= t).unwrap().channels.values().copied().fold(0.0, f64::max);
         assert_eq!((out(0.5), out(1.8)), (1.0, 0.0), "the mode is given them");
+
+        // Read once, kept for the next replays: its images gone, the same.
+        let readings = ZoneReadings::default();
+        let gone = |inputs: &Inputs| {
+            let mut session = session(None);
+            session.frames.iter_mut().for_each(|f| f.data = FrameData::File("/nonexistent.jpg".into()));
+            simulate("t.luau", source, &BTreeMap::new(), inputs, session, &readings, &Progress::default()).unwrap()
+        };
+        simulate("t.luau", source, &BTreeMap::new(), &inputs, session(None), &readings, &Progress::default()).unwrap();
+        assert_eq!(gone(&inputs).indicator_changes(), changed.indicator_changes());
+        // Its threshold changed: what the zone reads is still known.
+        let mut stricter = inputs.clone();
+        stricter.zones[0].threshold = 0.999;
+        assert_eq!(shown(&gone(&stricter), 0.5), Some(IndicatorValue::Visibility(false)), "{:?}", gone(&stricter).indicator_changes());
+        // Moved: read again.
+        let mut moved = inputs.clone();
+        moved.zones[0].rect[0] -= 0.01;
+        assert!(gone(&moved).indicator_changes().is_empty(), "its images cannot be read");
     }
 
     #[test]
@@ -591,7 +703,7 @@ function tick(dt, input) end
         };
         let stopped = Progress::default();
         stopped.stop();
-        assert!(simulate("t.luau", source, &BTreeMap::new(), &Inputs::default(), session, &stopped).is_err());
+        assert!(simulate("t.luau", source, &BTreeMap::new(), &Inputs::default(), session, &ZoneReadings::default(), &stopped).is_err());
     }
 
     #[test]
@@ -602,8 +714,9 @@ function tick(dt, input) end
             changes: Vec::new(),
             frames: Vec::new(),
         };
-        let report = simulate("t.luau", source, &BTreeMap::new(), &Inputs::default(), session, &Progress::default()).unwrap().report();
+        let report = simulate("t.luau", source, &BTreeMap::new(), &Inputs::default(), session, &ZoneReadings::default(), &Progress::default()).unwrap().report();
         assert!(report.contains("stopped on an error"), "{report}");
         assert!(report.contains("boom"), "{report}");
     }
 }
+

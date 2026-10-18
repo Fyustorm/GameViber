@@ -21,6 +21,7 @@ use crate::config::{self, ModeEntry, MODE_EXTENSION};
 use crate::game::{self, Game};
 use crate::funscript::{self, Funscripts};
 use crate::package::{self, Inputs, MAX_CAPTURES, MAX_PHASES};
+use crate::screen::Frame;
 
 /// Funscripts by name, as their files hold them.
 type FunscriptFiles = Vec<(String, Vec<u8>)>;
@@ -40,6 +41,10 @@ const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
 const MAX_ENTRIES: usize = 2 + MAX_VARIANTS + MAX_PHASES * MAX_CAPTURES + funscript::MAX_FUNSCRIPTS;
 const MAX_ENTRY_SIZE: u64 = 8 << 20;
 const MAX_TOTAL_SIZE: u64 = 128 << 20;
+/// Captures are shared no wider than this, but those an indicator's zone
+/// was drawn on: the overlay copies twice as wide, too heavy for a package
+/// holding many, and phases are recognized on a 224 x 224 image.
+const SHARED_WIDTH: u32 = 480;
 
 #[derive(Serialize, Deserialize)]
 struct Manifest {
@@ -97,9 +102,15 @@ pub fn export(game: &str, mode: &str, path: &Path, left_out: &[String]) -> anyho
         }
     }
     let mut images = Vec::new();
+    let drawn_on: Vec<String> = inputs.zones.iter().filter_map(|z| z.capture.clone()).collect();
     inputs.captures.retain_mut(|capture| {
         capture.embedding.clear();
-        match fs::read(package::capture_path(&inputs.dir, &capture.file)) {
+        let image = if drawn_on.contains(&capture.file) { None } else { package::load_capture(&inputs.dir, &capture.file) };
+        let read = match image.filter(|frame| frame.width > SHARED_WIDTH) {
+            Some(frame) => shrunk(&frame),
+            None => fs::read(package::capture_path(&inputs.dir, &capture.file)).map_err(anyhow::Error::from),
+        };
+        match read {
             Ok(bytes) => {
                 images.push((capture.file.clone(), bytes));
                 true
@@ -136,6 +147,17 @@ pub fn export(game: &str, mode: &str, path: &Path, left_out: &[String]) -> anyho
             Err(e)
         }
     }
+}
+
+/// A capture `SHARED_WIDTH` wide, as a PNG.
+fn shrunk(frame: &Frame) -> anyhow::Result<Vec<u8>> {
+    let image = image::RgbaImage::from_raw(frame.width, frame.height, frame.pixels.clone()).context("a capture of the wrong size")?;
+    let height = (frame.height as u64 * SHARED_WIDTH as u64 / frame.width.max(1) as u64).max(1) as u32;
+    let small = image::imageops::resize(&image, SHARED_WIDTH, height, image::imageops::FilterType::Triangle);
+    let frame = Frame { width: SHARED_WIDTH, height, source_width: frame.source_width, source_height: frame.source_height, count: 0, pixels: small.into_raw() };
+    let mut bytes = Vec::new();
+    package::encode_capture(&frame, &mut bytes)?;
+    Ok(bytes)
 }
 
 fn write_archive(
@@ -448,6 +470,12 @@ mod tests {
         inputs.external.push(ExternalInput { name: "hp".into(), ..ExternalInput::default() });
         inputs.add_capture("battle", &frame(1)).unwrap();
         inputs.add_capture("", &frame(2)).unwrap();
+        // Wide captures are shared narrower, but those a zone was drawn on.
+        let wide = |v: u8| Frame { width: 960, height: 540, source_width: 960, source_height: 540, count: 0, pixels: vec![v; 960 * 540 * 4] };
+        inputs.add_capture("battle", &wide(3)).unwrap();
+        inputs.add_capture("battle", &wide(4)).unwrap();
+        let (wide_drawn, wide_example) = (inputs.captures[2].file.clone(), inputs.captures[3].file.clone());
+        inputs.zones.push(Zone { indicator: "boss".into(), capture: Some(wide_drawn.clone()), ..Zone::default() });
         inputs.captures[0].embedding = vec![1.0, 0.0];
         let drawn_on = inputs.captures[0].file.clone();
         inputs.zones.push(Zone { indicator: "menu".into(), capture: Some(drawn_on.clone()), ..Zone::default() });
@@ -475,10 +503,13 @@ mod tests {
         assert_eq!(got.steam_app_id, Some(2679460));
         let got = Inputs::of(&ModeEntry::from_id(&mode));
         assert_eq!((&got.phases, &got.external), (&inputs.phases, &inputs.external));
-        assert_eq!(got.captures.len(), 1, "captures to sort stay home");
+        assert_eq!(got.captures.len(), 3, "captures to sort stay home");
+        assert_eq!(package::load_capture(&got.dir, &wide_drawn).unwrap().width, 960);
+        let example = package::load_capture(&got.dir, &wide_example).unwrap();
+        assert_eq!((example.width, example.height, example.pixels[0]), (SHARED_WIDTH, 270, 4));
         assert!(got.captures[0].embedding.is_empty(), "embeddings are computed again");
         assert_eq!(package::load_capture(&got.dir, &drawn_on).unwrap().pixels, vec![1; 32]);
-        assert_eq!(got.zones[0].capture.as_deref(), Some(drawn_on.as_str()));
+        assert_eq!(got.zones[1].capture.as_deref(), Some(drawn_on.as_str()));
         assert_eq!(fs::read_to_string(&mode_path).unwrap(), MODE_SOURCE);
         assert_eq!(fs::read_to_string(&variant).unwrap(), boss, "exported from its variant, the mode comes with all of them");
         assert_eq!(fs::read_to_string(funscripts.join("hit.funscript")).unwrap(), hit);

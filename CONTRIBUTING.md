@@ -109,7 +109,7 @@ covers `/usr/bin/gameviber helper`.
 [`gameviber-overlay/`](gameviber-overlay/) is an implicit Vulkan layer and,
 when preloaded (`LD_PRELOAD`, through the `gameviber-overlay` launcher),
 OpenGL swap hooks (GLX and EGL). It talks to GameViber over a Unix socket and
-shares small copies of the game's image (480 pixels wide, 10 per second,
+shares small copies of the game's image (960 pixels wide, 10 per second,
 shrunk on the GPU) through sealed shared memory. `GAMEVIBER_OVERLAY_DEBUG=1`
 prints its errors on the game's stderr.
 

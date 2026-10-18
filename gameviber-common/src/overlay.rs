@@ -62,8 +62,10 @@ pub struct CaptureRequest {
 }
 
 impl Default for CaptureRequest {
+    /// Wide enough for small elements of a game's interface (a minimap's
+    /// marks, a few pixels at 480) to be read in indicators.
     fn default() -> Self {
-        Self { width: 480, fps: 10.0 }
+        Self { width: frames::MAX_WIDTH, fps: 10.0 }
     }
 }
 

@@ -285,10 +285,17 @@ mod tests {
     fn the_fonts_draw_every_character_of_the_gui() {
         let fonts = fonts();
         let faces: Vec<ttf_parser::Face> = fonts.font_data.values().map(|d| ttf_parser::Face::parse(&d.font, d.index).unwrap()).collect();
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/gui");
+        // The GUI's files, those of its modules' own directories (`screen/`) too.
+        let mut files = Vec::new();
+        let mut dirs = vec![std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/gui")];
+        while let Some(dir) = dirs.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() { dirs.push(path) } else { files.push(path) }
+            }
+        }
         let mut missing = Vec::new();
-        for entry in std::fs::read_dir(&dir).unwrap() {
-            let path = entry.unwrap().path();
+        for path in files {
             let text = std::fs::read_to_string(&path).unwrap();
             for (n, line) in text.lines().enumerate().filter(|(_, l)| !l.trim_start().starts_with("//")) {
                 for c in line.chars().filter(|c| !c.is_ascii() && *c != '\u{fe0f}') {

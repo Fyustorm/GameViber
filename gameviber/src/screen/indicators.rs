@@ -584,8 +584,14 @@ pub fn bar_reading(zone: &Zone, frame: &Frame) -> Option<(f32, f32)> {
 /// thresholds a little (hysteresis). Also returns the similarity that
 /// decided: the best one, or the worst one when all zones must show it.
 pub fn is_shown(zones: &[&Zone], frame: &Frame, was_shown: bool) -> (bool, f32) {
+    let measures: Vec<f32> = zones.iter().map(|zone| measure(zone, frame).unwrap_or(0.0)).collect();
+    shown_by(zones, &measures, was_shown)
+}
+
+/// `is_shown` from what each zone read (`measure`).
+fn shown_by(zones: &[&Zone], measures: &[f32], was_shown: bool) -> (bool, f32) {
     let margin = if was_shown { HYSTERESIS } else { 0.0 };
-    let measures = zones.iter().map(|zone| (measure(zone, frame).unwrap_or(0.0), zone.threshold - margin));
+    let measures = zones.iter().zip(measures).map(|(zone, &m)| (m, zone.threshold - margin));
     if zones.first().is_some_and(|z| z.all_zones) {
         measures.fold((true, 1.0), |(shown, worst), (m, threshold)| (shown && m >= threshold, f32::min(worst, m)))
     } else {
@@ -593,14 +599,58 @@ pub fn is_shown(zones: &[&Zone], frame: &Frame, was_shown: bool) -> (bool, f32) 
     }
 }
 
+/// How far an indicator read in `zones` is from changing, given what each
+/// zone read (`measure`): each one's similarity less its threshold, the best
+/// one's (the worst one's when all zones must show it), and which zone that
+/// is. Shown from 0, as `is_shown` without hysteresis.
+pub fn margin(zones: &[&Zone], measures: &[f32]) -> (f32, usize) {
+    let each = zones.iter().zip(measures).map(|(z, m)| m - z.threshold).enumerate();
+    let decided = if zones.first().is_some_and(|z| z.all_zones) {
+        each.min_by(|a, b| a.1.total_cmp(&b.1))
+    } else {
+        each.max_by(|a, b| a.1.total_cmp(&b.1))
+    };
+    decided.map_or((-1.0, 0), |(k, m)| (m, k))
+}
+
 /// A gauge read in several zones reads where its bar is found (the most
-/// complete when several find it); None when no zone finds it.
-pub fn fill_anywhere(zones: &[&Zone], frame: &Frame) -> Option<f32> {
-    zones
-        .iter()
-        .filter_map(|zone| bar_reading(zone, frame))
-        .max_by(|a, b| a.1.total_cmp(&b.1))
-        .map(|(fill, _)| fill)
+/// complete when several find it), from what each zone read (`bar_reading`);
+/// None when no zone finds it.
+fn fill_anywhere(readings: impl Iterator<Item = Option<(f32, f32)>>) -> Option<f32> {
+    readings.flatten().max_by(|a, b| a.1.total_cmp(&b.1)).map(|(fill, _)| fill)
+}
+
+/// What a zone reads on one image, whatever came before: its similarity
+/// (`measure`) for a visibility indicator's zone, its bar (`bar_reading`)
+/// for a gauge's. `IndicatorReader` makes values of them.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ZoneReading {
+    Similarity(f32),
+    Bar(Option<(f32, f32)>),
+}
+
+pub fn read(zone: &Zone, frame: &Frame) -> ZoneReading {
+    match zone.kind {
+        IndicatorKind::Visibility => ZoneReading::Similarity(measure(zone, frame).unwrap_or(0.0)),
+        IndicatorKind::Gauge => ZoneReading::Bar(bar_reading(zone, frame)),
+    }
+}
+
+/// The zone as far as what it reads goes (`read`): without its name, its
+/// threshold or the captures it was learned from, which only decide what is
+/// made of it. Zones alike this way read the same on the same image.
+pub fn reading_key(zone: &Zone) -> Zone {
+    Zone {
+        indicator: String::new(),
+        threshold: 0.0,
+        all_zones: false,
+        shown_on: Vec::new(),
+        hidden_on: Vec::new(),
+        read_when: Vec::new(),
+        phase: None,
+        capture: None,
+        ..zone.clone()
+    }
 }
 
 /// The first of a gauge's conditions (`Zone::read_when`) that does not hold,
@@ -995,6 +1045,12 @@ pub struct IndicatorReader {
 impl IndicatorReader {
     /// Reads `frame`, copied at `time` (s).
     pub fn update(&mut self, zones: &[Zone], frame: &Frame, time: f64) -> Vec<(String, IndicatorValue)> {
+        self.update_with(zones, time, |k| read(&zones[k], frame))
+    }
+
+    /// `update` with what each zone read on the frame, `read(k)` for
+    /// `zones[k]` (asked only when needed): read beforehand, or kept.
+    pub fn update_with(&mut self, zones: &[Zone], time: f64, read: impl Fn(usize) -> ZoneReading) -> Vec<(String, IndicatorValue)> {
         let mut changed = Vec::new();
         self.measures.clear();
         self.values.retain(|name, _| zones.iter().any(|z| z.indicator == *name));
@@ -1009,11 +1065,19 @@ impl IndicatorReader {
         }
         names.sort_by_key(|name| zones.iter().any(|z| z.indicator == *name && z.kind == IndicatorKind::Gauge));
         for name in names {
-            let of_indicator: Vec<&Zone> = zones.iter().filter(|z| z.indicator == name).collect();
+            let indices: Vec<usize> = (0..zones.len()).filter(|&k| zones[k].indicator == name).collect();
+            let of_indicator: Vec<&Zone> = indices.iter().map(|&k| &zones[k]).collect();
             let previous = self.values.get(name).copied();
             let (measure, value) = match of_indicator[0].kind {
                 IndicatorKind::Visibility => {
-                    let (shown, best) = is_shown(&of_indicator, frame, previous == Some(IndicatorValue::Visibility(true)));
+                    let measures: Vec<f32> = indices
+                        .iter()
+                        .map(|&k| match read(k) {
+                            ZoneReading::Similarity(m) => m,
+                            ZoneReading::Bar(_) => 0.0,
+                        })
+                        .collect();
+                    let (shown, best) = shown_by(&of_indicator, &measures, previous == Some(IndicatorValue::Visibility(true)));
                     self.seen.insert(name.to_owned(), shown);
                     let value = match previous {
                         // Changed only once it holds for `SETTLE`.
@@ -1035,7 +1099,11 @@ impl IndicatorReader {
                 }
                 IndicatorKind::Gauge => {
                     let shown = |n: &str| self.seen.get(n).copied();
-                    let measure = if unmet(of_indicator[0], shown).is_none() { fill_anywhere(&of_indicator, frame) } else { None };
+                    let bars = indices.iter().map(|&k| match read(k) {
+                        ZoneReading::Bar(bar) => bar,
+                        ZoneReading::Similarity(_) => None,
+                    });
+                    let measure = if unmet(of_indicator[0], shown).is_none() { fill_anywhere(bars) } else { None };
                     let missing = self.missing.entry(name.to_owned()).or_default();
                     *missing = if measure.is_none() { *missing + 1 } else { 0 };
                     let value = match (measure, previous) {
@@ -1166,6 +1234,16 @@ mod tests {
         zones.iter_mut().for_each(|z| z.all_zones = true);
         assert!(is_shown(&of(&zones), &battle, false).0);
         assert!(!is_shown(&of(&zones), &one_missing, false).0, "all its zones are needed");
+        // How far from changing: what `is_shown` says, from the measures alone.
+        for frame in [&battle, &one_missing] {
+            let measures: Vec<f32> = zones.iter().map(|z| measure(z, frame).unwrap()).collect();
+            for all in [false, true] {
+                zones.iter_mut().for_each(|z| z.all_zones = all);
+                let (m, k) = margin(&of(&zones), &measures);
+                assert_eq!(m >= 0.0, is_shown(&of(&zones), frame, false).0);
+                assert_eq!(m, measures[k] - zones[k].threshold);
+            }
+        }
 
         let mut reader = IndicatorReader::default();
         assert_eq!(reader.update(&zones, &battle, 0.0), vec![("battle_hud".to_owned(), IndicatorValue::Visibility(true))]);
@@ -1625,6 +1703,7 @@ mod tests {
             ..Zone::default()
         };
         let (battle, field) = (zone_at(10), zone_at(60));
+        let fill_anywhere = |zones: &[&Zone], frame: &Frame| fill_anywhere(zones.iter().map(|z| bar_reading(z, frame)));
         assert!((fill_anywhere(&[&battle, &field], &bar_at(10, 0.75)).unwrap() - 0.75).abs() < 0.04);
         assert!((fill_anywhere(&[&battle, &field], &bar_at(60, 0.25)).unwrap() - 0.25).abs() < 0.04);
         assert_eq!(fill_anywhere(&[&battle, &field], &frame(|_, _| [25, 25, 35])), None, "in no place: unknown");
