@@ -2,6 +2,8 @@
 //! comments, numbers, and the mode API (functions, callbacks, `P`, `input`)
 //! so that what GameViber provides stands out from the script's own names.
 
+use std::ops::Range;
+
 use eframe::egui::text::{LayoutJob, TextFormat};
 use eframe::egui::{Color32, FontId};
 
@@ -46,9 +48,9 @@ enum Kind {
 }
 
 /// Splits `text` into (byte range, kind) covering all of it.
-fn tokens(text: &str) -> Vec<(std::ops::Range<usize>, Kind)> {
+fn tokens(text: &str) -> Vec<(Range<usize>, Kind)> {
     let bytes = text.as_bytes();
-    let mut out: Vec<(std::ops::Range<usize>, Kind)> = Vec::new();
+    let mut out: Vec<(Range<usize>, Kind)> = Vec::new();
     let mut i = 0;
     // Last non-blank byte, to tell a field (`input.time`) from a global.
     let mut previous = b' ';
@@ -138,14 +140,31 @@ fn line_end(bytes: &[u8], i: usize) -> usize {
     bytes[i..].iter().position(|b| *b == b'\n').map_or(bytes.len(), |p| i + p)
 }
 
-/// Highlighted layout of a mode's source; `error_line` (1-based) gets a red background.
-pub fn highlight(text: &str, font: FontId, error_line: Option<usize>) -> LayoutJob {
+/// Highlighted layout of a mode's source; `error_line` (1-based) gets a red
+/// background, and each of `marks` (sorted, apart: the matches of a search) its color.
+pub fn highlight(text: &str, font: FontId, error_line: Option<usize>, marks: &[(Range<usize>, Color32)]) -> LayoutJob {
     let mut job = LayoutJob::default();
     let error_range = error_line.and_then(|line| {
         let start = if line == 1 { 0 } else { text.match_indices('\n').nth(line - 2)?.0 + 1 };
         Some(start..line_end(text.as_bytes(), start))
     });
-    for (range, kind) in tokens(text) {
+    let tokens = tokens(text);
+    // Tokens are cut at the error line's and the marks' edges so only they are tinted.
+    let mut cuts: Vec<usize> = tokens.iter().map(|(range, _)| range.start).chain([text.len()]).collect();
+    cuts.extend(error_range.iter().flat_map(|e| [e.start, e.end]));
+    cuts.extend(marks.iter().flat_map(|(m, _)| [m.start, m.end]).filter(|c| *c <= text.len()));
+    cuts.sort_unstable();
+    cuts.dedup();
+    let (mut token, mut mark) = (0, 0);
+    for part in cuts.windows(2) {
+        let (start, end) = (part[0], part[1]);
+        while tokens[token].0.end <= start {
+            token += 1;
+        }
+        while marks.get(mark).is_some_and(|(m, _)| m.end <= start) {
+            mark += 1;
+        }
+        let kind = tokens[token].1;
         let color = match kind {
             Kind::Plain => TEXT,
             Kind::Keyword => KEYWORD,
@@ -155,26 +174,59 @@ pub fn highlight(text: &str, font: FontId, error_line: Option<usize>) -> LayoutJ
             Kind::Api => API,
             Kind::Callback => CALLBACK,
         };
-        // Tokens are cut at the error line's edges so only that line is tinted.
-        let mut cuts = vec![range.start, range.end];
-        if let Some(e) = &error_range {
-            cuts.extend([e.start, e.end].into_iter().filter(|c| range.contains(c) && *c > range.start));
-        }
-        cuts.sort_unstable();
-        cuts.dedup();
-        for part in cuts.windows(2) {
-            let in_error = error_range.as_ref().is_some_and(|e| part[0] >= e.start && part[1] <= e.end);
-            let format = TextFormat {
-                font_id: font.clone(),
-                color,
-                background: if in_error { ERROR_LINE } else { Color32::TRANSPARENT },
-                italics: kind == Kind::Comment,
-                ..Default::default()
-            };
-            job.append(&text[part[0]..part[1]], 0.0, format);
-        }
+        let background = match marks.get(mark).filter(|(m, _)| m.start <= start) {
+            Some((_, color)) => *color,
+            None if error_range.as_ref().is_some_and(|e| start >= e.start && end <= e.end) => ERROR_LINE,
+            None => Color32::TRANSPARENT,
+        };
+        let format = TextFormat { font_id: font.clone(), color, background, italics: kind == Kind::Comment, ..Default::default() };
+        job.append(&text[start..end], 0.0, format);
     }
     job
+}
+
+/// Steps into (+1) and out of (-1) blocks a token takes: `then`, `do`,
+/// `function`, brackets... in, `end`, `until`... out, `else` out and in again.
+fn block_steps(text: &str, kind: Kind) -> Vec<i32> {
+    match kind {
+        Kind::Keyword => match text {
+            "then" | "do" | "function" | "repeat" => vec![1],
+            "end" | "until" | "elseif" => vec![-1],
+            "else" => vec![-1, 1],
+            _ => Vec::new(),
+        },
+        Kind::Plain => text
+            .chars()
+            .filter_map(|c| match c {
+                '(' | '{' | '[' => Some(1),
+                ')' | '}' | ']' => Some(-1),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// The line leaves a block open: the next line goes one level further in.
+pub fn opens_block(line: &str) -> bool {
+    let (mut depth, mut lowest) = (0, 0);
+    for step in tokens(line).into_iter().flat_map(|(range, kind)| block_steps(&line[range], kind)) {
+        depth += step;
+        lowest = lowest.min(depth);
+    }
+    depth > lowest
+}
+
+/// The line starts by closing a block (`end`, `else`, `}`...): it sits one level out.
+pub fn starts_with_closer(line: &str) -> bool {
+    tokens(line)
+        .into_iter()
+        .find(|(range, _)| !line[range.clone()].trim().is_empty())
+        .is_some_and(|(range, kind)| {
+            let first = line[range].trim_start();
+            let first = if kind == Kind::Plain { &first[..first.chars().next().map_or(0, char::len_utf8)] } else { first };
+            block_steps(first, kind).first() == Some(&-1)
+        })
 }
 
 /// Line (1-based) of the first `<chunk>:<line>:` location in an error message.
@@ -239,7 +291,7 @@ mod tests {
 
     #[test]
     fn error_line_is_tinted() {
-        let job = highlight("a = 1\nb = 2\nc = 3", FontId::monospace(12.0), Some(2));
+        let job = highlight("a = 1\nb = 2\nc = 3", FontId::monospace(12.0), Some(2), &[]);
         let tinted: String = job
             .sections
             .iter()
@@ -247,5 +299,32 @@ mod tests {
             .map(|s| &job.text[s.byte_range.start.0..s.byte_range.end.0])
             .collect();
         assert_eq!(tinted, "b = 2");
+    }
+
+    #[test]
+    fn marks_are_tinted_over_the_error_line() {
+        const MARK: Color32 = Color32::RED;
+        let job = highlight("a = 1\nb = ab", FontId::monospace(12.0), Some(2), &[(0..1, MARK), (10..12, MARK)]);
+        let text = |s: &eframe::egui::text::LayoutSection| &job.text[s.byte_range.start.0..s.byte_range.end.0];
+        let marked: Vec<&str> = job.sections.iter().filter(|s| s.format.background == MARK).map(text).collect();
+        assert_eq!(marked, ["a", "ab"]);
+        let tinted: String = job.sections.iter().filter(|s| s.format.background == ERROR_LINE).map(text).collect();
+        assert_eq!(tinted, "b = ");
+    }
+
+    #[test]
+    fn blocks_opened_and_closed() {
+        for line in ["if x then", "  for i = 1, 3 do", "function tick(dt, input)", "local t = {", "else", "elseif a then", "end, {", "after(1, function()"] {
+            assert!(opens_block(line), "{line}");
+        }
+        for line in ["x = 1", "end", "if a then b() end", "local f = function(a) return a end", "t = { 1 } -- {", "s = \"do\"", "until done"] {
+            assert!(!opens_block(line), "{line}");
+        }
+        for line in ["end", "  else", "elseif x then", "  })", "until x"] {
+            assert!(starts_with_closer(line), "{line}");
+        }
+        for line in ["x = 1", "  if x then", "", "-- end", "  f(x)"] {
+            assert!(!starts_with_closer(line), "{line}");
+        }
     }
 }

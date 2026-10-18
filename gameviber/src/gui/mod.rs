@@ -11,6 +11,7 @@
 //! as files.
 
 mod audio;
+mod code;
 mod creator;
 mod diagram;
 mod feedback;

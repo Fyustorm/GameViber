@@ -10,6 +10,7 @@
 use eframe::egui::text::LayoutJob;
 use eframe::egui::{self, Margin, RichText};
 
+use super::code::{self, Editor};
 use super::diagram::{mode_diagram, Part};
 use super::library::mode_game;
 use super::luau;
@@ -59,19 +60,6 @@ pub(super) enum Way {
     Ai,
     BuiltIn,
     Write,
-}
-
-#[derive(Default)]
-pub(super) struct Editor {
-    /// Mode id the buffer was loaded from.
-    pub(super) id: String,
-    pub(super) text: String,
-    pub(super) dirty: bool,
-    pub(super) message: Option<String>,
-    /// Last highlighted text and error line, with its layout.
-    highlighted: Option<(String, Option<usize>, LayoutJob)>,
-    /// Line to scroll to on the next frame.
-    goto: Option<usize>,
 }
 
 #[derive(Default)]
@@ -142,7 +130,7 @@ impl App {
     fn load_editor(&mut self, s: &Shared) {
         let editor = &mut self.creator.editor;
         if editor.id != s.mode.id && !editor.dirty {
-            *editor = Editor { id: s.mode.id.clone(), ..Default::default() };
+            editor.reset(s.mode.id.clone());
             match ModeEntry::from_id(&s.mode.id).source() {
                 Ok(text) => editor.text = text,
                 Err(e) => editor.message = Some(format!("cannot read: {e}")),
@@ -324,7 +312,7 @@ impl App {
                     }
                 }
                 if ui.add_enabled(editor.dirty, egui::Button::new("Revert")).clicked() {
-                    *editor = Editor::default();
+                    editor.reset(String::new());
                 }
             }
         });
@@ -350,7 +338,7 @@ impl App {
                 }
             }
         }
-        code_view(ui, editor, !editing.builtin, error_line);
+        code::code_view(ui, editor, !editing.builtin, error_line);
         if reload {
             self.send(Command::ReloadMode);
         }
@@ -376,61 +364,6 @@ impl App {
             }
         });
     }
-}
-
-/// The editor: line numbers (the error line in red) next to the highlighted source.
-fn code_view(ui: &mut egui::Ui, editor: &mut Editor, editable: bool, error_line: Option<usize>) {
-    const MARGIN: egui::Margin = Margin { left: 6, right: 6, top: 4, bottom: 4 };
-    let font = egui::TextStyle::Monospace.resolve(ui.style());
-    let Editor { text, dirty, highlighted, goto, .. } = editor;
-    // Lines do not wrap: long ones scroll sideways.
-    let width = ui.available_width();
-    egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
-        ui.horizontal_top(|ui| {
-            ui.spacing_mut().item_spacing.x = 0.0;
-            // Line numbers, laid out with the same font as the code so rows match.
-            let lines = text.split('\n').count();
-            let mut numbers = LayoutJob::default();
-            for line in 1..=lines {
-                let color = if Some(line) == error_line { DANGER_TEXT } else { IDLE };
-                let format = egui::TextFormat { font_id: font.clone(), color, ..Default::default() };
-                numbers.append(&format!("{line:>4} {}", if line < lines { "\n" } else { "" }), 0.0, format);
-            }
-            let galley = ui.fonts_mut(|f| f.layout_job(numbers));
-            let gutter_width = galley.size().x;
-            let gutter = ui
-                .vertical(|ui| {
-                    ui.add_space(MARGIN.top as f32);
-                    ui.label(galley.clone())
-                })
-                .inner;
-            if let Some(line) = goto.take() {
-                if let Some(row) = galley.rows.get(line - 1) {
-                    let rect = row.rect().translate(gutter.rect.min.to_vec2());
-                    ui.scroll_to_rect(rect, Some(egui::Align::Center));
-                }
-            }
-            let mut layouter = |ui: &egui::Ui, buffer: &dyn egui::TextBuffer, _wrap: f32| {
-                let source = buffer.as_str();
-                let stale = highlighted.as_ref().is_none_or(|(t, e, _)| t != source || *e != error_line);
-                if stale {
-                    *highlighted = Some((source.to_owned(), error_line, luau::highlight(source, font.clone(), error_line)));
-                }
-                let job = highlighted.as_ref().map(|(_, _, job)| job.clone()).unwrap_or_default();
-                ui.fonts_mut(|f| f.layout_job(job))
-            };
-            let edit = egui::TextEdit::multiline(text)
-                .code_editor()
-                .interactive(editable)
-                .margin(MARGIN)
-                .desired_width(width - gutter_width - 2.0 * MARGIN.left as f32 - 12.0)
-                .desired_rows(30)
-                .layouter(&mut layouter);
-            if ui.add(edit).changed() {
-                *dirty = true;
-            }
-        });
-    });
 }
 
 /// `source` with the mode named `name`.
