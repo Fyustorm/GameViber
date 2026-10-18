@@ -22,6 +22,7 @@ injected into games is left out, the rest works the same.
 | Steam app id | the game's environment | Steam's `RunningAppID` in the registry |
 | Updates | packages through pkexec, archive | the installer run silently, or the zip archive replaced in place |
 | Packaging | deb, rpm, Arch, tar.gz | Inno Setup installer (ViGEmBus and HidHide offered), zip |
+| Logs | stderr, `~/.local/share/gameviber/gameviber.log` | `%LOCALAPPDATA%\GameViber\gameviber.log` (no console); the run before kept as `gameviber.previous.log`; panics and crashes (exception code, module and offset) logged |
 
 ## Plan
 

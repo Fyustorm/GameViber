@@ -56,6 +56,9 @@ pub fn runtime_dir() -> PathBuf {
     std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("/tmp/gameviber-{}", uid())))
 }
 
+/// Nothing to add: crashes show in the journal (`coredumpctl`).
+pub fn log_crashes() {}
+
 /// Only its owner may read or write the file `path` (a secret in it).
 pub fn keep_private(path: &Path) {
     use std::os::unix::fs::PermissionsExt;

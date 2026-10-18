@@ -11,11 +11,14 @@ pub use files::{open_file, open_files, save_file};
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicIsize, Ordering};
+use std::sync::OnceLock;
 
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use tokio::signal::windows::{ctrl_break, ctrl_c, ctrl_close, ctrl_shutdown, CtrlBreak, CtrlC, CtrlClose, CtrlShutdown};
-use windows::core::PWSTR;
-use windows::Win32::Foundation::CloseHandle;
+use windows::core::{PCWSTR, PWSTR};
+use windows::Win32::Foundation::{CloseHandle, HMODULE};
+use windows::Win32::System::Diagnostics::Debug::{SetUnhandledExceptionFilter, EXCEPTION_POINTERS, LPTOP_LEVEL_EXCEPTION_FILTER};
+use windows::Win32::System::LibraryLoader::{GetModuleFileNameW, GetModuleHandleExW, GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT};
 use windows::Win32::System::SystemInformation::GetLocalTime;
 use windows::Win32::System::Threading::{OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION};
 
@@ -41,6 +44,38 @@ pub fn keep_private(_path: &Path) {}
 
 /// Nothing to do: GameViber never runs as another user.
 pub fn chown_to_caller(_path: &Path) {}
+
+/// The filter that was there before ours, called after it.
+static PREVIOUS_FILTER: OnceLock<LPTOP_LEVEL_EXCEPTION_FILTER> = OnceLock::new();
+
+/// Crashes (an access violation, a stack overflow) go to the log: their code
+/// and the module and offset they happened at; Windows then handles them as before.
+pub fn log_crashes() {
+    // SAFETY: the filter only reads the record Windows hands it.
+    let previous = unsafe { SetUnhandledExceptionFilter(Some(on_crash)) };
+    let _ = PREVIOUS_FILTER.set(previous);
+}
+
+unsafe extern "system" fn on_crash(info: *const EXCEPTION_POINTERS) -> i32 {
+    if let Some(record) = info.as_ref().and_then(|i| i.ExceptionRecord.as_ref()) {
+        let address = record.ExceptionAddress as usize;
+        let mut module = HMODULE::default();
+        let mut name = [0u16; 260];
+        let place = if GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, PCWSTR(address as *const u16), &mut module).is_ok() {
+            let n = GetModuleFileNameW(Some(module), &mut name) as usize;
+            let path = String::from_utf16_lossy(&name[..n]);
+            format!("{}+{:#x}", path.rsplit('\\').next().unwrap_or(&path), address - module.0 as usize)
+        } else {
+            format!("{address:#x}")
+        };
+        let thread = std::thread::current();
+        log::error!("crash in thread {}: exception {:#010x} at {place}", thread.name().unwrap_or("?"), record.ExceptionCode.0 as u32);
+    }
+    match PREVIOUS_FILTER.get().copied().flatten() {
+        Some(previous) => previous(info),
+        None => 0, // EXCEPTION_CONTINUE_SEARCH
+    }
+}
 
 /// "2026-10-03 21:14:05", local time.
 pub fn local_time() -> String {
