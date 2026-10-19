@@ -211,10 +211,13 @@ impl Control {
     }
 
     fn list(&self, code: u32) -> anyhow::Result<Vec<String>> {
-        // Asked once for its size (in bytes), then filled.
-        let mut size = vec![0u8; 0];
-        let needed = self.request(code, &[], Some(&mut size)).unwrap_or(0);
-        let mut buffer = vec![0u8; (needed as usize).max(64 * 1024)];
+        // Asked once for its size (in bytes), then filled: HidHide refuses
+        // a buffer of any other size (ERROR_INVALID_PARAMETER).
+        let needed = self.request(code, &[], None)? as usize;
+        if needed == 0 {
+            return Ok(Vec::new());
+        }
+        let mut buffer = vec![0u8; needed];
         let got = self.request(code, &[], Some(&mut buffer))? as usize;
         Ok(from_multi(&buffer[..got.min(buffer.len())]))
     }

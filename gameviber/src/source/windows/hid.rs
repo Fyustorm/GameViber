@@ -133,7 +133,10 @@ unsafe fn caps(handle: HANDLE) -> Option<HIDP_CAPS> {
     ok.then_some(caps)
 }
 
-/// The device instance ids HidHide hides a device by: the device's and its parent's.
+/// The device instance ids HidHide hides a device by: the device's, its
+/// parent's, and those of the parent's own parents that are the same gamepad
+/// (its vendor and product): an Xbox 360 controller's XInput comes from its
+/// USB device, two levels above its HID one.
 pub fn instance_ids(path: &str) -> Vec<String> {
     // \\?\HID#VID_054C&PID_09CC&MI_03#7&1a2b&0&0000#{guid} -> HID\VID_054C&PID_09CC&MI_03\7&1A2B&0&0000
     let trimmed = path.trim_start_matches(r"\\?\");
@@ -143,11 +146,28 @@ pub fn instance_ids(path: &str) -> Vec<String> {
     }
     parts.truncate(3);
     let id = parts.join("\\").to_ascii_uppercase();
+    let product = vendor_product(&id);
     let mut ids = vec![id.clone()];
-    if let Some(parent) = parent_id(&id) {
-        ids.push(parent);
+    let Some(mut parent) = parent_id(&id) else { return ids };
+    ids.push(parent.clone());
+    while product.is_some() && ids.len() < 5 {
+        match parent_id(&parent) {
+            Some(next) if vendor_product(&next) == product => {
+                ids.push(next.clone());
+                parent = next;
+            }
+            _ => break,
+        }
     }
     ids
+}
+
+/// `VID_045E&PID_028E` in a device instance id.
+fn vendor_product(id: &str) -> Option<String> {
+    let id = id.to_ascii_uppercase();
+    let start = id.find("VID_")?;
+    let product = id.get(start..start + 17)?;
+    product[8..].starts_with("&PID_").then(|| product.to_owned())
 }
 
 fn parent_id(id: &str) -> Option<String> {
@@ -381,5 +401,8 @@ mod tests {
         let path = r"\\?\hid#vid_054c&pid_09cc&mi_03#7&1a2b3c&0&0000#{4d1e55b2-f16f-11cf-88cb-001111000030}";
         assert_eq!(instance_ids(path).first().map(String::as_str), Some(r"HID\VID_054C&PID_09CC&MI_03\7&1A2B3C&0&0000"));
         assert!(instance_ids("nonsense").is_empty());
+        assert_eq!(vendor_product(r"usb\vid_045e&pid_028e&ig_01\6&1af9fd82&0&01").as_deref(), Some("VID_045E&PID_028E"));
+        assert_eq!(vendor_product(r"USB\VID_045E&PID_028E\5F732270").as_deref(), Some("VID_045E&PID_028E"));
+        assert_eq!(vendor_product(r"ROOT\SYSTEM\0002"), None);
     }
 }
