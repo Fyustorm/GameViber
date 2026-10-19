@@ -426,6 +426,9 @@ modes are kept. While GameViber is in alpha or beta, those versions are offered 
   `%APPDATA%\GameViber\`.
 - Downloaded models: `~/.local/share/gameviber/models/`; on Windows
   `%LOCALAPPDATA%\GameViber\models\`.
+- Games' banners, downloaded from Steam for the games whose Steam app id is
+  known: `~/.local/share/gameviber/banners/`; on Windows
+  `%LOCALAPPDATA%\GameViber\banners\`.
 
 ## Known limitations
 

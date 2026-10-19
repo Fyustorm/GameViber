@@ -376,6 +376,8 @@ impl App {
                         let response = card(PANEL).inner_margin(Margin::same(14)).show(ui, |ui| {
                             ui.vertical(|ui| {
                                 ui.set_width(220.0);
+                                self.banners.show(ui, game.steam_app_id, &game.name, 220.0);
+                                ui.add_space(4.0);
                                 ui.label(RichText::new(&game.name).strong().size(15.0));
                                 ui.label(muted(format!("{} mode{}", game.modes, if game.modes == 1 { "" } else { "s" })));
                                 if yours {
@@ -430,12 +432,18 @@ impl App {
     }
 
     fn community_game(&mut self, ui: &mut egui::Ui, s: &Shared, game: &GameView) {
+        if ui.button("‹ All games").clicked() {
+            self.community.game = None;
+            self.community.selected = None;
+        }
+        ui.add_space(6.0);
         ui.horizontal(|ui| {
-            if ui.button("‹ All games").clicked() {
-                self.community.game = None;
-                self.community.selected = None;
-            }
-            ui.label(RichText::new(&game.name).strong().size(18.0));
+            self.banners.show(ui, game.steam_app_id, &game.name, 184.0);
+            ui.add_space(6.0);
+            ui.vertical(|ui| {
+                ui.label(RichText::new(&game.name).strong().size(20.0));
+                ui.label(muted(format!("{} community mode{}", game.modes, if game.modes == 1 { "" } else { "s" })));
+            });
         });
         ui.add_space(8.0);
         if matches!(self.community.modes, Remote::Idle) {

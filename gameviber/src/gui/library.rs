@@ -7,6 +7,7 @@
 
 use eframe::egui::{self, Margin, RichText};
 
+use super::banners;
 use super::creator::Way;
 use super::diagram::mode_diagram;
 use super::generator::wishes_ui;
@@ -196,6 +197,14 @@ impl App {
                 continue;
             }
             ui.horizontal(|ui| {
+                // The game's banner, when Steam has one.
+                if let Some(app) = game.as_ref().and_then(|g| g.steam_app_id) {
+                    if let Some(texture) = self.banners.get(ui.ctx(), app) {
+                        let size = egui::Vec2::new(120.0, (120.0 / banners::RATIO).round());
+                        ui.add(egui::Image::new(&texture).fit_to_exact_size(size).corner_radius(6));
+                        ui.add_space(4.0);
+                    }
+                }
                 let name = game.as_ref().map_or("In no game", |g| g.name.as_str());
                 ui.label(RichText::new(name).strong().size(16.0));
                 if let Some(game) = game {

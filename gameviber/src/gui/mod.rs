@@ -11,6 +11,7 @@
 //! as files.
 
 mod audio;
+mod banners;
 mod code;
 mod creator;
 mod diagram;
@@ -98,6 +99,8 @@ pub struct App {
     onboarding_checked: bool,
     play: play::State,
     community: community::State,
+    /// Games' banners from Steam.
+    banners: banners::Banners,
     toys: toys::State,
     overlay: overlay::State,
     settings: settings::State,
@@ -158,6 +161,7 @@ impl App {
             onboarding_checked: false,
             play: play::State::default(),
             community: community::State::default(),
+            banners: banners::Banners::default(),
             toys: toys::State::default(),
             overlay: overlay::State::default(),
             settings: settings::State::default(),
