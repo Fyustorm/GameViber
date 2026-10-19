@@ -63,19 +63,21 @@ Wine: they are tested on Windows only.
 
 ## Status
 
-Everything of the plan's first four steps is written, **nothing has run on a
-real Windows yet**. Under Wine: the build links, the tests pass (unit tests of
-the Windows parts included: sample conversion, HID values, XInput layout,
-HidHide's lists, frame downscaling, the game window heuristic, pipes), the GUI
-starts, the installer builds and installs, the sound and gamepad sources fail
-cleanly (Wine has no sound device, ViGEmBus nor capture).
+The plan's first four steps are done and work on Windows: the installer
+(ViGEmBus and HidHide), the rumble through the virtual Xbox 360 controller
+with the real gamepad hidden, the game's sound, its image, shortcuts, links,
+the external inputs pipe and updates. Under Wine, the build links, the tests
+pass (unit tests of the Windows parts included) and the installer builds.
 
 - [x] Base: platform, links, shortcuts, external inputs pipe, updates, CI, installer
 - [x] Sound
 - [x] Rumble
 - [x] Image
+- [ ] In-game panel
 
-### To check on Windows
+The kernel probe stays Linux-only.
+
+### To check again after changing a Windows part
 
 1. The installer: ViGEmBus and HidHide installed when missing, the
    `gameviber://` links open GameViber, a second start hands its link over.
@@ -83,13 +85,11 @@ cleanly (Wine has no sound device, ViGEmBus nor capture).
    virtual controller (`joy.cpl` lists it), its rumble shows on the Rumble
    capture card and still reaches the controller.
 3. A DualShock or a generic gamepad: known (SDL's database) or set up on the
-   Gamepad page, games get it as an Xbox 360 controller; its buttons and axes
-   in the right places (the HID numbering is SDL's on Windows: check it
-   against a mapping of SDL_GameControllerDB).
-4. Hiding: Windows asks to allow it, games only see the virtual controller,
+   Gamepad page, games get it as an Xbox 360 controller, its buttons and axes
+   in the right places.
+4. Hiding: games only see the virtual controller (one press counted once),
    the real one comes back when GameViber stops (and after killing it, at the
-   next start). Unknown: whether HidHide also hides Xbox controllers this way
-   (their HID side and its parent are listed).
+   next start).
 5. The sound: the game's own sound in Auto (Setup › Sound), or everything.
 6. The image: a borderless game shows in Setup › In-game overlay, Creator ›
    Captures & indicators gets live images, no yellow border on Windows 11;
@@ -97,4 +97,3 @@ cleanly (Wine has no sound device, ViGEmBus nor capture).
 7. Keyboard shortcuts, the external inputs pipe
    (`echo {"event":"kill"} > \\.\pipe\gameviber-%USERNAME%-external`), the
    file dialogs, an update from the installer and from the zip.
-8. The CI's Windows jobs (tests, packages) on GitHub.
