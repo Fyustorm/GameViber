@@ -234,6 +234,8 @@ fn open(pid: Option<u32>) -> anyhow::Result<Client> {
 /// Process loopback's audio client: activated asynchronously, waited for.
 unsafe fn process_client(pid: u32) -> anyhow::Result<IAudioClient> {
     // Boxed, with the variant holding them: left to Windows if it never answers.
+    // The variant is never dropped: `PropVariantClear` would free the
+    // parameters it points to, which the box frees.
     let mut params = Box::new(AUDIOCLIENT_ACTIVATION_PARAMS {
         ActivationType: AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
         Anonymous: AUDIOCLIENT_ACTIVATION_PARAMS_0 {
@@ -243,9 +245,9 @@ unsafe fn process_client(pid: u32) -> anyhow::Result<IAudioClient> {
             },
         },
     });
-    let blob = Box::new(PROPVARIANT {
+    let blob = Box::new(ManuallyDrop::new(PROPVARIANT {
         Anonymous: PROPVARIANT_0 {
-            Anonymous: std::mem::ManuallyDrop::new(PROPVARIANT_0_0 {
+            Anonymous: ManuallyDrop::new(PROPVARIANT_0_0 {
                 vt: VT_BLOB,
                 wReserved1: 0,
                 wReserved2: 0,
@@ -255,10 +257,10 @@ unsafe fn process_client(pid: u32) -> anyhow::Result<IAudioClient> {
                 },
             }),
         },
-    });
+    }));
     let done = Arc::new((Mutex::new(false), Condvar::new()));
     let handler: IActivateAudioInterfaceCompletionHandler = Activated(done.clone()).into();
-    let operation = ActivateAudioInterfaceAsync(VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, &IAudioClient::IID, Some(&*blob), &handler)?;
+    let operation = ActivateAudioInterfaceAsync(VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, &IAudioClient::IID, Some(&**blob), &handler)?;
     let (lock, ready) = &*done;
     let (finished, _) = ready.wait_timeout_while(lock.lock().unwrap(), Duration::from_secs(5), |done| !*done).unwrap();
     if !*finished {
