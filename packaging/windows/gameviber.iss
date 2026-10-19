@@ -71,6 +71,13 @@ Filename: "{app}\gameviber.exe"; Flags: nowait runasoriginaluser; Check: WizardS
 
 [Code]
 function DriverInstalled(Name: String): Boolean;
+var
+  Key: String;
+  Deleted: Cardinal;
 begin
-  Result := RegKeyExists(HKLM, 'SYSTEM\CurrentControlSet\Services\' + Name);
+  Key := 'SYSTEM\CurrentControlSet\Services\' + Name;
+  Result := RegKeyExists(HKLM, Key);
+  // An uninstalled driver's service stays until Windows restarts, marked for deletion.
+  if Result and RegQueryDWordValue(HKLM, Key, 'DeleteFlag', Deleted) then
+    Result := Deleted = 0;
 end;
