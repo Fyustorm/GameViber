@@ -9,10 +9,18 @@ your game in a couple of minutes.
 Linux (Steam, Proton, Lutris, Heroic: any game with a gamepad), and Windows
 in preview, with fewer features (no in-game panel; see below).
 
+**🌐 [gameviber.fyustorm.ovh](https://gameviber.fyustorm.ovh)**: what GameViber
+does, the downloads, and the modes players made for their games.
+
+[**⬇ Download**](https://gameviber.fyustorm.ovh/download) ·
+[**🎮 Modes by game**](https://gameviber.fyustorm.ovh/games) ·
+[User guide](docs/user-guide.md)
+
 ## Install
 
-Download the package for your system from the
-[Releases](https://github.com/Fyustorm/GameViber/releases) page:
+Download the file for your system from the
+[website](https://gameviber.fyustorm.ovh/download) (it picks the one for your
+system), or from the [Releases](https://github.com/Fyustorm/GameViber/releases) page:
 
 | System | File | Install |
 |---|---|---|
@@ -48,6 +56,30 @@ there is no in-game panel yet. It is new: tell us what does not work.
 
 If something feels wrong, open the mode's page and click **Doesn't feel
 right?**: most answers come with a one-click fix.
+
+## Modes
+
+A mode decides how a game feels. Three ways to get one:
+
+- **The community's**: the [modes players made and shared](https://gameviber.fyustorm.ovh/games),
+  by game. Install them from the website (**Open in GameViber**) or from the
+  app's **Community** page.
+- **Your own**: an AI assistant writes one for your game (First steps above);
+  share it from its page so others can play it.
+- **The built-in ones**, for every genre while your game has none:
+
+| Mode | For | Idea |
+|---|---|---|
+| Simple | anything | forwards the rumble as it is |
+| Accumulation | anything | points earned per vibration, draining while idle |
+| Combo | fighting (Tekken, SF6) | chained hits grow stronger, final burst |
+| Overheat | action / shooter (Ratchet & Clank, Doom) | compressed rumble, peaks stand out, overheat gauge |
+| Tension | turn-based with QTEs (Clair Obscur) | wave building up during fights, parries rewarded |
+| Engine | racing (Forza, GT) | trigger = engine RPM, rumble = road and impacts |
+| Heartbeat | horror (RE, Silent Hill) | heart speeding up with every vibration |
+| All or Nothing | souls-like (Elden Ring, Sekiro) | gauge rising while you survive, emptied by a big hit |
+| Ambient | exploration, platformer, cosy | slow wave under the rumble, fading out when idle |
+| Surge | action metroidvania (PoP: The Lost Crown, Hollow Knight) | hits and parries fill a gauge, spent on a crescendo |
 
 ## Safety
 
@@ -85,6 +117,8 @@ write are yours.
 
 ## Learn more
 
+- [Website](https://gameviber.fyustorm.ovh): presentation, downloads, the
+  community's modes.
 - [User guide](docs/user-guide.md): every page of the app, a mode's inputs
   (phases, captures, indicators), the overlay, the built-in modes, known limitations.
 - [Contributing](CONTRIBUTING.md): building, architecture, writing modes by

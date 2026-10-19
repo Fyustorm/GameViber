@@ -101,8 +101,8 @@ Run `cargo test` after any change to the runtime or to a mode.
   number bumped if the change is incompatible.
 - **Built-in modes**: a new built-in mode goes in `gameviber/modes/<name>.luau` (MIT, see Licenses), is
   registered in `BUILTIN_MODES` (`gameviber/src/config.rs`), added to the load test and
-  given a behaviour test in `gameviber/src/mode/tests.rs`, and listed in the table of
-  `docs/user-guide.md` and in `docs/spec-modes.md` §14.3. Follow the style of the existing modes: a
+  given a behaviour test in `gameviber/src/mode/tests.rs`, and listed in the tables of
+  `docs/user-guide.md` and `README.md` and in `docs/spec-modes.md` §14.3. Follow the style of the existing modes: a
   header comment, `author = "GameViber"`, a `category`, a plain-language `help` and
   1 to 3 `main_params` for players, parameters with units in their labels,
   `plot()` for the internal state worth tuning, `hud()` / `hud_event()` for what
