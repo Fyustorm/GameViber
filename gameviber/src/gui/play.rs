@@ -497,6 +497,7 @@ pub(super) fn mode_tiles(ui: &mut egui::Ui, s: &Shared, user_modes: bool) -> Opt
             body: &body,
             selected: active,
             badge: active.then_some("Active"),
+            image: None,
         };
         if tile.show(ui, size).clicked() && !active {
             clicked = Some(entry.id.clone());

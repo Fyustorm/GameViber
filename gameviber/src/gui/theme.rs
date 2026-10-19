@@ -213,6 +213,8 @@ pub struct Tile<'a> {
     pub body: &'a str,
     pub selected: bool,
     pub badge: Option<&'a str>,
+    /// An image on its left side, in place of the icon.
+    pub image: Option<&'a egui::TextureHandle>,
 }
 
 impl Tile<'_> {
@@ -226,12 +228,23 @@ impl Tile<'_> {
         };
         painter.rect(rect, CornerRadius::same(12), fill, stroke, StrokeKind::Inside);
 
-        let inner = rect.shrink(14.0);
-        let icon = Rect::from_min_size(inner.min, Vec2::splat(34.0));
-        painter.rect_filled(icon, CornerRadius::same(9), RAISED);
-        painter.text(icon.center(), egui::Align2::CENTER_CENTER, self.icon, FontId::proportional(17.0), ACCENT);
+        let mut inner = rect.shrink(14.0);
+        let (text_left, body_top) = match self.image {
+            Some(texture) => {
+                let side = Rect::from_min_size(rect.min, Vec2::new((rect.height() * 1.4).min(rect.width() * 0.4), rect.height()));
+                let corners = CornerRadius { nw: 12, sw: 12, ne: 0, se: 0 };
+                paint_cover(&painter, side.shrink(1.0), texture, corners);
+                inner.min.x = side.right() + 12.0;
+                (inner.left(), inner.top() + 38.0)
+            }
+            None => {
+                let icon = Rect::from_min_size(inner.min, Vec2::splat(34.0));
+                painter.rect_filled(icon, CornerRadius::same(9), RAISED);
+                painter.text(icon.center(), egui::Align2::CENTER_CENTER, self.icon, FontId::proportional(17.0), ACCENT);
+                (icon.right() + 10.0, icon.bottom() + 8.0)
+            }
+        };
 
-        let text_left = icon.right() + 10.0;
         let mut title_width = inner.right() - text_left;
         if let Some(badge) = self.badge {
             let galley = painter.layout_no_wrap(badge.to_owned(), FontId::proportional(11.0), ACCENT_TEXT);
@@ -249,13 +262,34 @@ impl Tile<'_> {
         painter.galley(Pos2::new(text_left, inner.top() + 18.0), subtitle, MUTED);
 
         if !self.body.is_empty() {
-            let top = icon.bottom() + 8.0;
+            let top = body_top;
             let mut job = egui::text::LayoutJob::simple(self.body.to_owned(), FontId::proportional(12.5), MUTED, inner.width());
             job.wrap.max_rows = ((inner.bottom() - top) / 16.0).floor().max(1.0) as usize;
             painter.galley(Pos2::new(inner.left(), top), painter.layout_job(job), MUTED);
         }
         response.on_hover_cursor(egui::CursorIcon::PointingHand)
     }
+}
+
+/// `texture` filling `rect`, cropped to its shape (as CSS's `object-fit: cover`).
+pub fn paint_cover(painter: &egui::Painter, rect: Rect, texture: &egui::TextureHandle, corners: CornerRadius) {
+    let [w, h] = texture.size().map(|n| n.max(1) as f32);
+    let (image, shape) = (w / h, rect.width() / rect.height().max(1.0));
+    let uv = if image > shape {
+        let span = shape / image;
+        Rect::from_min_max(Pos2::new(0.5 - span / 2.0, 0.0), Pos2::new(0.5 + span / 2.0, 1.0))
+    } else {
+        let span = image / shape;
+        Rect::from_min_max(Pos2::new(0.0, 0.5 - span / 2.0), Pos2::new(1.0, 0.5 + span / 2.0))
+    };
+    painter.add(egui::epaint::RectShape::filled(rect, corners, Color32::WHITE).with_texture(texture.id(), uv));
+}
+
+/// `texture` in a `size` box, cropped to it; returns its response.
+pub fn cover_image(ui: &mut egui::Ui, texture: &egui::TextureHandle, size: Vec2, corners: CornerRadius) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
+    paint_cover(ui.painter(), rect, texture, corners);
+    response
 }
 
 /// Lays out tiles in a grid filling the available width.

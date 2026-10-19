@@ -136,6 +136,12 @@ impl Source {
             Source::Code(code) => format!("/api/shared/{}", code.trim()),
         }
     }
+
+    /// Where the image showing the mode is (the capture its author chose), at its `version`:
+    /// a new version's image is not one kept from an older.
+    pub fn image_url(&self, version: u32) -> String {
+        format!("{URL}{}/image?v={version}", self.path())
+    }
 }
 
 /// Where a mode installed from the community, or published from here, comes from.

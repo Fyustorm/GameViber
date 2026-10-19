@@ -407,6 +407,10 @@ pub struct Inputs {
     pub zones: Vec<Zone>,
     /// Images of the game the player captured, by phase.
     pub captures: Vec<Capture>,
+    /// The capture showing the mode in the library and the community (its file
+    /// name); empty: the first of its captures by name.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub cover: String,
     /// Values and events other programs send while the mode is played (§6.5),
     /// for the requests to AI assistants; `inputs` before the terms changed.
     #[serde(alias = "inputs")]
@@ -701,11 +705,20 @@ impl Inputs {
         if let Some(i) = self.captures.iter().position(|c| c.file == file) {
             self.captures.remove(i);
             delete_capture(&self.dir, file);
+            if self.cover == file {
+                self.cover.clear();
+            }
             for zone in &mut self.zones {
                 zone.shown_on.retain(|f| f != file);
                 zone.hidden_on.retain(|f| f != file);
             }
         }
+    }
+
+    /// The capture showing the mode: the one chosen, else the first by name (as the community server picks it).
+    pub fn cover_file(&self) -> Option<&str> {
+        let files = || self.captures.iter().map(|c| c.file.as_str());
+        files().find(|f| *f == self.cover).or_else(|| files().min())
     }
 
     /// Names of its phases, then of phases only its captures name.

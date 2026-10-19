@@ -1502,6 +1502,8 @@ impl App {
         let drawn = drawn_capture(&self.screen.draft, inputs);
         let mut delete = Vec::new();
         let mut moved = Vec::new();
+        let mut cover = None;
+        let current_cover = inputs.cover_file().map(str::to_owned);
         let gap = 6.0;
         let columns = 3;
         let width = ((ui.available_width() - gap * (columns as f32 - 1.0)) / columns as f32).floor();
@@ -1517,12 +1519,16 @@ impl App {
                         ui.set_width(width);
                         ui.spacing_mut().item_spacing.y = 2.0;
                         let response = thumbnail(ui, texture, image_size(width, frame), selected, picked).on_hover_text(if marking {
-                            "Open it in the editor; Ctrl or Shift + click to pick several; right-click to mark whether the indicator shows on it, file it under another phase or delete it"
+                            "Open it in the editor; Ctrl or Shift + click to pick several; right-click to mark whether the indicator shows on it, file it under another phase, make it the mode's image (★) or delete it"
                         } else {
-                            "Open it in the editor; Ctrl or Shift + click to pick several; right-click to file it under another phase or delete it"
+                            "Open it in the editor; Ctrl or Shift + click to pick several; right-click to file it under another phase, make it the mode's image (★) or delete it"
                         });
                         if marked.contains(&capture.file) {
                             tag(ui, response.rect.right_top() + Vec2::new(-3.0, 3.0), egui::Align2::RIGHT_TOP, "📍".to_owned(), ACCENT_TEXT);
+                        }
+                        let is_cover = current_cover.as_deref() == Some(capture.file.as_str());
+                        if is_cover {
+                            tag(ui, response.rect.right_bottom() + Vec2::new(-3.0, -3.0), egui::Align2::RIGHT_BOTTOM, "★".to_owned(), ACCENT_TEXT);
                         }
                         let reading = readings.get(&capture.file);
                         let draft = &st.draft;
@@ -1587,6 +1593,12 @@ impl App {
                                     moved.extend(group.iter().map(|f| (f.clone(), other.clone())));
                                 }
                             }
+                            if group.len() == 1 && !capture.phase.is_empty() {
+                                let help = "Shows the mode in the library, in Community and on the website once published";
+                                if ui.add_enabled(!is_cover, egui::Button::new("★ The mode's image")).on_hover_text(help).clicked() {
+                                    cover = Some(capture.file.clone());
+                                }
+                            }
                             if ui.button(format!("Delete{several}")).clicked() {
                                 delete.extend(group.iter().cloned());
                             }
@@ -1612,6 +1624,9 @@ impl App {
         }
         for (file, phase) in moved {
             self.send(Command::MoveCapture { dir: inputs.dir.clone(), file, phase });
+        }
+        if let Some(file) = cover {
+            self.send(Command::SaveInputs(Inputs { cover: file, ..inputs.clone() }));
         }
     }
 

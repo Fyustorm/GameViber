@@ -159,7 +159,7 @@ In the Creator's **Share** tab, **In the community**: pick a name players see
 and a password (there is no email yet: a lost password cannot be recovered),
 then publish it for the people you give its code to (testers, first) or for
 everyone. Look at the captures it sends, and leave out those showing your name,
-a chat or a notification. Modes are published under the MIT license. Once
+a chat or a notification; click one to make it the mode's image (★). Modes are published under the MIT license. Once
 published, the same place gives its tester code (and a new one, the old one then
 stops working), lists it for everyone or makes it private again, publishes its
 next version with a word on what changed, or withdraws it.
@@ -217,6 +217,9 @@ to set some up.
   is captured without leaving the game. A few captures per phase make the
   recognition much more reliable. Needs the in-game overlay. Screenshots on
   your computer can be added too (**From files...** under the captures).
+  One of them shows the mode, in the library and, once published, in
+  Community and on the website: right-click a capture, **★ The mode's image**
+  (the first by name until you choose).
 - **Indicators**: on a capture, draw a zone (a rectangle) around something
   shown only at times (the battle interface: a visibility indicator) or around
   a bar (health: a gauge). Modes read whether it is shown, or how full the bar

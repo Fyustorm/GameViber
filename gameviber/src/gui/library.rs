@@ -5,9 +5,13 @@
 //! variants, what it reads and its game (how GameViber recognizes it, which
 //! sound it listens to).
 
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
+
 use eframe::egui::{self, Margin, RichText};
 
-use super::banners;
+use super::images::BANNER_RATIO;
 use super::creator::Way;
 use super::diagram::mode_diagram;
 use super::generator::wishes_ui;
@@ -21,6 +25,8 @@ use crate::mode::prompt;
 use crate::package::Inputs;
 
 const TILE_MIN_WIDTH: f32 = 260.0;
+/// A mode's image is looked for again this often: it changes in the Creator.
+const COVER_REFRESH: Duration = Duration::from_secs(5);
 const TILE_HEIGHT: f32 = 92.0;
 
 /// The modes shown.
@@ -50,6 +56,8 @@ pub struct State {
     start: Option<Way>,
     /// How a mode works, shown on the Create page.
     diagram: bool,
+    /// The image showing each mode of the player's (by id), read again now and then.
+    covers: HashMap<String, (Option<Instant>, Option<PathBuf>)>,
 }
 
 impl State {
@@ -199,8 +207,8 @@ impl App {
             ui.horizontal(|ui| {
                 // The game's banner, when Steam has one.
                 if let Some(app) = game.as_ref().and_then(|g| g.steam_app_id) {
-                    if let Some(texture) = self.banners.get(ui.ctx(), app) {
-                        let size = egui::Vec2::new(120.0, (120.0 / banners::RATIO).round());
+                    if let Some(texture) = self.images.banner(ui.ctx(), app) {
+                        let size = egui::Vec2::new(120.0, (120.0 / BANNER_RATIO).round());
                         ui.add(egui::Image::new(&texture).fit_to_exact_size(size).corner_radius(6));
                         ui.add_space(4.0);
                     }
@@ -258,12 +266,36 @@ impl App {
             };
             let active = playing_game && main_of(&s.mode.id) == *id;
             let body = info.map_or(String::new(), |i| i.description.clone());
-            let tile = Tile { icon: mode_icon(&entry), title: &name, subtitle: &kind, body: &body, selected: active, badge: active.then_some("Playing") };
+            let image = self.mode_cover(id).and_then(|path| self.images.file(ui.ctx(), &path));
+            let tile = Tile {
+                icon: mode_icon(&entry),
+                title: &name,
+                subtitle: &kind,
+                body: &body,
+                selected: active,
+                badge: active.then_some("Playing"),
+                image: image.as_ref(),
+            };
             if tile.show(ui, size).clicked() {
                 clicked = Some(id.clone());
             }
         });
         clicked
+    }
+
+    /// The file of the capture showing the mode `id` (none for a built-in mode, or a mode without captures).
+    fn mode_cover(&mut self, id: &str) -> Option<PathBuf> {
+        let entry = ModeEntry::from_id(id);
+        if entry.builtin {
+            return None;
+        }
+        let (read, cover) = self.library.covers.entry(id.to_owned()).or_default();
+        if read.is_none_or(|read| read.elapsed() >= COVER_REFRESH) {
+            let inputs = Inputs::of(&entry);
+            *cover = inputs.cover_file().map(|file| crate::package::capture_path(&inputs.dir, file));
+            *read = Some(Instant::now());
+        }
+        cover.clone()
     }
 
     /// A game running with the overlay belongs to no game: making a mode for it is one click away.

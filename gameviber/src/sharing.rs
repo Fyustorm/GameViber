@@ -121,6 +121,9 @@ pub fn export(game: &str, mode: &str, path: &Path, left_out: &[String]) -> anyho
             }
         }
     });
+    if !inputs.captures.iter().any(|c| c.file == inputs.cover) {
+        inputs.cover.clear();
+    }
     // Those GameViber reads; a package holds few.
     let funscripts: FunscriptFiles = package::funscripts(&inputs.dir)
         .into_keys()
@@ -383,6 +386,9 @@ fn fill_package(
             zone.capture = None;
         }
     }
+    if !inputs.captures.iter().any(|c| c.file == inputs.cover) {
+        inputs.cover.clear();
+    }
     inputs.save();
     Ok(())
 }
@@ -479,6 +485,7 @@ mod tests {
         inputs.captures[0].embedding = vec![1.0, 0.0];
         let drawn_on = inputs.captures[0].file.clone();
         inputs.zones.push(Zone { indicator: "menu".into(), capture: Some(drawn_on.clone()), ..Zone::default() });
+        inputs.cover = wide_example.clone();
         inputs.save();
         let mut game = Game::new("Metaphor: ReFantazio");
         game.executables.push("METAPHOR.exe".into());
@@ -490,6 +497,9 @@ mod tests {
         assert!(file.ends_with("metaphor-refantazio-battles.gameviber"));
         export(&game.id, &variant.to_string_lossy(), &file, &[]).unwrap();
         assert!(export(&game.id, "builtin:simple", &root.join("x.gameviber"), &[]).is_err(), "built-in modes are not shared");
+        let without_cover = root.join("without-cover.gameviber");
+        export(&game.id, &mode, &without_cover, std::slice::from_ref(&wide_example)).unwrap();
+        assert!(read_shared(&without_cover).unwrap().inputs.cover.is_empty(), "a cover left out is not named");
 
         // Another player, without the game nor the mode.
         game.delete();
@@ -510,6 +520,7 @@ mod tests {
         assert!(got.captures[0].embedding.is_empty(), "embeddings are computed again");
         assert_eq!(package::load_capture(&got.dir, &drawn_on).unwrap().pixels, vec![1; 32]);
         assert_eq!(got.zones[1].capture.as_deref(), Some(drawn_on.as_str()));
+        assert_eq!((got.cover.as_str(), got.cover_file()), (wide_example.as_str(), Some(wide_example.as_str())), "the image showing the mode");
         assert_eq!(fs::read_to_string(&mode_path).unwrap(), MODE_SOURCE);
         assert_eq!(fs::read_to_string(&variant).unwrap(), boss, "exported from its variant, the mode comes with all of them");
         assert_eq!(fs::read_to_string(funscripts.join("hit.funscript")).unwrap(), hit);

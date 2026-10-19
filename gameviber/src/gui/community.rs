@@ -6,7 +6,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{self, Receiver};
 
-use eframe::egui::{self, Margin, RichText, Vec2};
+use eframe::egui::{self, CornerRadius, Margin, RichText, Vec2};
 
 use super::theme::*;
 use super::{App, Page, Route};
@@ -16,6 +16,8 @@ use crate::engine::{Command, Shared};
 use crate::game::Game;
 use crate::links::Link;
 
+/// The image of a mode in the list of a game's modes.
+const ROW_IMAGE: Vec2 = Vec2::new(112.0, 63.0);
 /// Below this width the mode's page goes under the list.
 const TWO_COLUMNS_WIDTH: f32 = 900.0;
 /// A game's modes, the best rated first (few votes counting little): a game has few.
@@ -376,7 +378,7 @@ impl App {
                         let response = card(PANEL).inner_margin(Margin::same(14)).show(ui, |ui| {
                             ui.vertical(|ui| {
                                 ui.set_width(220.0);
-                                self.banners.show(ui, game.steam_app_id, &game.name, 220.0);
+                                self.images.show_banner(ui, game.steam_app_id, &game.name, 220.0);
                                 ui.add_space(4.0);
                                 ui.label(RichText::new(&game.name).strong().size(15.0));
                                 ui.label(muted(format!("{} mode{}", game.modes, if game.modes == 1 { "" } else { "s" })));
@@ -438,7 +440,7 @@ impl App {
         }
         ui.add_space(6.0);
         ui.horizontal(|ui| {
-            self.banners.show(ui, game.steam_app_id, &game.name, 184.0);
+            self.images.show_banner(ui, game.steam_app_id, &game.name, 184.0);
             ui.add_space(6.0);
             ui.vertical(|ui| {
                 ui.label(RichText::new(&game.name).strong().size(20.0));
@@ -454,7 +456,7 @@ impl App {
             Remote::Ready(modes) => {
                 let modes = modes.clone();
                 for mode in &modes {
-                    app.mode_row(ui, mode);
+                    app.mode_row(ui, mode, game.steam_app_id);
                     ui.add_space(6.0);
                 }
                 if modes.is_empty() {
@@ -500,11 +502,19 @@ impl App {
         }
     }
 
-    fn mode_row(&mut self, ui: &mut egui::Ui, mode: &ModeSummary) {
+    /// A mode of the game whose Steam app id is `app`: its image (the game's banner without one), what it is.
+    fn mode_row(&mut self, ui: &mut egui::Ui, mode: &ModeSummary, app: Option<u32>) {
         let selected = self.community.selected.as_ref() == Some(&Source::Id(mode.id.clone()));
-        let response = card(if selected { SELECTED_BG } else { PANEL }).inner_margin(Margin::symmetric(14, 10)).show(ui, |ui| {
+        let source = Source::Id(mode.id.clone());
+        let image = self.images.web(ui.ctx(), &source.image_url(mode.version)).or_else(|| app.and_then(|app| self.images.banner(ui.ctx(), app)));
+        let response = card(if selected { SELECTED_BG } else { PANEL }).inner_margin(Margin::same(10)).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
+                match &image {
+                    Some(texture) => cover_image(ui, texture, ROW_IMAGE, CornerRadius::same(8)),
+                    None => ui.allocate_exact_size(ROW_IMAGE, egui::Sense::hover()).1,
+                };
+                ui.add_space(4.0);
                 ui.vertical(|ui| {
                     ui.label(RichText::new(&mode.name).strong().size(15.0));
                     let mut line = format!("by {} · v{}", mode.author, mode.version);
@@ -514,6 +524,9 @@ impl App {
                         line.push_str(&format!(" · {figure}"));
                     }
                     ui.label(muted(line).size(12.0));
+                    if let Some(first) = mode.description.lines().find(|l| !l.trim().is_empty()) {
+                        ui.add(egui::Label::new(RichText::new(first.trim()).size(12.5)).truncate());
+                    }
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     match self.community.installed.get(&mode.id) {
@@ -589,6 +602,12 @@ impl App {
             }
         };
         let source = self.community.selected.clone().unwrap_or(Source::Id(detail.id.clone()));
+        let version = detail.latest().map_or(0, |v| v.number);
+        if let Some(texture) = self.images.web(ui.ctx(), &source.image_url(version)) {
+            let width = ui.available_width();
+            cover_image(ui, &texture, Vec2::new(width, (width * 9.0 / 16.0).min(260.0)), CornerRadius::same(8));
+            ui.add_space(6.0);
+        }
         ui.label(RichText::new(&detail.name).strong().size(18.0));
         ui.label(muted(format!("by {} · {}", detail.author, detail.game.name)));
         let f = &detail.figures;
@@ -1156,6 +1175,11 @@ impl App {
         self.load_captures(ui.ctx(), Some(&inputs));
         ui.label(RichText::new(format!("Captures that will be sent · {}", captures.len() - self.community.publish.left_out.len())).strong());
         ui.label(muted("Images of your screen: look for your name, chat messages or notifications, and leave out those you would rather keep.").size(12.0));
+        ui.label(muted("The one marked ★ shows the mode in Community and on the website: click a capture to choose it.").size(12.0));
+        let sent: Vec<&str> = captures.iter().map(|c| c.file.as_str()).filter(|f| !self.community.publish.left_out.contains(*f)).collect();
+        // As the server picks it: the one chosen if it is sent, else the first by name.
+        let cover = sent.iter().copied().find(|f| *f == inputs.cover).or_else(|| sent.iter().copied().min()).map(str::to_owned);
+        let mut chosen = None;
         // As many as fit on a row.
         let columns = ((ui.available_width() + 8.0) / 128.0).floor().max(1.0) as usize;
         egui::Grid::new("captures-to-send").spacing([8.0, 8.0]).show(ui, |ui| {
@@ -1164,7 +1188,16 @@ impl App {
                 ui.vertical(|ui| {
                     if let Some(texture) = self.screen.capture_texture(&capture.file) {
                         let tint = if left_out { egui::Color32::from_gray(70) } else { egui::Color32::WHITE };
-                        ui.add(egui::Image::new(&texture).fit_to_exact_size(Vec2::new(120.0, 68.0)).tint(tint));
+                        let image = ui.add(egui::Image::new(&texture).fit_to_exact_size(Vec2::new(120.0, 68.0)).tint(tint).sense(egui::Sense::click()));
+                        let is_cover = cover.as_deref() == Some(capture.file.as_str());
+                        if is_cover {
+                            let at = image.rect.right_top() + Vec2::new(-4.0, 4.0);
+                            ui.painter().text(at, egui::Align2::RIGHT_TOP, "★", egui::FontId::proportional(16.0), ACCENT);
+                        }
+                        let hover = if is_cover { "The mode's image" } else { "Click: the mode's image" };
+                        if image.on_hover_text(hover).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                            chosen = Some(capture.file.clone());
+                        }
                     }
                     let mut send = !left_out;
                     if ui.checkbox(&mut send, RichText::new(&capture.phase).size(11.5)).changed() {
@@ -1180,6 +1213,10 @@ impl App {
                 }
             }
         });
+        if let Some(file) = chosen {
+            self.community.publish.left_out.remove(&file);
+            self.send(Command::SaveInputs(crate::package::Inputs { cover: file, ..inputs }));
+        }
         ui.add_space(6.0);
     }
 }
