@@ -1,16 +1,13 @@
 <script setup lang="ts">
 import type { Figures } from '@/api'
 
-// What players who share their stats did with a mode (`Stats.Figures`).
-defineProps<{ figures: Figures; downloads: number }>()
+// What players who share their stats did with a mode (`Stats.Figures`). The number of
+// players and of downloads stays hidden while they are small: they put newcomers off.
+defineProps<{ figures: Figures }>()
 </script>
 
 <template>
   <dl class="figures">
-    <div>
-      <dt>Players</dt>
-      <dd>{{ figures.players.toLocaleString('en') }}</dd>
-    </div>
     <div v-if="figures.players > 0">
       <dt>Played</dt>
       <dd>{{ figures.medianMinutes }} min</dd>
@@ -19,16 +16,12 @@ defineProps<{ figures: Figures; downloads: number }>()
       <dt>Came back</dt>
       <dd>{{ Math.round(figures.cameBack * 100) }} %</dd>
     </div>
-    <div>
+    <div v-if="figures.likes > 0">
       <dt>Likes</dt>
       <dd>
         {{ figures.likes.toLocaleString('en') }}
         <span v-if="figures.dislikes" class="muted">/ {{ (figures.likes + figures.dislikes).toLocaleString('en') }}</span>
       </dd>
-    </div>
-    <div>
-      <dt>Downloads</dt>
-      <dd>{{ downloads.toLocaleString('en') }}</dd>
     </div>
   </dl>
 </template>

@@ -16,10 +16,9 @@ defineProps<{ mode: ModeSummary }>()
       <span v-for="use in mode.uses" :key="use" class="tag accent" :title="USES[use].text">{{ USES[use].label }}</span>
     </p>
     <p v-if="mode.description" class="description">{{ mode.description }}</p>
-    <p class="numbers muted">
-      <span>{{ mode.figures.players.toLocaleString('en') }} players this month</span>
-      <span v-if="mode.figures.likes">{{ mode.figures.likes.toLocaleString('en') }} likes</span>
-      <span>{{ mode.downloads.toLocaleString('en') }} downloads</span>
+    <!-- Players and downloads stay hidden while there are few: small numbers put newcomers off. -->
+    <p v-if="mode.figures.likes" class="numbers muted">
+      <span>{{ mode.figures.likes.toLocaleString('en') }} likes</span>
     </p>
   </RouterLink>
 </template>

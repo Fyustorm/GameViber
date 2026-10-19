@@ -78,7 +78,11 @@ watchEffect(() => {
             </p>
           </header>
 
-          <FigureList :figures="mode.data.value.figures" :downloads="mode.data.value.downloads" class="figures" />
+          <FigureList
+            v-if="mode.data.value.figures.players > 0 || mode.data.value.figures.likes > 0"
+            :figures="mode.data.value.figures"
+            class="figures"
+          />
 
           <ul v-if="mode.data.value.uses?.length" class="uses">
             <li v-for="use in mode.data.value.uses" :key="use">

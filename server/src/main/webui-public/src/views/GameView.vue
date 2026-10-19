@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watchEffect } from 'vue'
+import { computed, watchEffect } from 'vue'
 import { api, steamHeader, ApiError, type Sort } from '@/api'
 import { useLoad } from '@/load'
 import { setTitle } from '@/router'
@@ -7,17 +7,12 @@ import ModeCard from '@/components/ModeCard.vue'
 
 const props = defineProps<{ id: number }>()
 
-const sorts: { value: Sort; label: string }[] = [
-  { value: 'trending', label: 'Trending' },
-  { value: 'rating', label: 'Top rated' },
-  { value: 'played', label: 'Most played' },
-  { value: 'new', label: 'New' },
-  { value: 'downloads', label: 'Downloads' },
-]
-const sort = ref<Sort>('trending')
+// No choice of order while few players share their stats: trending puts the most played
+// lately first once they do, the latest updated until then.
+const sort: Sort = 'trending'
 
 const { data: game } = useLoad(() => api.game(props.id), () => props.id)
-const modes = useLoad(() => api.modes(props.id, sort.value), () => [props.id, sort.value])
+const modes = useLoad(() => api.modes(props.id, sort), () => props.id)
 const banner = computed(() => (game.value ? steamHeader(game.value) : null))
 const missing = computed(() => modes.error.value instanceof ApiError && modes.error.value.status === 404)
 
@@ -34,12 +29,6 @@ watchEffect(() => setTitle(game.value ? `${game.value.name} modes` : undefined))
         <h1>{{ game?.name ?? (missing ? 'Unknown game' : ' ') }}</h1>
       </div>
     </header>
-
-    <div class="chips" role="group" aria-label="Sort">
-      <button v-for="s in sorts" :key="s.value" type="button" :aria-pressed="sort === s.value" @click="sort = s.value">
-        {{ s.label }}
-      </button>
-    </div>
 
     <div v-if="modes.loading.value && !modes.data.value" class="grid list">
       <div v-for="n in 4" :key="n" class="skeleton tile" />

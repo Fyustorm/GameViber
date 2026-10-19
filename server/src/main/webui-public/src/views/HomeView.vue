@@ -13,7 +13,7 @@ const download = system === 'windows' ? 'Download for Windows' : system === 'lin
 
 // Each way in a few words: the guide says the rest.
 const play = [
-  'Modes for your game, the most played first',
+  'Modes other players made for your game',
   'Installed in a click, from this site or the app',
   'Tuned with a slider or two',
   'No mode for your game yet? Built-in ones fit every genre',
