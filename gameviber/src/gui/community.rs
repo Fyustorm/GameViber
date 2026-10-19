@@ -509,7 +509,8 @@ impl App {
                     ui.label(RichText::new(&mode.name).strong().size(15.0));
                     let mut line = format!("by {} · v{}", mode.author, mode.version);
                     let median = (mode.figures.median_minutes > 0).then(|| format!("{} min median", mode.figures.median_minutes));
-                    for figure in [mode.figures.liked(), players(mode.figures.players), median].into_iter().flatten() {
+                    // No number of players or downloads while they are small: they put newcomers off.
+                    for figure in [mode.figures.liked(), median].into_iter().flatten() {
                         line.push_str(&format!(" · {figure}"));
                     }
                     ui.label(muted(line).size(12.0));
@@ -589,12 +590,11 @@ impl App {
         };
         let source = self.community.selected.clone().unwrap_or(Source::Id(detail.id.clone()));
         ui.label(RichText::new(&detail.name).strong().size(18.0));
-        ui.label(muted(format!("by {} · {} · {}", detail.author, detail.game.name, downloads(detail.downloads))));
+        ui.label(muted(format!("by {} · {}", detail.author, detail.game.name)));
         let f = &detail.figures;
         if f.players > 0 || f.likes + f.dislikes > 0 {
             ui.horizontal_wrapped(|ui| {
                 for (value, what) in [
-                    (f.players.to_string(), "players, 30 days".to_owned()),
                     (format!("{} min", f.median_minutes), "median play time".to_owned()),
                     (format!("{:.0} %", f.came_back * 100.0), "came back 3+ times".to_owned()),
                     (f.liked().map_or("-".to_owned(), |l| l.replace(" liked", "")), format!("liked · {} votes", f.likes + f.dislikes)),
@@ -821,7 +821,7 @@ impl App {
                             if link.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                                 open = Some((remote.clone(), Some(mode.id.clone())));
                             }
-                            ui.label(muted(format!("by {} · {}", mode.author, downloads(mode.downloads))).size(12.0));
+                            ui.label(muted(format!("by {}", mode.author)).size(12.0));
                             if self.community.installed.contains_key(&mode.id) || self.community.linked.contains_key(&mode.id) {
                                 pill(ui, "Installed", ON_ACCENT, OK);
                             }
@@ -1181,15 +1181,6 @@ impl App {
             }
         });
         ui.add_space(6.0);
-    }
-}
-
-/// "3 players" (none: nothing to say).
-fn players(n: u64) -> Option<String> {
-    match n {
-        0 => None,
-        1 => Some("1 player".to_owned()),
-        n => Some(format!("{n} players")),
     }
 }
 
