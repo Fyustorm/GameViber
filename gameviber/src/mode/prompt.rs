@@ -22,7 +22,7 @@ const SPEC: &str = include_str!("../../../docs/spec-modes.md");
 /// request sent in the conversation that already has them; the others hold the
 /// steps of one kind of request (`Step`, `Wishes::ask_first`).
 const BLOCKS: [&str; 6] = ["full", "direct", "conversation", "after-analysis", "after-analysis-direct", "after-analysis-conversation"];
-/// Spec sections left out of the requests: they are about GameViber itself
+/// Spec sections the requests tell to skip: they are about GameViber itself
 /// (architecture, presets, reloading, safety, plans, built-in modes), not about
 /// writing a mode.
 const SPEC_LEFT_OUT: [&str; 7] = [
@@ -34,10 +34,10 @@ const SPEC_LEFT_OUT: [&str; 7] = [
     "## 13. ",
     "## 14. ",
 ];
-/// Left out of quick requests too: the raw sound and image, the inputs set
+/// Skipped by quick requests too: the raw sound and image, the inputs set
 /// up for the mode and the advanced inputs (`Depth::Quick`).
 const SPEC_ADVANCED: [&str; 3] = ["### 6.4 ", "### 6.5 ", "### 7.1 "];
-/// The strokers' own outputs, left out when the player has none.
+/// The strokers' own outputs, skipped when the player has none.
 const SPEC_STROKERS: &str = "### 8.5 ";
 
 /// How much of GameViber a request shows the assistant.
@@ -402,36 +402,46 @@ fn sections(text: &str, keep: &[&str]) -> String {
     out
 }
 
-/// The specification without the sections of `SPEC_LEFT_OUT` (`SPEC_ADVANCED` for
-/// a quick request, `SPEC_STROKERS` without strokers).
+/// The specification of the running version on GitHub: `raw` as plain text, the
+/// easiest for an assistant to read, or its page.
+pub fn spec_url(raw: bool) -> String {
+    let version = concat!("v", env!("CARGO_PKG_VERSION"));
+    let repository = crate::update::REPOSITORY;
+    if raw {
+        format!("https://raw.githubusercontent.com/{repository}/{version}/docs/spec-modes.md")
+    } else {
+        format!("https://github.com/{repository}/blob/{version}/docs/spec-modes.md")
+    }
+}
+
+/// Where the assistant reads the specification, and the sections it skips:
+/// `SPEC_LEFT_OUT`, `SPEC_ADVANCED` for a quick request, `SPEC_STROKERS` without
+/// strokers. A link rather than the text: requests holding the whole
+/// specification were cut short when copied or pasted.
 fn spec(depth: Depth, strokers: bool) -> String {
-    let mut advanced: Vec<&str> = if depth == Depth::Quick { SPEC_ADVANCED.to_vec() } else { Vec::new() };
+    let mut left_out: Vec<&str> = SPEC_LEFT_OUT.to_vec();
+    if depth == Depth::Quick {
+        left_out.extend(SPEC_ADVANCED);
+    }
     if !strokers {
-        advanced.push(SPEC_STROKERS);
+        left_out.push(SPEC_STROKERS);
     }
-    let mut out = String::new();
-    // Heading level of the section being skipped.
-    let mut skipping: Option<usize> = None;
-    let mut in_code = false;
-    for line in SPEC.lines() {
-        if line.starts_with("```") {
-            in_code = !in_code;
-        }
-        let level = (!in_code && line.starts_with('#')).then(|| line.chars().take_while(|c| *c == '#').count());
-        if let Some(level) = level {
-            if skipping.is_some_and(|skipped| level <= skipped) {
-                skipping = None;
-            }
-            if skipping.is_none() && SPEC_LEFT_OUT.iter().chain(&advanced).any(|s| line.starts_with(s)) {
-                skipping = Some(level);
-            }
-        }
-        if skipping.is_none() {
-            out.push_str(line);
-            out.push('\n');
-        }
-    }
-    out.trim_end().to_owned()
+    // "### 6.4 Raw sound and image" gives "§6.4 Raw sound and image", in the spec's order.
+    let skipped: Vec<String> = SPEC
+        .lines()
+        .filter(|line| left_out.iter().any(|s| line.starts_with(s)))
+        .filter_map(|line| line.trim_start_matches('#').trim().split_once(' '))
+        .map(|(number, title)| format!("§{} {title}", number.trim_end_matches('.')))
+        .collect();
+    format!(
+        "Before answering, read GameViber's mode API specification, the one of the version the player runs: \
+         {raw}\n(the same file on GitHub: {page}). Follow it rather than anything you remember of GameViber. \
+         Skip these sections, about GameViber itself or about what this request does not need: {skipped}.\n\n\
+         If you cannot open the link, say so and ask the player to paste the file: never guess the API.",
+        raw = spec_url(true),
+        page = spec_url(false),
+        skipped = skipped.join(", "),
+    )
 }
 
 /// A mode the player finds wrong, and what they say about it.

@@ -4,12 +4,16 @@ The GameViber mode below does not feel right to the player{{GAME}}. Help fix it.
 GameViber (Linux) turns what a game does into vibrations on adult toys connected through
 Intiface Central: the rumble the game sends to the gamepad, the player's buttons and
 sticks, the game's sound and its image. A **mode** is a small Luau script doing this
-transformation; its API is specified at the end of this message.
+transformation; its API is specified in the document linked at the end of this message.
 <!-- /full -->
 
 **Language**: answer in {{LANGUAGE}}, and write the texts players see in the mode
 (name, description, help, parameter labels, feedback questions, overlay messages) in
 {{LANGUAGE}} too. Keep identifiers and code comments in English.
+
+**Be concise**: go straight to what the player needs, in short sentences and lists,
+without introductions, recaps, warnings or anything they did not ask for. Explain only
+what they cannot guess: they will ask if they want more.
 
 # What the player says
 
@@ -41,7 +45,7 @@ Mode **{{NAME}}**, with the player's current settings:
 
 # What to do
 
-1. **Find the cause** in a few sentences. When a session is given, compare when the game
+1. **Find the cause** in 2 or 3 sentences. When a session is given, compare when the game
    vibrated, when buttons were pressed and what the mode output, starting with the
    marked moments. Do not go back and forth on the same setting.
 2. **Fix it.** If new settings are enough, list them (with their labels) and stop there.

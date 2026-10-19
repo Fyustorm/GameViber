@@ -304,7 +304,7 @@ impl App {
             // A full path would widen the page past the tools panel.
             let name = if editing.builtin { editing.id.clone() } else { editing.chunk_name() };
             ui.add(egui::Label::new(RichText::new(name).monospace()).truncate()).on_hover_text(&editing.id);
-            let spec = format!("https://github.com/{}/blob/main/docs/spec-modes.md", crate::update::REPOSITORY);
+            let spec = crate::mode::prompt::spec_url(false);
             ui.hyperlink_to(muted("Mode API ↗").size(12.0), spec);
             if editing.builtin {
                 ui.label(muted("built-in modes are read-only"));

@@ -21,9 +21,9 @@ use crate::mode::ModeRuntime;
 use crate::package::Inputs;
 
 const ASSISTANTS: [(&str, &str); 3] = [
-    ("Gemini", "https://gemini.google.com"),
-    ("Claude", "https://claude.ai"),
     ("ChatGPT", "https://chatgpt.com"),
+    ("Claude", "https://claude.ai"),
+    ("Gemini", "https://gemini.google.com"),
 ];
 
 /// The widest the AI assistant's steps get.

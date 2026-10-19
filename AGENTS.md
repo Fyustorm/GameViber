@@ -111,8 +111,10 @@ Run `cargo test` after any change to the runtime or to a mode.
 - **Per-game modes come first**: built-in modes are genre fallbacks; players are steered
   towards a mode written by an AI assistant for their game. The requests
   (`gameviber/prompts/new-mode.md`, `analyse-game.md` before it, and `fix-feel.md` for fixes) share
-  `prompts/rules.md` (what feels good, script rules) and embed `docs/spec-modes.md`
-  without the sections listed in `SPEC_LEFT_OUT` (`mode/prompt.rs`). Keep the rules
+  `prompts/rules.md` (what feels good, script rules) and link `docs/spec-modes.md`
+  on GitHub at the running version's tag (`prompt::spec_url`; copied whole, the
+  requests were cut short when pasted), telling the assistant to skip the sections
+  listed in `SPEC_LEFT_OUT` (`mode/prompt.rs`). Keep the rules
   short, in line with the mode style rules and the known pitfalls below, and do not
   repeat in them what the spec already says.
 - **Safety stays outside scripts**: the global cap, STOP ALL / panic combo and

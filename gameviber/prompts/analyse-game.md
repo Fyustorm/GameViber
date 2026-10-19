@@ -5,8 +5,8 @@ GameViber is set up.
 GameViber (Linux) turns what a game does into vibrations on adult toys connected through
 Intiface Central: the rumble the game sends to the gamepad, the player's buttons and
 sticks, the game's sound and its image. A **mode** is a small Luau script doing this
-transformation; its API is specified at the end of this message. Besides the rumble and
-the buttons, a mode reads what the player sets up for it in GameViber (§6.3, §6.5):
+transformation; its API is specified in the document linked at the end of this message.
+Besides the rumble and the buttons, a mode reads what the player sets up for it in GameViber (§6.3, §6.5):
 
 - **phases**: parts of the game that should not feel the same (battle, exploration,
   story). GameViber recognizes them from the sound (a description of what is only heard
@@ -24,6 +24,10 @@ the buttons, a mode reads what the player sets up for it in GameViber (§6.3, §
 **Language**: answer in {{LANGUAGE}}, and write the descriptions the player reads in
 {{LANGUAGE}} too. Keep the names (phases, indicators) in English.
 
+**Be concise**: go straight to what the player needs, in short sentences and lists,
+without introductions, recaps, warnings or anything they did not ask for. Explain only
+what they cannot guess: they will ask if they want more.
+
 # What to do
 
 1. **Research the game.** If you can browse the web, look up {{GAME}}'s main mechanics,
@@ -40,7 +44,7 @@ the buttons, a mode reads what the player sets up for it in GameViber (§6.3, §
    icon) over text that changes.
 4. **Say which moments to capture**: a few captures per phase, of different places and
    moments, make the image recognition much more reliable.
-5. Explain in a few sentences what a mode could do with all this (2 to 4 mechanics that
+5. Explain in 2 or 3 sentences what a mode could do with all this (2 to 4 mechanics that
    map well to vibrations), so the player sees what the setup is for.
 6. **End with the setup** in a single `json` code block, which GameViber reads to create
    the phases and list the indicators to draw:

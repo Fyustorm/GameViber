@@ -9,11 +9,15 @@ Write a GameViber mode made specifically for the game **{{GAME}}**.
 GameViber (Linux) turns what a game does into vibrations on adult toys connected through
 Intiface Central: the rumble the game sends to the gamepad, the player's buttons and
 sticks, the game's sound and its image. A **mode** is a small Luau script doing this
-transformation; its API is specified at the end of this message.
+transformation; its API is specified in the document linked at the end of this message.
 
 **Language**: answer in {{LANGUAGE}}, and write the texts players see in the mode
 (name, description, help, parameter labels, feedback questions, overlay messages) in
 {{LANGUAGE}} too. Keep identifiers and code comments in English.
+
+**Be concise**: go straight to what the player needs, in short sentences and lists,
+without introductions, recaps, warnings or anything they did not ask for. Explain only
+what they cannot guess: they will ask if they want more.
 <!-- /full -->
 
 # What to do
@@ -24,7 +28,7 @@ transformation; its API is specified at the end of this message.
    you are unsure about. Find out when it rumbles, and which phases (battles,
    exploration, dialogue) its music or its screen tells apart.
 2. **Design the mode** around 2 to 4 mechanics that map well to vibrations, and explain
-   it in a few sentences.
+   it in 2 or 3 sentences.
 3. **Write the mode** (below).
 <!-- /direct -->
 <!-- conversation -->
@@ -42,13 +46,13 @@ transformation; its API is specified at the end of this message.
      with the mechanics each one uses.
 
    Then stop and wait for the answer.
-3. Once they answered, **write the mode** (below) following their choices, and say in a
-   few sentences how it does.
+3. Once they answered, **write the mode** (below) following their choices, and say in 2
+   or 3 sentences how it does.
 <!-- /conversation -->
 <!-- after-analysis-direct -->
 1. **Design the mode** around 2 to 4 mechanics, using what was set up: the phases for
    the mood, the indicators where they say exactly what the phases only guess. Explain
-   it in a few sentences.
+   it in 2 or 3 sentences.
 2. **Write the mode** (below).
 <!-- /after-analysis-direct -->
 <!-- after-analysis-conversation -->
@@ -61,8 +65,8 @@ transformation; its API is specified at the end of this message.
      exactly what the phases only guess.
 
    Then stop and wait for the answer.
-2. Once they answered, **write the mode** (below) following their choices, and say in a
-   few sentences how it does.
+2. Once they answered, **write the mode** (below) following their choices, and say in 2
+   or 3 sentences how it does.
 <!-- /after-analysis-conversation -->
 
 The mode is the complete `.luau` file in a single code block: a header comment naming the

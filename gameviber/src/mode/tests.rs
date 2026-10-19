@@ -629,24 +629,26 @@ fn ai_prompt_names_the_game_and_embeds_the_api() {
     assert!(text.contains("category = \"Hades II\""));
     assert!(text.contains("answer in Français"), "language");
     assert!(text.contains("Continuous beats intermittent"), "rules");
-    assert!(text.contains("## 3. Mode file") && text.contains("### 4.2 Feedback questions"), "spec");
-    assert!(text.contains("## 10. Execution and sandbox"), "the section after a left-out one");
-    for left_out in ["## 1. ", "## 2. ", "### 4.1 ", "## 11. ", "## 12. ", "## 13. ", "## 14. "] {
-        assert!(!text.contains(left_out), "{left_out}");
+    // The specification is linked, not copied: whole, the request was cut short when pasted.
+    let url = format!("https://raw.githubusercontent.com/Fyustorm/GameViber/v{}/docs/spec-modes.md", env!("CARGO_PKG_VERSION"));
+    assert!(text.contains(&url), "spec");
+    assert!(!text.contains("## 5. Callbacks") && text.len() < 20_000, "{} bytes", text.len());
+    for skipped in ["§1 Goal and scope", "§2 Architecture", "§4.1 Presets", "§11 Errors", "§12 Safety", "§13 Planned", "§14 Examples"] {
+        assert!(text.contains(skipped), "{skipped}");
     }
+    assert!(!text.contains("§3 ") && !text.contains("§6.3 "), "the sections to read are not skipped");
     assert!(!text.contains("{{") && !text.contains("<!--"), "every placeholder and marker replaced");
     // A quick request: high-level inputs only.
-    assert!(text.contains("### 6.3 ") && text.contains("on_phase"), "phases are high level");
-    for advanced in ["### 6.4 ", "### 6.5 ", "### 7.1 "] {
-        assert!(!text.contains(advanced), "{advanced}");
+    for advanced in ["§6.4 Raw sound", "§6.5 The mode's inputs", "§7.1 Advanced inputs"] {
+        assert!(text.contains(advanced), "{advanced}");
     }
     assert!(text.contains("Nothing more: use the rumble"), "{text}");
-    assert!(!text.contains("### 8.5 "), "no strokers");
+    assert!(text.contains("§8.5 Strokers"), "no strokers");
 
     // An advanced request: the raw inputs and the inputs set up for the mode.
     let profile = "Indicators of the screen (`input.indicators`, `on_indicator`):\n- `battle_hud`: true while shown, false otherwise\n";
     let advanced = prompt::new_mode_prompt(&prompt::Templates::builtin(), &new_mode("Hades II", "English", prompt::Depth::Advanced, Some(profile), &[]));
-    assert!(advanced.contains("### 6.4 ") && advanced.contains("### 6.5 ") && advanced.contains("### 7.1 "));
+    assert!(!advanced.contains("§6.4 ") && !advanced.contains("§6.5 ") && !advanced.contains("§7.1 "));
     assert!(advanced.contains("- `battle_hud`: true while shown"), "the profile");
     let blank = prompt::new_mode_prompt(&prompt::Templates::builtin(), &new_mode("Hades II", "English", prompt::Depth::Advanced, None, &[]));
     let phases = ["battle".to_owned(), "hub".to_owned()];
@@ -679,13 +681,13 @@ fn requests_ask_for_questions_an_analysis_or_the_script() {
     assert!(chat.trim_end().ends_with("follow them.\n\nNo vibration in menus."), "{chat}");
     // The analysis proposes the setup, with the indicators' API; no script yet.
     assert!(analysis.contains("Do not write the mode yet") && analysis.contains("\"otherwise\": true"));
-    assert!(analysis.contains("### 6.5 ") && analysis.contains("Continuous beats intermittent"));
+    assert!(!analysis.contains("§6.5 The mode") && analysis.contains("Continuous beats intermittent"));
     // The script after it, in the same conversation: short.
     assert!(after.contains("The player set up in GameViber what you proposed") && after.contains("`battle`, `story`"));
-    assert!(!after.contains("## 3. Mode file") && !after.contains("Continuous beats intermittent") && !after.contains("turns what a game does"));
+    assert!(!after.contains("spec-modes.md") && !after.contains("Continuous beats intermittent") && !after.contains("turns what a game does"));
     assert!(after.contains("category = \"Hades II\"") && after.contains("Design the mode") && !after.contains("Ask the player"));
     assert!(after_chat.contains("Ask the player before writing anything") && !after_chat.contains("Design the mode around"));
-    assert!(after.len() * 5 < direct.len());
+    assert!(after.len() * 2 < direct.len());
 }
 
 #[test]
@@ -701,16 +703,16 @@ fn requests_ask_for_what_the_player_ticked() {
         prompt::new_mode_prompt(&templates, &r)
     };
     let text = request(&wishes, prompt::Step::Script);
-    assert!(text.contains("vibrators and strokers") && text.contains("### 8.5 "), "strokers get their outputs");
+    assert!(text.contains("vibrators and strokers") && !text.contains("§8.5 Strokers"), "strokers get their outputs");
     assert!(text.contains("- a jolt when the player takes damage") && text.contains("- a wave running through fights"));
-    assert!(!text.contains("genres only") && !text.contains("### 6.5 "), "{text}");
+    assert!(!text.contains("genres only") && text.contains("§6.5 The mode"), "{text}");
     // Genre-specific moments may be left out; the screen makes an advanced request.
     wishes.set("parry", true);
     wishes.set("low_health", true);
     wishes.set("damage_taken", false);
     let text = request(&wishes, prompt::Step::Script);
     assert!(text.contains("leave out those the game has nothing for") && !text.contains("takes damage"));
-    assert!(text.contains("### 6.5 ") && text.contains("tell the player which indicators to draw"), "the health gauge");
+    assert!(!text.contains("§6.5 The mode") && text.contains("tell the player which indicators to draw"), "the health gauge");
     let analysis = request(&wishes, prompt::Step::Analysis);
     assert!(analysis.contains("propose the phases and indicators these need") && analysis.contains("- a heartbeat while health is low"));
     let asking = request(&prompt::Wishes { ask_first: true, ..wishes.clone() }, prompt::Step::Script);
@@ -805,8 +807,8 @@ fn feel_prompt_holds_the_problem_settings_and_session() {
     assert!(text.contains("name = \"Surge\""), "source");
     assert!(text.contains("### Vibrations sent by the game (0)"), "session");
     assert!(text.contains("Continuous beats intermittent"), "rules");
-    assert!(text.contains("## 5. Callbacks") && !text.contains("## 14. Examples"), "spec");
-    assert!(!text.contains("### 6.5 "), "a mode using high-level inputs only gets the quick specification");
+    assert!(text.contains("/docs/spec-modes.md") && text.contains("§14 Examples"), "spec");
+    assert!(text.contains("§6.5 The mode"), "a mode using high-level inputs only gets the quick specification");
     assert!(!text.contains("{{") && !text.contains("<!--"), "every placeholder and marker replaced");
 
     // For the conversation that wrote the mode: no context, rules or API.
@@ -814,7 +816,7 @@ fn feel_prompt_holds_the_problem_settings_and_session() {
     let short = prompt::feel_prompt(&templates, &report);
     assert!(short.contains("- Parries are not detected") && short.contains("| Parry window (s) | `window` | 0.45 | 0.3 |"));
     assert!(!short.contains("name = \"Surge\""), "the conversation has the code");
-    assert!(!short.contains("Continuous beats intermittent") && !short.contains("## 5. Callbacks"));
+    assert!(!short.contains("Continuous beats intermittent") && !short.contains("spec-modes.md"));
     assert!(!short.contains("turns what a game does") && !short.contains("\n\n\n"));
     assert!(short.len() * 3 < text.len());
     assert!(prompt::has_script("```lua\nmode { api = 1 }\n```"));
