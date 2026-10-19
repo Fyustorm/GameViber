@@ -15,6 +15,8 @@ import java.util.zip.ZipFile;
 
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+
 import jakarta.enterprise.context.ApplicationScoped;
 
 /** The published packages: `packages/<mode public id>/<version number>.gameviber` in the data directory. */
@@ -24,6 +26,7 @@ public class PackageStore {
     String dataDir;
     /** What each version's mode is made for and sets up: a version's package never changes. */
     private final Map<Path, Described> described = new ConcurrentHashMap<>();
+    private static final ObjectMapper JSON = new ObjectMapper();
 
     /** `SharedPackage.uses` and `ModeSetup` of a version. */
     public record Described(List<String> uses, ModeSetup setup) {}
@@ -32,16 +35,27 @@ public class PackageStore {
         return Path.of(dataDir, "packages", mode.publicId, version + ".gameviber");
     }
 
-    /** The first of its captures (by name): what shows the mode on the site and in link previews. */
+    /**
+     * What shows the mode on the site, in the app and in link previews: the capture its
+     * author chose (`cover` in the manifest's inputs), else the first of its captures (by name).
+     */
     public Optional<byte[]> cover(Mode mode, int version) throws IOException {
         try (var zip = new ZipFile(path(mode, version).toFile())) {
-            var first = zip.stream()
+            var chosen = Optional.ofNullable(zip.getEntry("gameviber.json")).flatMap(manifest -> {
+                try (var in = zip.getInputStream(manifest)) {
+                    String file = JSON.readTree(in).path("inputs").path("cover").asText("");
+                    return file.isEmpty() || file.contains("/") ? Optional.empty() : Optional.ofNullable(zip.getEntry("captures/" + file));
+                } catch (IOException e) {
+                    return Optional.empty();
+                }
+            });
+            var cover = chosen.or(() -> zip.stream()
                     .filter(e -> e.getName().startsWith("captures/") && e.getName().endsWith(".png"))
-                    .min(Comparator.comparing(ZipEntry::getName));
-            if (first.isEmpty()) {
+                    .min(Comparator.comparing(ZipEntry::getName)));
+            if (cover.isEmpty()) {
                 return Optional.empty();
             }
-            try (var in = zip.getInputStream(first.get())) {
+            try (var in = zip.getInputStream(cover.get())) {
                 return Optional.of(in.readAllBytes());
             }
         }

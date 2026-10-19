@@ -61,9 +61,14 @@ public class CatalogTest {
 
     /** A 1x1 PNG with a text chunk that must not survive. */
     static byte[] png() {
+        return png(1);
+    }
+
+    /** A PNG `width` pixels wide (in its header), with a text chunk that must not survive. */
+    static byte[] png(int width) {
         var out = new ByteArrayOutputStream();
         out.writeBytes(new byte[] { (byte) 0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n' });
-        out.writeBytes(chunk("IHDR", new byte[] { 0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0 }));
+        out.writeBytes(chunk("IHDR", new byte[] { 0, 0, 0, (byte) width, 0, 0, 0, 1, 8, 6, 0, 0, 0 }));
         out.writeBytes(chunk("tEXt", "Author\0Someone".getBytes(StandardCharsets.ISO_8859_1)));
         out.writeBytes(chunk("IDAT", new byte[] { 0x78, (byte) 0x9c, 0x63, 0, 1, 0, 0, 5, 0, 1 }));
         out.writeBytes(chunk("IEND", new byte[0]));
@@ -172,6 +177,22 @@ public class CatalogTest {
         String newCode = as(token).post("/api/modes/" + id + "/share-code").then().statusCode(200).extract().path("shareCode");
         given().get("/api/shared/" + code).then().statusCode(404);
         given().get("/api/shared/" + newCode).then().statusCode(200);
+    }
+
+    @Test
+    void theCoverIsTheCaptureItsAuthorChose() throws Exception {
+        byte[] other = png(2);
+        String manifest = "{\"format\":2,\"app_version\":\"0.1.0\",\"mode\":\"battles\",\"game\":{\"name\":\"" + unique("Hades ")
+                + "\",\"steam_app_id\":null},\"inputs\":{\"cover\":\"menu-1.png\",\"captures\":[{\"file\":\"battle-1.png\",\"phase\":\"battle\"},"
+                + "{\"file\":\"menu-1.png\",\"phase\":\"menu\"}]}}";
+        Map<String, byte[]> entries = new LinkedHashMap<>();
+        entries.put("gameviber.json", manifest.getBytes(StandardCharsets.UTF_8));
+        entries.put("mode.luau", SCRIPT.getBytes(StandardCharsets.UTF_8));
+        entries.put("captures/battle-1.png", png());
+        entries.put("captures/menu-1.png", other);
+        String id = publish(register(unique("a")), zip(entries), "public").statusCode(200).extract().path("id");
+        byte[] cover = given().get("/api/modes/" + id + "/image").then().statusCode(200).extract().asByteArray();
+        assertArrayEquals(SharedPackage.stripPng("x", other), cover, "the chosen capture, not the first by name");
     }
 
     @Test
