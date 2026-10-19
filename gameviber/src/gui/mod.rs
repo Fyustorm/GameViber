@@ -566,6 +566,22 @@ fn pad_view(ui: &mut egui::Ui, held: impl Fn(&str) -> bool, axis: impl Fn(&str) 
     stick(ui, "Right stick", axis("RX"), axis("RY"));
 }
 
+/// What the gamepad's capture asks of the player; a link it ends with is clickable.
+fn hint_card(ui: &mut egui::Ui, hint: &str) {
+    card(PANEL).stroke(egui::Stroke::new(1.0, WARN)).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        match hint.split_once("https://") {
+            Some((text, link)) => {
+                ui.label(RichText::new(text.trim_end()).color(WARN));
+                ui.hyperlink_to(format!("https://{link} ↗"), format!("https://{link}"));
+            }
+            None => {
+                ui.label(RichText::new(hint).color(WARN));
+            }
+        }
+    });
+}
+
 fn gamepad_status(s: &Shared) -> (egui::Color32, String) {
     match (s.gamepads.first(), &s.source_health) {
         (_, SourceHealth::Off) => (IDLE, "No gamepad capture".into()),

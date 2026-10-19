@@ -346,13 +346,14 @@ a line for your gamepad from SDL_GameControllerDB works too.
 
 On **Windows**, the Standard method is the only one: games get a virtual Xbox
 360 controller (it needs [ViGEmBus](https://github.com/nefarius/ViGEmBus/releases),
-which GameViber's installer offers). An Xbox controller is passed on as it is,
+which GameViber's installer installs). An Xbox controller is passed on as it is,
 and still vibrates; any other gamepad gets the Xbox layout from SDL's database
-or from the buttons you set up, and does not vibrate itself. To keep games
-from seeing two controllers, tick **Hide the real gamepad from games**: it
-needs [HidHide](https://github.com/nefarius/HidHide/releases) (also offered by
-the installer), and Windows asks you to allow it each time GameViber hides or
-gives back the gamepad.
+or from the buttons you set up, and does not vibrate itself. The real gamepad
+is always hidden from games, which would otherwise see two controllers: it
+needs [HidHide](https://github.com/nefarius/HidHide/releases) (also installed
+by the installer, then Windows restarted), and Windows asks you to allow it
+each time GameViber hides or gives back the gamepad. Without HidHide, Setup ›
+Gamepad and the status bar say so.
 
 ## On Windows
 

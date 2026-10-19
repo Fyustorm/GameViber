@@ -11,7 +11,7 @@ injected into games is left out, the rest works the same.
 | Paths | XDG | `%APPDATA%\GameViber` (config), `%LOCALAPPDATA%\GameViber` (data) |
 | File dialogs | desktop portal | the system's file dialogs (`IFileOpenDialog`) |
 | Rumble ("proxy" source) | uinput virtual gamepad | ViGEmBus virtual Xbox 360 controller; the real gamepad read through XInput (Xbox layout) or HID (mapped like on Linux) |
-| Hiding the real gamepad | helper through pkexec | HidHide, set up through an elevated GameViber (UAC) |
+| Hiding the real gamepad | helper through pkexec | HidHide (always), set up through an elevated GameViber (UAC) |
 | Kernel probe ("ebpf" source) | eBPF | not available |
 | Game sound | PipeWire | WASAPI: process loopback (Windows 10 2004+) or the default output's loopback |
 | Game image | in-game overlay's copies | Windows.Graphics.Capture of the game's window (Windows 10 1903+), read like an overlay's copies: the window in front when it covers its screen, or a game library's (Steam, Epic, GOG, Xbox...) |
@@ -21,7 +21,7 @@ injected into games is left out, the rest works the same.
 | External inputs pipe | FIFO | `\\.\pipe\gameviber-<user>-external` |
 | Steam app id | the game's environment | Steam's `RunningAppID` in the registry |
 | Updates | packages through pkexec, archive | the installer run silently, or the zip archive replaced in place |
-| Packaging | deb, rpm, Arch, tar.gz | Inno Setup installer (ViGEmBus and HidHide offered), zip |
+| Packaging | deb, rpm, Arch, tar.gz | Inno Setup installer (ViGEmBus and HidHide installed when missing), zip |
 | Logs | stderr, `~/.local/share/gameviber/gameviber.log` | `%LOCALAPPDATA%\GameViber\gameviber.log` (no console); the run before kept as `gameviber.previous.log`; panics and crashes (exception code, module and offset) logged |
 
 ## Plan
@@ -77,7 +77,7 @@ cleanly (Wine has no sound device, ViGEmBus nor capture).
 
 ### To check on Windows
 
-1. The installer: ViGEmBus and HidHide offered and installed, the
+1. The installer: ViGEmBus and HidHide installed when missing, the
    `gameviber://` links open GameViber, a second start hands its link over.
 2. An Xbox controller: Setup › Gamepad says it is passed on, a game sees the
    virtual controller (`joy.cpl` lists it), its rumble shows on the Rumble

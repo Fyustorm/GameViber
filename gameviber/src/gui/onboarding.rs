@@ -8,7 +8,7 @@ use super::gamepad::{capture_methods, rumble_check};
 use super::play::mode_tiles;
 use super::theme::*;
 use super::toys::{waiting_for_toys, INTIFACE_DOWNLOAD};
-use super::{gamepad_inputs, App, Page};
+use super::{gamepad_inputs, hint_card, App, Page};
 use crate::engine::{Command, Shared, SourceHealth, TEST_LEVEL};
 use crate::intiface::Control;
 
@@ -256,6 +256,10 @@ impl App {
             ui.add_space(2.0);
             rumble_check(ui, s);
         });
+        if let Some(hint) = &s.source_hint {
+            ui.add_space(8.0);
+            hint_card(ui, hint);
+        }
         ui.add_space(8.0);
         if let Some(command) = capture_methods(ui, s) {
             self.send(command);

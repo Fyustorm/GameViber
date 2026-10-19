@@ -20,8 +20,8 @@ Download the package for your system from the
 | Fedora 40+ | `.rpm` | `sudo dnf install ./gameviber-*.rpm` |
 | Arch, CachyOS, Manjaro | `.pkg.tar.zst` | `sudo pacman -U gameviber-*.pkg.tar.zst` |
 | SteamOS, Bazzite, other systems | `.tar.gz` | extract it and run `./gameviber` (see its `README.txt`) |
-| Windows 10 (2004+) and 11 | `-windows-x86_64-setup.exe` | run it: it also offers ViGEmBus (needed for the rumble) and HidHide |
-| Windows, without installing | `-windows-x86_64.zip` | extract it and run `gameviber.exe` (install [ViGEmBus](https://github.com/nefarius/ViGEmBus/releases) yourself) |
+| Windows 10 (2004+) and 11 | `-windows-x86_64-setup.exe` | run it: it also installs ViGEmBus and HidHide, which GameViber needs |
+| Windows, without installing | `-windows-x86_64.zip` | extract it and run `gameviber.exe` (install [ViGEmBus](https://github.com/nefarius/ViGEmBus/releases) and [HidHide](https://github.com/nefarius/HidHide/releases) yourself) |
 
 GameViber tells you when a new version is out and, with these files, installs
 it for you (**Settings › Updates**).

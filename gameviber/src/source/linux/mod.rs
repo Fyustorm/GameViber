@@ -48,6 +48,7 @@ pub const METHODS: &[Method] = &[
 pub const HIDE: HideOption = HideOption {
     label: "Hide the real gamepad from games 🔒 root",
     hover: "Games only see the virtual copy. Needs root access: Linux asks for your password",
+    always: false,
 };
 
 /// Starts the sources; owns the privileged helper they share.

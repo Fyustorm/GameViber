@@ -4,7 +4,7 @@ use super::{ActiveSource, EventSender, HideOption, Method, SourceOptions};
 use crate::config::SourceChoice;
 
 pub const METHODS: &[Method] = &[];
-pub const HIDE: HideOption = HideOption { label: "", hover: "" };
+pub const HIDE: HideOption = HideOption { label: "", hover: "", always: false };
 pub const MAPPINGS: &str = "";
 pub const MAPPING_PLATFORM: &str = "";
 

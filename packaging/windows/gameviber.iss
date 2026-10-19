@@ -1,8 +1,9 @@
 ; GameViber's Windows installer (Inno Setup 6), made by package.sh:
 ;   iscc -DVersion=<version> -DStage=<staged files> -DDrivers=<driver installers> -DOutput=<dir> -DOutputName=<name> gameviber.iss
 ; It installs GameViber for every user, opens gameviber:// links with it, and
-; offers the drivers the rumble capture uses (ViGEmBus) and the one hiding the
-; real gamepad from games (HidHide), unless they are installed already.
+; installs the drivers GameViber needs, unless they are installed already: the
+; virtual controller the rumble is captured with (ViGEmBus) and the one hiding
+; the real gamepad from games (HidHide), without which games see two.
 ; GameViber's updates run it silently (`update::windows`): it then starts
 ; GameViber again.
 
@@ -38,8 +39,6 @@ UsedUserAreasWarning=no
 UninstallDisplayIcon={app}\gameviber.exe
 
 [Tasks]
-Name: "vigembus"; Description: "Install ViGEmBus, which GameViber needs to capture the rumble"; Check: not DriverInstalled('ViGEmBus')
-Name: "hidhide"; Description: "Install HidHide, to hide your real gamepad from games (needs a restart)"; Flags: unchecked; Check: not DriverInstalled('HidHide')
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
@@ -48,8 +47,8 @@ Source: "{#Stage}\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Stage}\LICENSE-MIT"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Stage}\THIRD-PARTY-LICENSES.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "distribution-installer"; DestDir: "{app}"; DestName: "distribution"; Flags: ignoreversion
-Source: "{#Drivers}\ViGEmBus_setup.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall; Tasks: vigembus
-Source: "{#Drivers}\HidHide_setup.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall; Tasks: hidhide
+Source: "{#Drivers}\ViGEmBus_setup.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall; Check: not DriverInstalled('ViGEmBus')
+Source: "{#Drivers}\HidHide_setup.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall; Check: not DriverInstalled('HidHide')
 
 [Icons]
 Name: "{group}\GameViber"; Filename: "{app}\gameviber.exe"
@@ -63,9 +62,9 @@ Root: HKCU; Subkey: "Software\Classes\gameviber\DefaultIcon"; ValueType: string;
 Root: HKCU; Subkey: "Software\Classes\gameviber\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\gameviber.exe"" ""%1"""
 
 [Run]
-; The drivers' own installers, shown: they ask their own questions.
-Filename: "{tmp}\ViGEmBus_setup.exe"; StatusMsg: "Installing ViGEmBus..."; Flags: waituntilterminated; Tasks: vigembus
-Filename: "{tmp}\HidHide_setup.exe"; StatusMsg: "Installing HidHide..."; Flags: waituntilterminated; Tasks: hidhide
+; The drivers' own installers, shown: they ask their own questions (HidHide a restart).
+Filename: "{tmp}\ViGEmBus_setup.exe"; StatusMsg: "Installing ViGEmBus..."; Flags: waituntilterminated; Check: not DriverInstalled('ViGEmBus')
+Filename: "{tmp}\HidHide_setup.exe"; StatusMsg: "Installing HidHide..."; Flags: waituntilterminated; Check: not DriverInstalled('HidHide')
 Filename: "{app}\gameviber.exe"; Description: "{cm:LaunchProgram,GameViber}"; Flags: nowait postinstall skipifsilent runasoriginaluser
 ; After an update GameViber ran silently.
 Filename: "{app}\gameviber.exe"; Flags: nowait runasoriginaluser; Check: WizardSilent

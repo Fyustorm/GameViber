@@ -19,12 +19,13 @@ pub const METHODS: &[Method] = &[Method {
     badge: "Recommended",
     summary: "GameViber shows games a virtual Xbox 360 controller (ViGEmBus) and listens to what they send it.",
     pros: &["Works with nearly every game", "Your Xbox controller can still vibrate too", "Other gamepads get the Xbox layout"],
-    cons: &["Needs ViGEmBus (the installer offers it)", "Start GameViber before the game", "Games may see two controllers: hide the real one below"],
+    cons: &["Needs ViGEmBus and HidHide (the installer installs them)", "Start GameViber before the game"],
 }];
 
 pub const HIDE: HideOption = HideOption {
     label: "Hide the real gamepad from games (HidHide)",
-    hover: "Games only see the virtual controller. Needs HidHide (the installer offers it); Windows asks you to allow it",
+    hover: "Games only see the virtual controller. Needs HidHide (the installer installs it); Windows asks you to allow it",
+    always: true,
 };
 
 pub struct Sources;

@@ -41,6 +41,8 @@ pub struct Method {
 pub struct HideOption {
     pub label: &'static str,
     pub hover: &'static str,
+    /// Always hidden, not an option (games would see two gamepads).
+    pub always: bool,
 }
 
 #[derive(Debug, Clone)]

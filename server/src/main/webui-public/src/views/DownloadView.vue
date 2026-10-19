@@ -50,12 +50,12 @@ const platforms: { system: System; title: string; files: File[] }[] = [
       {
         name: 'Installer',
         suffix: '-setup.exe',
-        how: 'Run it: it also offers ViGEmBus, which GameViber needs to capture the rumble, and HidHide.',
+        how: 'Run it: it also installs ViGEmBus and HidHide, the drivers GameViber needs for the rumble.',
       },
       {
         name: 'Without installing',
         suffix: '.zip',
-        how: 'Extract it and run gameviber.exe. Install ViGEmBus yourself (see its README.txt).',
+        how: 'Extract it and run gameviber.exe. Install ViGEmBus and HidHide yourself (see its README.txt).',
       },
     ],
   },
@@ -141,7 +141,7 @@ const sums = computed(() => release.data.value?.assets.find((a) => a.name === 'S
         <div class="card">
           <h3>A gamepad</h3>
           <p class="muted">
-            Any gamepad, for the rumble. On Windows, ViGEmBus (the installer offers it); on Linux, PipeWire for the
+            Any gamepad, for the rumble. On Windows, ViGEmBus and HidHide (the installer installs them); on Linux, PipeWire for the
             game's sound, the default on recent systems.
           </p>
         </div>

@@ -22,11 +22,14 @@ pub(super) fn pad_chip(s: &Shared) -> (Color32, String, String) {
         SourceHealth::Off => (IDLE, "Gamepad capture off".to_owned()),
         SourceHealth::Waiting(why) => (WARN, format!("Gamepad: {why}")),
         SourceHealth::Failed(_) => (DANGER_TEXT, "Rumble not captured".to_owned()),
-        SourceHealth::Working if s.gamepads.is_empty() => (WARN, pad),
+        SourceHealth::Working if s.gamepads.is_empty() || s.source_hint.is_some() => (WARN, pad),
         SourceHealth::Working if s.last_rumble.is_some_and(|t| s.time - t < RECENT_RUMBLE_SECS) => (OK, format!("{pad} · rumble ✔")),
         SourceHealth::Working => (OK, pad),
     };
-    let hover = format!("{rumble_text}\n{}", if s.buttons_seen { "Buttons received" } else { "No button pressed yet" });
+    let mut hover = format!("{rumble_text}\n{}", if s.buttons_seen { "Buttons received" } else { "No button pressed yet" });
+    if let Some(hint) = &s.source_hint {
+        hover = format!("{hint}\n{hover}");
+    }
     (if color == OK { rumble_color } else { color }, text, hover)
 }
 

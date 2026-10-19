@@ -71,7 +71,7 @@ const faq = [
   {
     question: 'Does it work on Windows?',
     answer:
-      'Yes, on Windows 10 (2004) or later, with a few features less than on Linux: no panel inside the game, and the rumble goes through a virtual Xbox controller (ViGEmBus, which the installer offers).',
+      'Yes, on Windows 10 (2004) or later, with a few features less than on Linux: no panel inside the game, and the rumble goes through a virtual Xbox controller (ViGEmBus, which the installer installs).',
   },
   {
     question: 'Which games?',

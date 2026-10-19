@@ -681,7 +681,7 @@ impl Engine {
         if self.settings.source == SourceChoice::None {
             return Source::None;
         }
-        let opts = SourceOptions { device: self.opts.device.clone(), passthrough: self.opts.passthrough, hide: self.settings.hide };
+        let opts = SourceOptions { device: self.opts.device.clone(), passthrough: self.opts.passthrough, hide: self.settings.hide || crate::source::HIDE.always };
         match self.sources.start(self.settings.source, &opts, self.source_tx.clone()) {
             Ok(s) => Source::Running(s),
             Err(e) => Source::Failed(format!("{e:#}")),

@@ -6,7 +6,7 @@
 use eframe::egui::{self, Margin, RichText};
 
 use super::theme::*;
-use super::{capture_status, gamepad_inputs, gamepad_status, App, RECENT_RUMBLE_SECS};
+use super::{capture_status, gamepad_inputs, gamepad_status, hint_card, App, RECENT_RUMBLE_SECS};
 use crate::config::SourceChoice;
 use crate::engine::{Command, Shared, SourceHealth};
 use super::pad_setup::{Labels, PadSetup};
@@ -51,10 +51,7 @@ impl App {
                     rumble_check(ui, s);
                 });
                 if let Some(hint) = &s.source_hint {
-                    card(PANEL).stroke(egui::Stroke::new(1.0, WARN)).show(ui, |ui| {
-                        ui.set_width(ui.available_width());
-                        ui.label(RichText::new(hint).color(WARN));
-                    });
+                    hint_card(ui, hint);
                 }
                 if let Some(pad) = &s.pad {
                     card(PANEL).inner_margin(Margin::symmetric(16, 12)).show(ui, |ui| {
@@ -210,7 +207,7 @@ pub(super) fn capture_methods(ui: &mut egui::Ui, s: &Shared) -> Option<Command> 
             for con in cons {
                 ui.label(RichText::new(format!("! {con}")).size(12.5).color(MUTED));
             }
-            if choice == SourceChoice::Proxy && selected {
+            if choice == SourceChoice::Proxy && selected && !crate::source::HIDE.always {
                 let mut new_hide = hide;
                 ui.checkbox(&mut new_hide, crate::source::HIDE.label).on_hover_text(crate::source::HIDE.hover);
                 if new_hide != hide {

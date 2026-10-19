@@ -157,7 +157,11 @@ impl ProxySource {
             })?),
         };
         let hide = opts.hide && client.is_some();
-        let hint = (hide && !hidhide::installed()).then(|| "Install HidHide to hide the real gamepad from games (GameViber's installer offers it).".to_owned());
+        let hint = (hide && !hidhide::installed()).then(|| {
+            "HidHide is missing: games see your gamepad twice (each press counted twice, the rumble sent to the wrong one). \
+             Install it, or GameViber again, then restart Windows: https://github.com/nefarius/HidHide/releases"
+                .to_owned()
+        });
         let hidden_ids = match (&real, hide && hint.is_none()) {
             (_, false) => Vec::new(),
             (Real::Hid(pad), true) => hid::instance_ids(&pad.info.path),

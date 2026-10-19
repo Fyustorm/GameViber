@@ -182,7 +182,7 @@ packaging/linux/package.sh     # deb, rpm, Arch package, .tar.gz and SHA256SUMS 
 
 [`packaging/windows/`](packaging/windows/) makes the Windows installer (Inno
 Setup: GameViber, the `gameviber://` scheme, and the ViGEmBus and HidHide
-installers it offers, downloaded and checked by the script) and a zip archive:
+installers it runs when they are missing, downloaded and checked by the script) and a zip archive:
 
 ```sh
 cargo build --release -p gameviber   # on Windows; from Linux: cargo xwin build --release --target x86_64-pc-windows-msvc -p gameviber
