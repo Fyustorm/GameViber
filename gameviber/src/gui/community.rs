@@ -230,7 +230,7 @@ impl App {
     }
 
     /// Where the user modes come from, read again when they change.
-    fn scan_installed(&mut self, s: &Shared) {
+    pub(super) fn scan_installed(&mut self, s: &Shared) {
         let modes: Vec<String> = s.modes.iter().filter(|e| !e.builtin && e.variant.is_none()).map(|e| e.id.clone()).collect();
         if modes == self.community.installed_for {
             return;
@@ -920,11 +920,12 @@ impl App {
                 self.send(Command::SelectGame(Some(game.id.clone())));
             }
             self.send(Command::SelectMode(local.to_owned()));
-            self.route = Route::Mode;
+            self.page = Page::Creator;
+            self.creator.tab = super::creator::Tab::Share;
         }
     }
 
-    // --- the mode's page: publishing
+    // --- the Creator's Share tab: publishing
 
     fn account_ui(&mut self, ui: &mut egui::Ui) -> Option<Account> {
         if let Some(account) = self.account() {

@@ -553,6 +553,38 @@ impl ModeEntry {
         }
         Ok(())
     }
+
+    /// Renames a variant `name`: its script, and its backup, parameters, presets
+    /// and feedback history with it. Returns the variant renamed.
+    pub fn rename_variant(&self, name: &str) -> io::Result<ModeEntry> {
+        let (Some(_), Some(dir), Some(path)) = (&self.variant, self.dir(), self.path()) else {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "only a variant can be renamed"));
+        };
+        let to = dir.join(VARIANTS_DIR).join(format!("{name}.{MODE_EXTENSION}"));
+        if to.exists() {
+            return Err(io::Error::new(io::ErrorKind::AlreadyExists, format!("a variant is already named {name}")));
+        }
+        let renamed = ModeEntry::from_id(&to.to_string_lossy());
+        fs::rename(&path, &to)?;
+        let follow = [
+            (path.with_extension("luau.bak"), to.with_extension("luau.bak")),
+            (self.params_path(), renamed.params_path()),
+            (self.presets_path(), renamed.presets_path()),
+            (self.feedback_path(), renamed.feedback_path()),
+        ];
+        for (from, to) in follow.into_iter().filter(|(from, _)| from.exists()) {
+            if let Err(e) = fs::rename(&from, &to) {
+                log::warn!("cannot move {} to {}: {e}", from.display(), to.display());
+            }
+        }
+        Ok(renamed)
+    }
+}
+
+/// A variant's file name from what a player typed ("Boss only" → "Boss_only"), or None for nothing.
+pub fn variant_stem(name: &str) -> Option<String> {
+    let stem: String = name.trim().chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
+    (!stem.is_empty()).then_some(stem)
 }
 
 /// Built-in modes first, then the packages `~/.config/gameviber/modes/*/mode.luau` sorted by name.
@@ -649,6 +681,28 @@ mod tests {
         let e = ModeEntry::from_id("/elsewhere/combo.luau");
         assert_eq!((e.key.as_str(), e.dir()), ("combo", None), "a file run from elsewhere has no package");
         assert_eq!(ModeEntry::from_id("builtin:combo").dir(), None);
+    }
+
+    #[test]
+    fn variants_are_renamed_with_their_backup() {
+        let dir = std::env::temp_dir().join(format!("gameviber-rename-variant-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let package = dir.join("combo");
+        write_file(&package.join(MODE_FILE), "mode {}").unwrap();
+        let boss = unused_variant_path(&package, "boss");
+        write_file(&boss, "-- boss").unwrap();
+        write_file(&boss.with_extension("luau.bak"), "-- before").unwrap();
+        write_file(&unused_variant_path(&package, "calm"), "-- calm").unwrap();
+        let entry = ModeEntry::from_id(&boss.to_string_lossy());
+        assert_eq!(entry.rename_variant("calm").unwrap_err().kind(), io::ErrorKind::AlreadyExists);
+        let renamed = entry.rename_variant("final").unwrap();
+        assert_eq!((renamed.key.as_str(), renamed.variant.as_deref()), ("combo.final", Some("final")));
+        assert_eq!(renamed.source().unwrap(), "-- boss");
+        assert!(!boss.exists() && package.join(VARIANTS_DIR).join("final.luau.bak").exists());
+        assert!(ModeEntry::from_id(&package.join(MODE_FILE).to_string_lossy()).rename_variant("x").is_err(), "the mode itself is not a variant");
+        assert_eq!(variant_stem(" Boss only "), Some("Boss_only".to_owned()));
+        assert_eq!(variant_stem("  "), None);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

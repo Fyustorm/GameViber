@@ -821,7 +821,8 @@ impl Engine {
                 self.settings.save();
             }
             Command::DeleteMode(id) => {
-                if self.mode.as_ref().is_some_and(|m| m.entry.id == id) {
+                // The mode played, or the mode a variant played belongs to (deleted with it).
+                if self.mode.as_ref().is_some_and(|m| m.entry.id == id || m.entry.main_id() == id) {
                     // A variant gives way to its mode.
                     let entry = ModeEntry::from_id(&id);
                     let next = if entry.variant.is_some() { entry.main_id() } else { config::DEFAULT_MODE.to_owned() };

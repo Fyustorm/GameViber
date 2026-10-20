@@ -14,19 +14,23 @@ the game's image...) with the way to fix it.
 
 | Page | What it is for |
 |---|---|
-| **Community** | Where GameViber opens: type the game you play (it searches as you type), and install a mode other players made for it in a click (the best rated first), open one shared with you by its code, report one that a game update broke. No mode for your game yet? **Create a mode for it**: an AI assistant writes it, then share it from its page. Creating a mode for a game shows its community modes too, and the library tells when the game you play has some and you have no mode of your own. |
-| **Library** | Your modes, by game, and the built-in ones (**Any game**). **Create a mode** asks for its game, then opens the Creator. Opening a mode plays it and shows its page: its settings, what it reads, sharing it, and its **game** (how GameViber recognizes it, which sound it listens to). A game linked to its executable becomes the game being played by itself, and so does a game Steam starts once GameViber saw its Steam app id. |
+| **Community** | Where GameViber opens: type the game you play (it searches as you type), and install a mode other players made for it in a click (the best rated first), open one shared with you by its code, report one that a game update broke. No mode for your game yet? **Create a mode for it**: an AI assistant writes it, then share it from its Creator's **Share** tab. Creating a mode for a game shows its community modes too, and the library tells when the game you play has some and you have no mode of your own. |
+| **Library** | Your modes, by game, and the built-in ones (**Any game**). **Create a mode** asks for its game, then opens the Creator. Opening a mode plays it and shows its page: its name and what to do with it (fix it, edit it, share it, duplicate or delete it) stay on top of its tabs, **Settings**, **Variants** and **Game & inputs** (how GameViber recognizes its game, which sound it listens to, what it reads). A game linked to its executable becomes the game being played by itself, and so does a game Steam starts once GameViber saw its Steam app id. |
 | **Live** | What happens while you play, to keep on a second screen: the mode and its main settings, what goes to the toys, the phase, the sound, the gamepad. |
 | **Toys** | The connection to Intiface Central (disconnect, reconnect, start or stop its scan for toys, its address), the toys it found, a test buzz, and how each toy plays: which mode channels, weakest and strongest intensity, response curve, and for strokers what they can do (see Strokers). |
 | **Setup** | What does not depend on the game: the gamepad and how it is captured, the shortcuts (panic stop, mark a moment, capture the screen) on the gamepad or the keyboard, the in-game overlay, the sound listened to by default, other programs. |
 | **Settings** | The language AI assistants answer in, the requests sent to them (editable). |
-| **Creator** | The workspace of the mode being played, in tabs to visit in any order: the **✨ AI assistant** (what you ask of it: the game's phases and indicators proposed, the script written), **Phases**, **Sessions** (the easiest way to get captures: record yourself playing through every phase and situation, then work from its replay; recorded sessions to watch again like a video, replayed into the mode as it is now (its script, settings, phases, captures and indicators: change one, in any tab, and the player offers to apply it: it pauses while the session is replayed again, then plays on; indicators drawn or moved since the recording are read from its images) — the game's images, its rumble, your buttons, the phases, what the mode's inputs said and what it sent to the toys, at any moment — while the toys play it; images to add to the captures, picked with the keyboard too (**⌨ Shortcuts** under the timeline lists the keys); one indicator to follow in the timeline, chosen under it (a gauge as a line, a visibility as the background where it is shown); the recordings listed by game (the active mode's first), by mode, by month or all together, searched, renamed (✏, where a recording made without its game linked can also be filed under it, to offer its images as captures to the game's modes), deleted one by one or a group at a time), **Captures & indicators**, **Other programs** (see A mode's inputs), its **Script** (started from a built-in mode, or written by hand, with hot reload; in its editor, Ctrl+F finds, Ctrl+H replaces, Ctrl+G goes to a line, Enter keeps the indentation, Tab and Shift+Tab indent the selected lines, Ctrl+/ comments them out) and **Logs**. A recorded session keeps 1 to 10 images of the game a second (2 by default, about 250 MB an hour, written to disk as they come; a recording stops after an hour); the last 2 minutes, always kept in memory, keep 2 a second. The mode runs while you edit it: every change can be felt at once, and **Live ›** shows what it does; **? How a mode works** shows how the parts fit. |
+| **Creator** | The workspace of the mode being played, in tabs to visit in any order: the **✨ AI assistant** (what you ask of it: the game's phases and indicators proposed, the script written), **Phases**, **Sessions** (the easiest way to get captures: record yourself playing through every phase and situation, then work from its replay; recorded sessions to watch again like a video, replayed into the mode as it is now (its script, settings, phases, captures and indicators: change one, in any tab, and the player offers to apply it: it pauses while the session is replayed again, then plays on; indicators drawn or moved since the recording are read from its images) — the game's images, its rumble, your buttons, the phases, what the mode's inputs said and what it sent to the toys, at any moment — while the toys play it; images to add to the captures, picked with the keyboard too (**⌨ Shortcuts** under the timeline lists the keys); one indicator to follow in the timeline, chosen under it (a gauge as a line, a visibility as the background where it is shown); the recordings listed by game (the active mode's first), by mode, by month or all together, searched, renamed (✏, where a recording made without its game linked can also be filed under it, to offer its images as captures to the game's modes), deleted one by one or a group at a time), **Captures & indicators**, **Other programs** (see A mode's inputs), its **Script** (started from a built-in mode, or written by hand, with hot reload; in its editor, Ctrl+F finds, Ctrl+H replaces, Ctrl+G goes to a line, Enter keeps the indentation, Tab and Shift+Tab indent the selected lines, Ctrl+/ comments them out), **Share** (see Sharing a mode) and **Logs**. A recorded session keeps 1 to 10 images of the game a second (2 by default, about 250 MB an hour, written to disk as they come; a recording stops after an hour); the last 2 minutes, always kept in memory, keep 2 a second. The mode runs while you edit it: every change can be felt at once, and **Live ›** shows what it does; **? How a mode works** shows how the parts fit. |
 
-A mode's own page shows its explanation, its main
-settings, all its settings and named **presets**, and its **variants**: other scripts of the same mode
-(a "boss only" version, a calmer one), reading the same inputs, each with its
-own settings and presets. **+ Variant** copies the script played now, to change
-in Creator; a variant is shared with its mode.
+A mode's own page shows, under **Settings**, its explanation, its main
+settings and named **presets**, then its other settings: search them, show only
+those changed, and put one back to its default with **↺**. Under **Variants**:
+other scripts of the same mode (a "boss only" version, a calmer one), reading
+the same inputs, each with its own settings and presets, played, renamed or
+deleted there. A new variant copies the script played now (with the settings
+played now, unless unticked), to change in the Creator; the variant played is
+named everywhere after its mode ("Pulse · boss"), and picked beside the tabs. A
+variant is shared with its mode.
 
 ### Strokers
 
@@ -139,7 +143,7 @@ tuned copy of a built-in one.
 ### Sharing a mode
 
 A mode written for a game reads the phases and indicators set up for it, so it
-is shared with them. **Export**, on a mode's page, saves it in a `.gameviber` file
+is shared with them. **Export**, in the Creator's **Share** tab, saves it in a `.gameviber` file
 with its inputs (phases, indicators, captures filed under a phase, captures to
 sort stay home; external inputs) and the game's name and executables. Captures
 are images of your screen: look at them before sharing the file.
@@ -151,7 +155,7 @@ only drive your toys, never reach your files or the network.
 
 ### Publishing a mode
 
-On a mode's page, **In the community**: pick a name players see
+In the Creator's **Share** tab, **In the community**: pick a name players see
 and a password (there is no email yet: a lost password cannot be recovered),
 then publish it for the people you give its code to (testers, first) or for
 everyone. Look at the captures it sends, and leave out those showing your name,

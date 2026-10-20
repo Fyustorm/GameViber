@@ -32,7 +32,7 @@ impl App {
                             if ui.button("In the Creator ›").clicked() {
                                 self.page = Page::Creator;
                             }
-                            if ui.button("Mode page ›").on_hover_text("Its settings, presets and variants, sharing it, its game").clicked() {
+                            if ui.button("Mode page ›").on_hover_text("Its settings, presets and variants, its game").clicked() {
                                 self.page = Page::Library;
                                 self.route = Route::Mode;
                             }
@@ -71,7 +71,7 @@ impl App {
                 _ => s.modes.iter().find(|e| e.id == id).map_or(id.to_owned(), |e| e.key.clone()),
             };
             let game_modes: Vec<&String> = s.game.iter().flat_map(|g| &g.modes).collect();
-            let current = if mode.id.is_empty() { "No mode".to_owned() } else { name_of(&mode.id) };
+            let current = if mode.id.is_empty() { "No mode".to_owned() } else { super::display_name(s, &mode.id) };
             egui::ComboBox::from_id_salt("live-mode")
                 .selected_text(RichText::new(current).strong().size(16.0))
                 .width(ui.available_width() - 8.0)
@@ -117,6 +117,7 @@ impl App {
                 if ui.button("All settings ›").clicked() {
                     self.page = Page::Library;
                     self.route = Route::Mode;
+                    self.play.tab = super::play::ModeTab::Settings;
                 }
                 if ui.add(primary("Doesn't feel right?")).on_hover_text("Get the mode fixed by an AI assistant").clicked() {
                     self.page = Page::Library;

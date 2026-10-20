@@ -8,6 +8,7 @@ use eframe::egui;
 
 use super::creator::Tab;
 use super::pad_setup::{Labels, PadSetup};
+use super::play::ModeTab;
 use super::{setup, App, Page, Route};
 use crate::engine::Shared;
 
@@ -25,6 +26,8 @@ pub struct Tour {
 enum Stop {
     Page(Page),
     Library(Route),
+    /// The active mode's page, on a tab.
+    ModePage(ModeTab),
     /// The Creator on a tab, how a mode works shown or not.
     Creator(Tab, bool),
     Setup(setup::Tab),
@@ -44,10 +47,12 @@ enum Stop {
     PadSetup(Labels),
 }
 
-const STOPS: [(&str, Stop); 28] = [
+const STOPS: [(&str, Stop); 31] = [
     ("library", Stop::Library(Route::Library)),
     ("create-mode", Stop::Library(Route::Create)),
-    ("mode", Stop::Library(Route::Mode)),
+    ("mode", Stop::ModePage(ModeTab::Settings)),
+    ("mode-variants", Stop::ModePage(ModeTab::Variants)),
+    ("mode-game", Stop::ModePage(ModeTab::Game)),
     ("creator-assistant", Stop::Creator(Tab::Assistant, false)),
     ("creator-phases", Stop::Creator(Tab::Phases, false)),
     ("creator-help", Stop::Creator(Tab::Phases, true)),
@@ -58,6 +63,7 @@ const STOPS: [(&str, Stop); 28] = [
     ("indicator-new", Stop::IndicatorNew),
     ("creator-programs", Stop::Creator(Tab::Programs, false)),
     ("creator-script", Stop::Creator(Tab::Script, false)),
+    ("creator-share", Stop::Creator(Tab::Share, false)),
     ("creator-logs", Stop::Creator(Tab::Logs, false)),
     ("community", Stop::Page(Page::Community)),
     ("community-game", Stop::CommunityGame),
@@ -122,6 +128,11 @@ impl App {
             Stop::Library(route) => {
                 self.page = Page::Library;
                 self.route = route;
+            }
+            Stop::ModePage(tab) => {
+                self.page = Page::Library;
+                self.route = Route::Mode;
+                self.play.tab = tab;
             }
             Stop::Creator(tab, help) => {
                 self.page = Page::Creator;

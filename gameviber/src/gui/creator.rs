@@ -2,8 +2,8 @@
 //! any order — the AI assistant (the game's phases proposed, the script
 //! written), its phases, sessions (recorded playing through them, the images
 //! to draw indicators on picked in their replay), captures and indicators, values from other programs,
-//! its script (started from a built-in mode, or written by hand), logs — and
-//! how a mode works one click away. What the mode does while
+//! its script (started from a built-in mode, or written by hand), sharing it
+//! (as a file, in the community), logs — and how a mode works one click away. What the mode does while
 //! playing is on the Live page.
 
 
@@ -38,6 +38,8 @@ pub(super) enum Tab {
     /// Motions for strokers.
     Funscripts,
     Script,
+    /// Sharing it: as a file, in the community.
+    Share,
     Logs,
 }
 
@@ -49,7 +51,7 @@ impl Tab {
             Tab::Screen => Some(Part::Image),
             Tab::Programs => Some(Part::Programs),
             Tab::Script => Some(Part::Script),
-            Tab::Assistant | Tab::Funscripts | Tab::Sessions | Tab::Logs => None,
+            Tab::Assistant | Tab::Funscripts | Tab::Sessions | Tab::Share | Tab::Logs => None,
         }
     }
 }
@@ -122,6 +124,9 @@ impl App {
                 (Tab::Funscripts, Some(game)) => {
                     egui::ScrollArea::vertical().show(ui, |ui| self.motions_tab(ui, s, game));
                 }
+                (Tab::Share, Some(game)) => {
+                    egui::ScrollArea::vertical().show(ui, |ui| self.mode_sharing(ui, s, game));
+                }
             }
         });
     }
@@ -141,7 +146,7 @@ impl App {
     /// The path to the mode (its page, its game, other modes), its name, the help.
     fn creator_header(&mut self, ui: &mut egui::Ui, s: &Shared) {
         let entry = ModeEntry::from_id(&s.mode.id);
-        let name = s.mode.info.as_ref().map_or_else(|| entry.key.clone(), |i| i.name.clone());
+        let name = super::display_name(s, &s.mode.id);
         let wide = ui.available_width() >= WIDE_HEADER;
         let draft = is_draft(&self.creator.editor.text);
         self.mode_path(ui, s, Some("Creator"));
@@ -214,6 +219,13 @@ impl App {
         };
         ui.add_space(8.0);
         let asked = inputs.is_some_and(|i| i.wishes.is_some());
+        // Where the mode is shared: published (its version), installed from the community.
+        self.scan_installed(s);
+        let shared = match self.origin_of(&super::main_of(&s.mode.id)) {
+            Some(origin) if origin.own => (format!("v{}", origin.version), OK),
+            Some(_) => ("installed".to_owned(), MUTED),
+            None => (String::new(), MUTED),
+        };
         let assistant = if asked || !is_draft(&self.creator.editor.text) { ("", MUTED) } else { ("start here", GAME) };
         ui.horizontal_wrapped(|ui| {
             let mut tab = |ui: &mut egui::Ui, tab: Tab, label: &str, state: String, color: egui::Color32| {
@@ -237,6 +249,7 @@ impl App {
             tab(ui, Tab::Programs, "Other programs", count(programs, "optional"), MUTED);
             tab(ui, Tab::Funscripts, "Funscripts", count(s.funscripts.len(), "optional"), MUTED);
             tab(ui, Tab::Script, "Script", script.0.to_owned(), script.1);
+            tab(ui, Tab::Share, "Share", shared.0, shared.1);
             ui.label(muted("|"));
             tab(ui, Tab::Logs, "Logs", String::new(), MUTED);
         });
@@ -269,10 +282,11 @@ impl App {
                 ui.label("Built-in modes read no inputs set up for a game: duplicate it, or create a mode for your game.");
                 return;
             }
-            ui.label("What a mode reads belongs to a game: give this mode one on its page.");
+            ui.label("What a mode reads, and sharing it, belong to a game: give this mode one on its page.");
             if ui.button("Give it a game ›").clicked() {
                 self.page = Page::Library;
                 self.route = Route::Mode;
+                self.play.tab = super::play::ModeTab::Game;
             }
         });
     }

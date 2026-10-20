@@ -40,6 +40,7 @@ mod toys;
 mod tour;
 mod updates;
 
+use std::collections::BTreeMap;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -50,6 +51,7 @@ use crate::config::{self, ModeEntry};
 use crate::engine::{Command, Shared, SharedHandle, SourceHealth, HISTORY_SECS};
 use crate::links::Link;
 use crate::logging::LogBuffer;
+use crate::mode::ParamValue;
 use theme::*;
 pub use theme::ICON;
 
@@ -222,22 +224,36 @@ impl App {
     }
 
     /// Makes a variant of the user mode `id` named after `name`, starting from
-    /// its script, and plays it.
-    fn create_variant(&mut self, id: &str, name: &str) {
+    /// its script (and its settings `values`, if given), and plays it.
+    fn create_variant(&mut self, id: &str, name: &str, values: Option<&BTreeMap<String, ParamValue>>) {
         let entry = ModeEntry::from_id(id);
         let (Some(dir), Ok(source)) = (entry.dir(), entry.source()) else {
             return log::error!("cannot make a variant of {id}");
         };
-        let stem: String = name.trim().chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
-        let path = config::unused_variant_path(&dir, if stem.is_empty() { "variant" } else { &stem });
+        let path = config::unused_variant_path(&dir, &config::variant_stem(name).unwrap_or_else(|| "variant".to_owned()));
         match config::write_file(&path, &source) {
             Ok(()) => {
                 log::info!("created the variant {}", path.display());
+                if let Some(values) = values {
+                    ModeEntry::from_id(&path.to_string_lossy()).save_params(values);
+                }
                 self.send(Command::RefreshModes);
                 self.send(Command::SelectMode(path.to_string_lossy().into_owned()));
             }
             Err(e) => log::error!("cannot create {}: {e}", path.display()),
         }
+    }
+
+    /// Renames the variant `id` to `name`, still playing it if it was; the error otherwise.
+    fn rename_variant(&mut self, id: &str, name: &str, playing: bool) -> Result<(), String> {
+        let stem = config::variant_stem(name).ok_or("Give it a name.")?;
+        let renamed = ModeEntry::from_id(id).rename_variant(&stem).map_err(|e| e.to_string())?;
+        log::info!("renamed the variant {id} to {}", renamed.id);
+        self.send(Command::RefreshModes);
+        if playing {
+            self.send(Command::SelectMode(renamed.id));
+        }
+        Ok(())
     }
 
     fn duplicate_mode(&mut self, id: &str) {
@@ -616,12 +632,23 @@ fn intiface_status(s: &Shared) -> (egui::Color32, String) {
     }
 }
 
-/// Icon of a mode tile.
 /// The mode `id` is a variant of (`id` for a mode).
 pub(super) fn main_of(id: &str) -> String {
     ModeEntry::from_id(id).main_id()
 }
 
+/// The name players see for the mode `id`: its mode's, and its variant's after it ("Pulse · boss").
+pub(super) fn display_name(s: &Shared, id: &str) -> String {
+    let entry = ModeEntry::from_id(id);
+    let main = entry.main_id();
+    let name = s.catalog.get(&main).and_then(|r| r.as_ref().ok()).map_or_else(|| ModeEntry::from_id(&main).key, |i| i.name.clone());
+    match &entry.variant {
+        Some(variant) => format!("{name} · {variant}"),
+        None => name,
+    }
+}
+
+/// Icon of a mode tile.
 fn mode_icon(entry: &ModeEntry) -> &'static str {
     if !entry.builtin {
         return "📝";

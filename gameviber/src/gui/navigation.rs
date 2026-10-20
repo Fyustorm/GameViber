@@ -118,7 +118,7 @@ impl App {
     /// (the Creator) when the mode's page is not the one shown; Change mode at its end.
     pub(super) fn mode_path(&mut self, ui: &mut egui::Ui, s: &Shared, here: Option<&str>) {
         let entry = ModeEntry::from_id(&s.mode.id);
-        let name = s.mode.info.as_ref().map_or_else(|| if entry.key.is_empty() { "Mode".to_owned() } else { entry.key.clone() }, |i| i.name.clone());
+        let name = if entry.key.is_empty() { "Mode".to_owned() } else { super::display_name(s, &s.mode.id) };
         let game = match mode_game(s) {
             Some(g) => Some((g.name.clone(), Filter::Game(g.id.clone()))),
             None if entry.builtin => Some(("Any game".to_owned(), Filter::AnyGame)),

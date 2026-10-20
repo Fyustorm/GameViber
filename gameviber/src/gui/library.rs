@@ -1,15 +1,16 @@
 //! Library page: the player's modes, by game (the built-in ones under "Any
 //! game"); creating a mode, which starts with its game and how its script is
 //! got (what an AI assistant is asked for it, ticked there) before opening the
-//! Creator; and the active mode's page: its
-//! settings, what it reads, sharing it, and its game (how GameViber
-//! recognizes it, which sound it listens to).
+//! Creator; and the active mode's page (`play.rs`): its settings, its
+//! variants, what it reads and its game (how GameViber recognizes it, which
+//! sound it listens to).
 
 use eframe::egui::{self, Margin, RichText};
 
 use super::creator::Way;
 use super::diagram::mode_diagram;
 use super::generator::wishes_ui;
+use super::play::ModeTab;
 use super::theme::*;
 use super::{main_of, mode_icon, App, Page, Route};
 use crate::config::{AudioSource, ModeEntry, NEW_MODE_TEMPLATE};
@@ -68,11 +69,16 @@ impl App {
                 self.feedback_page(ui, s);
                 return;
             }
-            egui::ScrollArea::vertical().show(ui, |ui| match self.route {
-                Route::Library => self.library(ui, s),
-                Route::Create => self.create_page(ui, s),
+            match self.route {
+                // Its own scrolling, under its name and tabs.
                 Route::Mode => self.mode_route(ui, s),
-            });
+                route => {
+                    egui::ScrollArea::vertical().show(ui, |ui| match route {
+                        Route::Create => self.create_page(ui, s),
+                        _ => self.library(ui, s),
+                    });
+                }
+            }
         });
     }
 
@@ -440,34 +446,25 @@ impl App {
 
     // --- the mode's page
 
+    /// The active mode's page: its name and tabs stay on top, the tab scrolls under them.
     fn mode_route(&mut self, ui: &mut egui::Ui, s: &Shared) {
-        let game = mode_game(s).cloned();
         self.mode_path(ui, s, None);
-        self.mode_page(ui, s);
-        if s.mode.id.is_empty() {
+        if !self.mode_header(ui, s) {
             return;
         }
-        ui.add_space(14.0);
-        self.reads_card(ui, s);
-        ui.add_space(14.0);
-        let entry = ModeEntry::from_id(&s.mode.id);
-        if !entry.builtin {
-            ui.label(RichText::new("Share").strong().size(17.0));
-            ui.add_space(4.0);
-            match &game {
-                Some(game) => {
-                    let main = main_of(&s.mode.id);
-                    self.publish_suggestion(ui, s, game, &main);
-                    ui.horizontal(|ui| self.community_update_button(ui, s, &main));
-                    self.mode_sharing(ui, s, game);
-                }
-                None => {
-                    ui.label(muted("A mode is shared with its game: give it one below."));
+        let game = mode_game(s).cloned();
+        egui::ScrollArea::vertical().id_salt(("mode-tab", self.play.tab as u8)).show(ui, |ui| {
+            ui.add_space(8.0);
+            match self.play.tab {
+                ModeTab::Settings => self.mode_settings(ui, s),
+                ModeTab::Variants => self.mode_variants(ui, s),
+                ModeTab::Game => {
+                    self.game_card(ui, s, game.as_ref());
+                    ui.add_space(14.0);
+                    self.reads_card(ui, s);
                 }
             }
-            ui.add_space(14.0);
-        }
-        self.game_card(ui, s, game.as_ref());
+        });
     }
 
     /// What the mode reads, in a few lines, and the way to the Creator.
