@@ -162,7 +162,8 @@ mod tests {
         let read = |name: &str| std::fs::read_to_string(dir.join(name)).unwrap();
         assert!(read("package.sh").contains(&format!("printf 'archive\\r\\n' > \"$work/$name/{MARKER}\"")));
         // The archive and the installer (`Installation::asset_suffix`) are named after `name`.
-        assert!(read("package.sh").contains(&format!("name=gameviber-$version{}\n", ARCHIVE_SUFFIX.trim_end_matches(".zip"))));
+        let name = format!("name=gameviber-$version{}", ARCHIVE_SUFFIX.trim_end_matches(".zip"));
+        assert!(read("package.sh").lines().any(|line| line == name));
         assert!(read("package.sh").contains("/$name.zip\"") && read("package.sh").contains("-DOutputName=$name-setup"));
         assert!(read("gameviber.iss").contains(&format!("{MARKER}-installer\"; DestDir: \"{{app}}\"; DestName: \"{MARKER}\"")));
     }

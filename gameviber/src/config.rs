@@ -645,7 +645,7 @@ mod tests {
     #[test]
     fn built_in_modes_are_under_the_mit_license() {
         for (name, source) in BUILTIN_MODES {
-            assert!(source.starts_with("-- SPDX-License-Identifier: MIT\n"), "{name}: first line (AGENTS.md, Licenses)");
+            assert_eq!(source.lines().next(), Some("-- SPDX-License-Identifier: MIT"), "{name}: first line (AGENTS.md, Licenses)");
         }
     }
 
