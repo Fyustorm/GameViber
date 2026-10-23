@@ -212,11 +212,12 @@ impl App {
                     inputs.copy_to(&dir).save();
                 }
                 self.send(Command::RefreshModes);
+                // The mode first: its game then keeps it rather than playing its last one.
+                self.send(Command::SelectMode(id.clone()));
                 if let Some(game) = game {
                     self.send(Command::AddGameMode { game: game.to_owned(), mode: id.clone() });
                     self.send(Command::SelectGame(Some(game.to_owned())));
                 }
-                self.send(Command::SelectMode(id.clone()));
                 self.page = Page::Creator;
                 Some(ModeEntry::from_id(&id))
             }
@@ -460,7 +461,28 @@ impl App {
                 self.send(Command::SelectGame(None));
             }
         });
+        self.mode_played(ui, s);
         ui.add_space(4.0);
+    }
+
+    /// The mode playing, beside its game: its page when clicked; warned about when it is another game's.
+    fn mode_played(&mut self, ui: &mut egui::Ui, s: &Shared) {
+        let name = if s.mode.id.is_empty() { "No mode".to_owned() } else { display_name(s, &s.mode.id) };
+        let other = library::mode_game(s).filter(|g| s.game.as_ref().is_none_or(|p| p.id != g.id));
+        let (text, hover) = match other {
+            Some(g) => (RichText::new(format!("▶ {name} ⚠")).color(WARN), format!("This mode is one of {}'s, not of the game picked", g.name)),
+            None => (RichText::new(format!("▶ {name}")).color(TEXT), "The mode playing: its page".to_owned()),
+        };
+        // A long name is cut, leaving the status chips their room.
+        let label = ui.scope(|ui| {
+            ui.set_max_width(220.0);
+            ui.add(egui::Label::new(text.strong()).truncate().sense(egui::Sense::click()))
+        });
+        if label.inner.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(hover).clicked() {
+            self.page = Page::Library;
+            self.route = Route::Mode;
+            self.feedback.open = false;
+        }
     }
 }
 

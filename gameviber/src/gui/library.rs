@@ -110,11 +110,12 @@ impl App {
 
     /// Plays the mode (or variant) `id` of `game` (None: a built-in mode, or one in no game).
     pub(super) fn play_mode(&mut self, s: &Shared, game: Option<&Game>, id: &str) {
-        if let Some(game) = game.filter(|g| s.game.as_ref().is_none_or(|p| p.id != g.id)) {
-            self.send(Command::SelectGame(Some(game.id.clone())));
-        }
+        // The mode first: the game then keeps it rather than playing its last one.
         if s.mode.id != id {
             self.send(Command::SelectMode(id.to_owned()));
+        }
+        if let Some(game) = game.filter(|g| s.game.as_ref().is_none_or(|p| p.id != g.id)) {
+            self.send(Command::SelectGame(Some(game.id.clone())));
         }
     }
 

@@ -108,6 +108,8 @@ pub struct Settings {
     pub check_updates: bool,
     /// The game last played, by id (`game.rs`).
     pub active_game: Option<String>,
+    /// The mode last played in each game (game id → mode id), played again when it is.
+    pub game_modes: BTreeMap<String, String>,
     /// Language AI assistants answer in, and write the texts players see in a mode
     /// (the GUI itself is in English for now).
     pub language: String,
@@ -249,6 +251,7 @@ impl Default for Settings {
             recording_images: crate::session::FRAME_RATE,
             check_updates: true,
             active_game: None,
+            game_modes: BTreeMap::new(),
             language: DEFAULT_LANGUAGE.into(),
             share_stats: None,
             installation_id: String::new(),

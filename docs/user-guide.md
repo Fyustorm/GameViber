@@ -5,7 +5,10 @@ goes through the rest.
 
 ## The app
 
-The top bar shows **the game being played** (pick another there), the state of
+The top bar shows **the game being played** (pick another there) and the mode
+playing (its page when clicked, marked ⚠ when it is another game's mode): a game
+picked, or recognized when it starts, plays the mode last played in it, or its
+first one, unless the mode playing is already one of its. Then the state of
 the gamepad and its rumble, of Intiface, of the game's image (the in-game
 overlay on Linux) and of its sound, the global maximum intensity and **STOP ALL**.
 A mode's page, and the Creator, say what keeps the mode from working fully (no

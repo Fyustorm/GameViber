@@ -762,14 +762,14 @@ impl App {
 
     /// Opens the page of the installed mode `local` (playing its game).
     fn open_installed(&mut self, s: &Shared, local: &str) {
+        self.route = Route::Mode;
+        self.send(Command::SelectMode(local.to_owned()));
         let game = s.games.iter().find(|g| g.modes.iter().any(|m| m == local));
         if let Some(game) = game {
             if s.game.as_ref().is_none_or(|g| g.id != game.id) {
                 self.send(Command::SelectGame(Some(game.id.clone())));
             }
         }
-        self.route = Route::Mode;
-        self.send(Command::SelectMode(local.to_owned()));
         self.page = Page::Library;
     }
 
@@ -943,10 +943,10 @@ impl App {
             self.community.usage.remove(local);
         }
         if publish {
+            self.send(Command::SelectMode(local.to_owned()));
             if s.game.as_ref().is_none_or(|g| g.id != game.id) {
                 self.send(Command::SelectGame(Some(game.id.clone())));
             }
-            self.send(Command::SelectMode(local.to_owned()));
             self.page = Page::Creator;
             self.creator.tab = super::creator::Tab::Share;
         }

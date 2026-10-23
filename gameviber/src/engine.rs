@@ -624,8 +624,9 @@ async fn run_async(
     engine.refresh_recordings();
     let first_mode = engine.opts.mode.clone().unwrap_or_else(|| engine.settings.active_mode.clone());
     engine.select_mode(&first_mode);
-    let last_game = engine.settings.active_game.clone();
-    engine.select_game(last_game);
+    // The mode played last stays, even from another game.
+    let last_game = engine.settings.active_game.as_deref().and_then(Game::load);
+    engine.set_game(last_game);
     if let Some(preset) = engine.opts.preset.clone() {
         engine.load_preset(&preset);
     }
@@ -1277,6 +1278,9 @@ impl Engine {
             }
         }
         self.settings.active_mode = id.to_owned();
+        if let Some(game) = self.game.as_ref().filter(|g| g.modes.contains(&active.entry.main_id())) {
+            self.settings.game_modes.insert(game.id.clone(), id.to_owned());
+        }
         self.settings.save();
         self.mode = Some(active);
         self.shared.lock().unwrap().plots.clear();
@@ -2004,7 +2008,30 @@ impl Engine {
         }
         self.settings.active_game = game.as_ref().map(|g| g.id.clone());
         self.settings.save();
+        let changed = self.game.as_ref().map(|g| &g.id) != game.as_ref().map(|g| &g.id);
         self.set_game(game);
+        if changed {
+            self.play_game_mode();
+        }
+    }
+
+    /// Plays a mode of the active game when the one playing is not one of its:
+    /// the one last played in it, or its first. Without modes of its own, the mode stays.
+    fn play_game_mode(&mut self) {
+        let Some(game) = &self.game else { return };
+        let playing = self.mode.as_ref().map(|m| m.entry.main_id());
+        if playing.is_some_and(|main| game.modes.contains(&main)) {
+            let id = self.settings.active_mode.clone();
+            self.settings.game_modes.insert(game.id.clone(), id);
+            self.settings.save();
+            return;
+        }
+        let exists = |id: &String| ModeEntry::from_id(id).source().is_ok();
+        let last = self.settings.game_modes.get(&game.id).filter(|id| game.modes.contains(&ModeEntry::from_id(id).main_id()) && exists(id));
+        if let Some(id) = last.or_else(|| game.modes.iter().find(|id| exists(id))).cloned() {
+            log::info!("{} is played with {id}", game.name);
+            self.select_mode(&id);
+        }
     }
 
     /// Computes the embeddings of the active mode's captures that have none, in a
