@@ -14,6 +14,7 @@ import fr.fyustorm.gameviber.catalog.Game;
 import fr.fyustorm.gameviber.catalog.Mode;
 import fr.fyustorm.gameviber.catalog.ModeCatalog;
 import fr.fyustorm.gameviber.catalog.Report;
+import fr.fyustorm.gameviber.catalog.SteamBanners;
 import fr.fyustorm.gameviber.catalog.Views;
 import io.vertx.core.http.HttpServerRequest;
 import jakarta.annotation.security.PermitAll;
@@ -47,6 +48,8 @@ public class AdminResource {
     RateLimiter limits;
     @Inject
     ModeCatalog catalog;
+    @Inject
+    SteamBanners banners;
     @ConfigProperty(name = "admin.token")
     String adminToken;
     @ConfigProperty(name = "limits.sign-in-per-hour")
@@ -163,7 +166,8 @@ public class AdminResource {
         }
         game.name = trimmed;
         game.slug = slug;
-        game.steamAppId = app;
+        game.changeSteamApp(app);
+        banners.soon();
         log.infof("game %d edited: %s, Steam app %s", game.id, game.name, game.steamAppId);
         return Views.game(game);
     }
@@ -183,12 +187,13 @@ public class AdminResource {
             Long app = from.steamAppId;
             from.delete();
             Game.flush();
-            to.steamAppId = app;
+            to.changeSteamApp(app);
         } else {
             from.delete();
         }
         log.infof("game %s merged into %s", from.name, to.name);
-        return new Views.GameView(to.id, to.name, to.steamAppId, Mode.count("gameId", to.id));
+        banners.soon();
+        return new Views.GameView(to, Mode.count("gameId", to.id));
     }
 
     public record ReportView(long id, String mode, String modeName, String reason, String details, Instant createdAt, Instant resolvedAt) {}

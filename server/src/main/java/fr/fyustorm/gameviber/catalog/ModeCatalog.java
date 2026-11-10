@@ -34,6 +34,8 @@ public class ModeCatalog {
     Stats stats;
     @Inject
     RateLimiter limits;
+    @Inject
+    SteamBanners banners;
     @ConfigProperty(name = "limits.code-per-hour", defaultValue = "60")
     int codePerHour;
 
@@ -117,6 +119,7 @@ public class ModeCatalog {
         var mode = new Mode();
         mode.publicId = Codes.publicId();
         mode.gameId = Game.findOrCreate(pkg.gameName, pkg.steamAppId).id;
+        banners.soon();
         mode.authorId = author.id;
         mode.name = text(name, "a name", MAX_NAME_CHARS, true);
         mode.description = text(description, "a description", MAX_DESCRIPTION_CHARS, false);
@@ -143,7 +146,8 @@ public class ModeCatalog {
         }
         // A mode first published without its game's Steam app id (no executable linked) gets it from a later version.
         if (game.steamAppId == null && pkg.steamAppId != null && Game.count("steamAppId", pkg.steamAppId) == 0) {
-            game.steamAppId = pkg.steamAppId;
+            game.changeSteamApp(pkg.steamAppId);
+            banners.soon();
         }
         int number = ModeVersion.latest(mode).map(v -> v.number + 1).orElse(1);
         addVersion(mode, pkg, changelog, number);

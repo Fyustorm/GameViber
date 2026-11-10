@@ -4,6 +4,8 @@ export interface Game {
   id: number
   name: string
   steamAppId: number | null
+  /** Its Steam banner, as Steam's store gives it (`SteamBanners`); none without a Steam app id. */
+  banner: string | null
   modes: number
 }
 
@@ -137,6 +139,6 @@ export function modePaths(by: { id: string } | { code: string }) {
 }
 
 /** The game's banner on Steam, when GameViber knows its app id. */
-export function steamHeader(game: Pick<Game, 'steamAppId'>): string | null {
-  return game.steamAppId ? `https://shared.cloudflare.steamstatic.com/store_item_assets/steam/apps/${game.steamAppId}/header.jpg` : null
+export function steamHeader(game: Pick<Game, 'banner'>): string | null {
+  return game.banner ?? null
 }

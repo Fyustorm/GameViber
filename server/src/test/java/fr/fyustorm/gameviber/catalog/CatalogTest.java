@@ -219,7 +219,9 @@ public class CatalogTest {
         long steamAppId = 1_000_000 + Math.floorMod(UUID.randomUUID().hashCode(), 1_000_000_000);
         String id = publish(token, gameviber(game, null), "public").statusCode(200).extract().path("id");
         as(token).multiPart("package", "m.gameviber", gameviber(game, steamAppId), "application/zip").post("/api/modes/" + id + "/versions")
-                .then().statusCode(200).body("game.steamAppId", equalTo((int) steamAppId));
+                .then().statusCode(200).body("game.steamAppId", equalTo((int) steamAppId))
+                // Steam not asked in tests: the path without a hash.
+                .body("game.banner", equalTo(SteamBanners.legacy(steamAppId)));
     }
 
     @Test

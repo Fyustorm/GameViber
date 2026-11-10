@@ -10,7 +10,12 @@ import fr.fyustorm.gameviber.stats.Stats.Figures;
 public final class Views {
     private Views() {}
 
-    public record GameView(long id, String name, Long steamAppId, long modes) {}
+    /** `banner`: its Steam banner (`SteamBanners`), none without a Steam app id. */
+    public record GameView(long id, String name, Long steamAppId, String banner, long modes) {
+        public GameView(Game game, long modes) {
+            this(game.id, game.name, game.steamAppId, SteamBanners.of(game), modes);
+        }
+    }
 
     public record VersionView(int number, String changelog, int api, long size, String sha256, Instant createdAt) {
         static VersionView of(ModeVersion v) {
@@ -55,7 +60,7 @@ public final class Views {
 
     public static GameView game(Game game) {
         long modes = Mode.count("gameId = ?1 and visibility = ?2 and withdrawnAt is null", game.id, Mode.PUBLIC);
-        return new GameView(game.id, game.name, game.steamAppId, modes);
+        return new GameView(game, modes);
     }
 
     static ModeSummary summary(Mode mode, Figures figures, PackageStore store) {

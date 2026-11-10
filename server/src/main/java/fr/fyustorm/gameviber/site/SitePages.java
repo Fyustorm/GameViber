@@ -10,6 +10,7 @@ import java.util.Optional;
 import fr.fyustorm.gameviber.catalog.Game;
 import fr.fyustorm.gameviber.catalog.Mode;
 import fr.fyustorm.gameviber.catalog.ModeCatalog;
+import fr.fyustorm.gameviber.catalog.SteamBanners;
 import fr.fyustorm.gameviber.catalog.Views;
 import io.vertx.core.http.HttpServerRequest;
 import jakarta.inject.Inject;
@@ -84,7 +85,7 @@ public class SitePages {
             String description = modes == 0
                     ? "No public GameViber mode for " + g.name + " yet."
                     : modes + (modes == 1 ? " GameViber mode" : " GameViber modes") + " for " + g.name + ", made by players: feel the game on your toys.";
-            return Page.of(g.name + " modes", description, steamHeader(g));
+            return Page.of(g.name + " modes", description, SteamBanners.of(g));
         }).orElseGet(Page::notFound));
     }
 
@@ -122,7 +123,7 @@ public class SitePages {
         String description = mode.description == null || mode.description.isBlank()
                 ? "A GameViber mode for " + game.name + ": feel the game on your toys."
                 : shorten(mode.description);
-        String image = catalog.cover(mode).isPresent() ? cover : steamHeader(game);
+        String image = catalog.cover(mode).isPresent() ? cover : SteamBanners.of(game);
         return new Page(mode.name + " for " + game.name, description, image, index, Response.Status.OK);
     }
 
@@ -168,11 +169,6 @@ public class SitePages {
         String cut = flat.substring(0, MAX_DESCRIPTION_CHARS - 1);
         int space = cut.lastIndexOf(' ');
         return (space > MAX_DESCRIPTION_CHARS / 2 ? cut.substring(0, space) : cut) + "…";
-    }
-
-    static String steamHeader(Game game) {
-        return game.steamAppId == null ? null
-                : "https://shared.cloudflare.steamstatic.com/store_item_assets/steam/apps/" + game.steamAppId + "/header.jpg";
     }
 
     private static String meta(String attribute, String name, String content) {

@@ -62,7 +62,7 @@ wider screens.
 |---|---|---|
 | Anyone | `GET /api/games?search=` | games with public modes |
 | | `GET /api/games/{id}/modes?sort=trending\|rating\|played\|new\|downloads` | a game's public modes, with their `figures` (players in 30 days, median minutes, share who came back 3 times or more, likes, Wilson rating, trend) |
-| | `GET /api/games/{id}` | a game (`modes`: its public ones) |
+| | `GET /api/games/{id}` | a game (`modes`: its public ones; `banner`: the header image of its Steam store page, which `SteamBanners` asks Steam's store API for in the background, every week: recent games keep it under a path with a hash; the path without one until then) |
 | | `GET /api/modes/{id}`, `GET /api/modes/{id}/package?version=` | a public mode (`uses`: what it is made for; `setup`: its phases, indicators, captures, variants and funscripts, read from its latest package), its package (a download) |
 | | `GET /api/modes/{id}/image`, `GET /api/modes/{id}/captures/{file}` | its latest version's cover (PNG: the capture its author chose, `inputs.cover`, else the first), for the site, the app and link previews; one of its captures |
 | | `GET /api/shared/{code}`, `GET /api/shared/{code}/package`, `GET /api/shared/{code}/image`, `GET /api/shared/{code}/captures/{file}` | a mode by its share code (private ones too; only the captures not found count among the codes tried) |

@@ -2,6 +2,7 @@ package fr.fyustorm.gameviber.catalog;
 
 import java.time.Instant;
 import java.util.Locale;
+import java.util.Objects;
 import java.util.Optional;
 
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
@@ -22,6 +23,11 @@ public class Game extends PanacheEntityBase {
     public String slug;
     @Column(name = "steam_app_id")
     public Long steamAppId;
+    /** Its Steam banner, as Steam's store API gave it (`SteamBanners`). */
+    @Column(name = "banner_url")
+    public String bannerUrl;
+    @Column(name = "banner_checked_at")
+    public Instant bannerCheckedAt;
     @Column(name = "created_at")
     public Instant createdAt;
 
@@ -41,9 +47,18 @@ public class Game extends PanacheEntityBase {
             game.createdAt = Instant.now();
         }
         if (game.steamAppId == null && steamAppId != null) {
-            game.steamAppId = steamAppId;
+            game.changeSteamApp(steamAppId);
         }
         game.persist();
         return game;
+    }
+
+    /** A new Steam app id: its banner is asked again (`SteamBanners.soon`). */
+    public void changeSteamApp(Long app) {
+        if (!Objects.equals(steamAppId, app)) {
+            steamAppId = app;
+            bannerUrl = null;
+            bannerCheckedAt = null;
+        }
     }
 }
