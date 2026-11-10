@@ -123,9 +123,12 @@ pub fn dot(ui: &mut egui::Ui, color: Color32) {
 
 /// Rounded badge.
 pub fn pill(ui: &mut egui::Ui, text: &str, fg: Color32, bg: Color32) {
-    egui::Frame::new().fill(bg).corner_radius(CornerRadius::same(10)).inner_margin(Margin::symmetric(8, 2)).show(ui, |ui| {
-        ui.label(RichText::new(text).size(11.5).strong().color(fg));
-    });
+    // Its own size whatever the layout: a frame would stretch to a row's height.
+    let text = egui::WidgetText::from(RichText::new(text).size(11.5).strong().color(fg));
+    let galley = text.into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Body);
+    let (rect, _) = ui.allocate_exact_size(galley.size() + Vec2::new(16.0, 4.0), Sense::hover());
+    ui.painter().rect_filled(rect, CornerRadius::same(10), bg);
+    ui.painter().galley(rect.min + Vec2::new(8.0, 2.0), galley, fg);
 }
 
 /// Horizontal level bar.
@@ -215,6 +218,8 @@ pub struct Tile<'a> {
     pub badge: Option<&'a str>,
     /// An image on its left side, in place of the icon.
     pub image: Option<&'a egui::TextureHandle>,
+    /// Height kept free at its bottom, for buttons put over it.
+    pub footer: f32,
 }
 
 impl Tile<'_> {
@@ -229,6 +234,7 @@ impl Tile<'_> {
         painter.rect(rect, CornerRadius::same(12), fill, stroke, StrokeKind::Inside);
 
         let mut inner = rect.shrink(14.0);
+        inner.max.y -= self.footer;
         let (text_left, body_top) = match self.image {
             Some(texture) => {
                 let side = Rect::from_min_size(rect.min, Vec2::new((rect.height() * 1.4).min(rect.width() * 0.4), rect.height()));

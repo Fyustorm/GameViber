@@ -18,6 +18,8 @@ use crate::links::Link;
 
 /// The image of a mode in the list of a game's modes.
 const ROW_IMAGE: Vec2 = Vec2::new(112.0, 63.0);
+/// The banner's width on a game's card.
+const GAME_CARD_BANNER: f32 = 220.0;
 /// Below this width the mode's page goes under the list.
 const TWO_COLUMNS_WIDTH: f32 = 900.0;
 /// A game's modes, the best rated first (few votes counting little): a game has few.
@@ -371,27 +373,34 @@ impl App {
                 // The player's games first.
                 games.sort_by_key(|g| !mine.contains(&crate::game::slug(&g.name)));
                 let mut open = None;
-                ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing = Vec2::splat(12.0);
-                    for game in &games {
-                        let yours = mine.contains(&crate::game::slug(&game.name));
-                        let response = card(PANEL).inner_margin(Margin::same(14)).show(ui, |ui| {
-                            ui.vertical(|ui| {
-                                ui.set_width(220.0);
-                                self.images.show_banner(ui, game.steam_app_id, &game.name, 220.0);
-                                ui.add_space(4.0);
-                                ui.label(RichText::new(&game.name).strong().size(15.0));
-                                ui.label(muted(format!("{} mode{}", game.modes, if game.modes == 1 { "" } else { "s" })));
-                                if yours {
-                                    pill(ui, "In your games", ON_ACCENT, OK);
-                                }
+                // As many cards as fit in a row: they keep their width.
+                let gap = 12.0;
+                let card_width = GAME_CARD_BANNER + 2.0 * 14.0 + 2.0;
+                let columns = (((ui.available_width() + gap) / (card_width + gap)).floor() as usize).max(1);
+                for row in games.chunks(columns) {
+                    ui.horizontal_top(|ui| {
+                        ui.spacing_mut().item_spacing.x = gap;
+                        for game in row {
+                            let yours = mine.contains(&crate::game::slug(&game.name));
+                            let response = card(PANEL).inner_margin(Margin::same(14)).show(ui, |ui| {
+                                ui.vertical(|ui| {
+                                    ui.set_width(GAME_CARD_BANNER);
+                                    self.images.show_banner(ui, game.steam_app_id, &game.name, GAME_CARD_BANNER);
+                                    ui.add_space(4.0);
+                                    ui.add(egui::Label::new(RichText::new(&game.name).strong().size(15.0)).truncate());
+                                    ui.label(muted(format!("{} mode{}", game.modes, if game.modes == 1 { "" } else { "s" })));
+                                    if yours {
+                                        pill(ui, "In your games", ON_ACCENT, OK);
+                                    }
+                                });
                             });
-                        });
-                        if response.response.interact(egui::Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                            open = Some(game.clone());
+                            if response.response.interact(egui::Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                                open = Some(game.clone());
+                            }
                         }
-                    }
-                });
+                    });
+                    ui.add_space(gap);
+                }
                 if let Some(game) = open {
                     self.community.open_game(game);
                 }
@@ -515,19 +524,7 @@ impl App {
                     None => ui.allocate_exact_size(ROW_IMAGE, egui::Sense::hover()).1,
                 };
                 ui.add_space(4.0);
-                ui.vertical(|ui| {
-                    ui.label(RichText::new(&mode.name).strong().size(15.0));
-                    let mut line = format!("by {} · v{}", mode.author, mode.version);
-                    let median = (mode.figures.median_minutes > 0).then(|| format!("{} min median", mode.figures.median_minutes));
-                    // No number of players or downloads while they are small: they put newcomers off.
-                    for figure in [mode.figures.liked(), median].into_iter().flatten() {
-                        line.push_str(&format!(" · {figure}"));
-                    }
-                    ui.label(muted(line).size(12.0));
-                    if let Some(first) = mode.description.lines().find(|l| !l.trim().is_empty()) {
-                        ui.add(egui::Label::new(RichText::new(first.trim()).size(12.5)).truncate());
-                    }
-                });
+                // Its state first, on the right: the text takes what is left.
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     match self.community.installed.get(&mode.id) {
                         None if self.community.linked.contains_key(&mode.id) => pill(ui, "Installed", ON_ACCENT, OK),
@@ -537,6 +534,19 @@ impl App {
                         None if !community::APIS.contains(&mode.api) => pill(ui, "Needs a newer GameViber", MUTED, RAISED),
                         None => {}
                     }
+                    ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                        ui.add(egui::Label::new(RichText::new(&mode.name).strong().size(15.0)).truncate());
+                        let mut line = format!("by {} · v{}", mode.author, mode.version);
+                        let median = (mode.figures.median_minutes > 0).then(|| format!("{} min median", mode.figures.median_minutes));
+                        // No number of players or downloads while they are small: they put newcomers off.
+                        for figure in [mode.figures.liked(), median].into_iter().flatten() {
+                            line.push_str(&format!(" · {figure}"));
+                        }
+                        ui.add(egui::Label::new(muted(line).size(12.0)).truncate());
+                        if let Some(first) = mode.description.lines().find(|l| !l.trim().is_empty()) {
+                            ui.add(egui::Label::new(RichText::new(first.trim()).size(12.5)).truncate());
+                        }
+                    });
                 });
             });
         });

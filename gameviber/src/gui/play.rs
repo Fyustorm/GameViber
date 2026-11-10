@@ -22,6 +22,8 @@ const TILE_HEIGHT: f32 = 104.0;
 const TWO_COLUMNS_WIDTH: f32 = 720.0;
 /// From this many other settings, they can be searched.
 const SEARCH_FROM: usize = 6;
+/// The box a number setting's value is shown and typed in.
+const PARAM_VALUE_WIDTH: f32 = 64.0;
 
 /// The mode page's tabs.
 #[derive(PartialEq, Clone, Copy, Default)]
@@ -178,10 +180,9 @@ impl App {
         true
     }
 
-    /// The Settings tab: what is missing, how the mode works, its presets and settings.
+    /// The Settings tab: how the mode works, its presets and settings.
     pub(super) fn mode_settings(&mut self, ui: &mut egui::Ui, s: &Shared) {
         let mode = &s.mode;
-        self.readiness_card(ui, s);
         let Some(info) = &mode.info else {
             ui.label(muted("This mode does not load. Fix it in Creator, or pick another one."));
             return;
@@ -276,10 +277,12 @@ impl App {
                 let layout = egui::Layout::top_down(egui::Align::Min);
                 ui.allocate_ui_with_layout(Vec2::new(width, 0.0), layout, |ui| {
                     ui.set_width(width);
+                    ui.set_max_width(width);
                     left(self, ui);
                 });
                 ui.allocate_ui_with_layout(Vec2::new(width, 0.0), layout, |ui| {
                     ui.set_width(width);
+                    ui.set_max_width(width);
                     right(self, ui);
                 });
             });
@@ -498,6 +501,7 @@ pub(super) fn mode_tiles(ui: &mut egui::Ui, s: &Shared, user_modes: bool) -> Opt
             selected: active,
             badge: active.then_some("Active"),
             image: None,
+            footer: 0.0,
         };
         if tile.show(ui, size).clicked() && !active {
             clicked = Some(entry.id.clone());
@@ -527,14 +531,30 @@ pub(super) fn param_widget(ui: &mut egui::Ui, def: &ParamDef, value: &ParamValue
                 ui.label(label);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| new = reset(ui, def, changed));
             });
-            ui.spacing_mut().slider_width = (ui.available_width() - 70.0).max(80.0);
-            let mut slider = egui::Slider::new(&mut v, *min..=*max);
-            if let Some(step) = step {
+            // The value in a box of its own width: the row is never wider than
+            // the column, whatever its decimals (else each row widens the next).
+            let mut moved = false;
+            ui.horizontal(|ui| {
+                let gap = ui.spacing().item_spacing.x;
+                ui.spacing_mut().slider_width = (ui.available_width() - PARAM_VALUE_WIDTH - gap).max(40.0);
                 // As many decimals as the step has: 1 -> 0, 0.05 -> 2.
-                let decimals = (-step.log10()).ceil().max(0.0) as usize;
-                slider = slider.step_by(*step).fixed_decimals(decimals);
+                let decimals = step.map(|step| (-step.log10()).ceil().max(0.0) as usize);
+                let mut slider = egui::Slider::new(&mut v, *min..=*max).show_value(false);
+                if let Some(step) = step {
+                    slider = slider.step_by(*step);
+                }
+                moved |= ui.add(slider).changed();
+                let mut value = egui::DragValue::new(&mut v).range(*min..=*max).speed(step.unwrap_or((max - min) / 200.0));
+                if let Some(decimals) = decimals {
+                    value = value.fixed_decimals(decimals);
+                }
+                let size = Vec2::new(PARAM_VALUE_WIDTH, ui.spacing().interact_size.y);
+                moved |= ui.add_sized(size, value).changed();
+            });
+            if let (true, Some(step)) = (moved, step) {
+                // Typed values snap to the step, like the slider's.
+                v = (*min + ((v - *min) / *step).round() * *step).clamp(*min, *max);
             }
-            let moved = ui.add(slider).changed();
             ui.add_space(4.0);
             new.or(moved.then_some(ParamValue::Number(v)))
         }

@@ -1,6 +1,6 @@
 //! Whether GameViber gets what modes read: the status bar's chips (gamepad
-//! and rumble, toys, the game's image, its sound) and, on a mode's page and in
-//! the Creator, what is missing for that mode, said plainly with the way to fix it.
+//! and rumble, toys, the game's image, its sound) and, on the Live page, what
+//! is missing for the mode played, said plainly with the way to fix it.
 
 use eframe::egui::{self, Color32, Margin, RichText};
 

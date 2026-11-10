@@ -1,10 +1,11 @@
 //! Live page: what is going on while playing, to keep on a second screen —
-//! the mode (to switch it, its preset and main settings, what it tracks),
-//! what goes to the toys, what the mode's inputs say right now, and the
-//! gamepad with its combos.
+//! what keeps the mode from working ("Before you play"), the mode (to switch
+//! it, its preset and main settings, what it tracks), what goes to the toys,
+//! what the mode's inputs say right now, and the gamepad with its combos.
 
 use eframe::egui::{self, Margin, RichText, Vec2};
 
+use super::images::BANNER_RATIO;
 use super::theme::*;
 use super::{gamepad_inputs, App, Page, Route};
 use crate::engine::{Command, Shared, HISTORY_SECS};
@@ -16,31 +17,60 @@ use crate::shortcuts::{Action, Status as ShortcutStatus};
 const THREE_COLUMNS_WIDTH: f32 = 1100.0;
 /// Width of the names before meters and curves.
 const LABEL_WIDTH: f32 = 110.0;
+/// The game's banner on top of the page.
+const BANNER_WIDTH: f32 = 180.0;
 
 impl App {
     pub(super) fn live_ui(&mut self, ui: &mut egui::Ui, s: &Shared) {
         let frame = egui::Frame::new().fill(BG).inner_margin(Margin::symmetric(24, 18));
         egui::CentralPanel::default().frame(frame).show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
+                // The game played: its banner, its name.
                 ui.horizontal(|ui| {
-                    heading(ui, "Live");
-                    let game = s.game.as_ref().map_or("No game".to_owned(), |g| g.name.clone());
-                    ui.label(muted(format!("· {game}")).size(16.0));
-                    // Straight to the mode's pages.
-                    if !s.mode.id.is_empty() {
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.button("In the Creator ›").clicked() {
-                                self.page = Page::Creator;
-                            }
-                            if ui.button("Mode page ›").on_hover_text("Its settings, presets and variants, its game").clicked() {
-                                self.page = Page::Library;
-                                self.route = Route::Mode;
-                            }
-                        });
+                    let banner = s.game.as_ref().and_then(|g| g.steam_app_id).and_then(|app| self.images.banner(ui.ctx(), app));
+                    if let Some(texture) = banner {
+                        let size = Vec2::new(BANNER_WIDTH, (BANNER_WIDTH / BANNER_RATIO).round());
+                        cover_image(ui, &texture, size, egui::CornerRadius::same(8));
+                        ui.add_space(8.0);
                     }
+                    ui.vertical(|ui| {
+                        eyebrow(ui, "Live");
+                        match &s.game {
+                            Some(game) => {
+                                ui.horizontal(|ui| {
+                                    heading(ui, &game.name);
+                                    let running = s.running_executable.as_deref().is_some_and(|exe| game.is_running(exe, s.running_app));
+                                    if running {
+                                        ui.label(RichText::new("● Running").color(OK).size(12.5));
+                                    }
+                                });
+                            }
+                            None => {
+                                heading(ui, "No game");
+                                ui.label(muted("Pick one in the top bar, or start it with the overlay: GameViber recognizes it."));
+                            }
+                        }
+                        ui.label(muted("What happens while you play: keep it on a second screen."));
+                        // Straight to the mode's pages.
+                        if !s.mode.id.is_empty() {
+                            ui.add_space(4.0);
+                            ui.horizontal(|ui| {
+                                let settings = ui.button("⚙ Mode settings").on_hover_text("All its settings, its presets and variants, its game");
+                                if settings.clicked() {
+                                    self.page = Page::Library;
+                                    self.route = Route::Mode;
+                                }
+                                let edit = ui.button("✏ Edit in the Creator").on_hover_text("In the Creator: its script, phases, captures and recordings");
+                                if edit.clicked() {
+                                    self.page = Page::Creator;
+                                }
+                            });
+                        }
+                    });
                 });
-                ui.label(muted("What happens while you play: keep it on a second screen."));
-                ui.add_space(8.0);
+                ui.add_space(12.0);
+                // What keeps the mode from working, with the way to fix it: here, where the player plays.
+                self.readiness_card(ui, s);
                 let three = ui.available_width() >= THREE_COLUMNS_WIDTH;
                 ui.columns(if three { 3 } else { 2 }, |columns| {
                     self.mode_card(&mut columns[0], s);

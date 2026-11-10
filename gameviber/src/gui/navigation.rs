@@ -24,6 +24,8 @@ pub(super) struct Location {
     creator: creator::Tab,
     setup: setup::Tab,
     community: community::Place,
+    /// The library's page: every game, one of them, the built-in modes.
+    library: Filter,
 }
 
 #[derive(Default)]
@@ -52,6 +54,7 @@ impl App {
             creator: self.creator.tab,
             setup: self.setup_tab,
             community: self.community.place(),
+            library: self.library.filter.clone(),
         }
     }
 
@@ -70,6 +73,7 @@ impl App {
         self.creator.tab = to.creator;
         self.setup_tab = to.setup;
         self.community.go_to(to.community);
+        self.library.filter = to.library;
     }
 
     /// Goes back or forth when asked: the mouse's side buttons, Alt+←/→ (not while typing).

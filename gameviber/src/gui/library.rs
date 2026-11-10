@@ -1,5 +1,5 @@
 //! Library page: the player's modes, by game (the built-in ones under "Any
-//! game"); creating a mode, which starts with its game and how its script is
+//! game"), a click playing one and showing it Live, Edit opening its page; creating a mode, which starts with its game and how its script is
 //! got (what an AI assistant is asked for it, ticked there) before opening the
 //! Creator; and the active mode's page (`play.rs`): its settings, its
 //! variants, what it reads and its game (how GameViber recognizes it, which
@@ -28,6 +28,31 @@ const TILE_MIN_WIDTH: f32 = 260.0;
 /// A mode's image is looked for again this often: it changes in the Creator.
 const COVER_REFRESH: Duration = Duration::from_secs(5);
 const TILE_HEIGHT: f32 = 92.0;
+/// Room under a tile's text for its Play and Edit buttons.
+const TILE_BUTTONS: f32 = 34.0;
+/// A game's card on the library's first page: its banner, then a row per mode.
+const CARD_MIN_WIDTH: f32 = 300.0;
+const CARD_BANNER_HEIGHT: f32 = 96.0;
+const MODE_ROW_HEIGHT: f32 = 38.0;
+/// The banner on top of a game's page.
+const GAME_BANNER_WIDTH: f32 = 230.0;
+
+/// A description written as a list ("• Fight wave" a line) on one line, for a tile.
+fn one_line(description: &str) -> String {
+    let items: Vec<&str> = description
+        .lines()
+        .map(|l| l.trim().trim_start_matches(['•', '-', '*']).trim())
+        .filter(|l| !l.is_empty())
+        .collect();
+    items.join(" · ")
+}
+
+/// What a click on a mode does: play it (and show it Live), or open its page.
+#[derive(Clone, Copy)]
+enum Pick {
+    Play,
+    Edit,
+}
 
 /// The modes shown.
 #[derive(Default, PartialEq, Clone)]
@@ -98,6 +123,15 @@ impl App {
         self.route = Route::Create;
     }
 
+    /// Plays the mode `id` of `game` (None: a built-in mode for any game) and shows it Live.
+    fn play_live(&mut self, s: &Shared, game: Option<&Game>, id: &str) {
+        // The mode's tile keeps the variant played.
+        let id = if main_of(&s.mode.id) == id { &s.mode.id } else { id };
+        self.play_mode(s, game, id);
+        self.feedback.open = false;
+        self.page = Page::Live;
+    }
+
     /// Plays the mode `id` of `game` (None: a built-in mode for any game) and opens its page.
     fn open_mode(&mut self, s: &Shared, game: Option<&Game>, id: &str) {
         // The mode's tile keeps the variant played.
@@ -133,6 +167,10 @@ impl App {
                         if link.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                             self.route = *route;
                             self.feedback.open = false;
+                            // "Library": its first page, every game.
+                            if *route == Route::Library {
+                                self.library.filter = Filter::All;
+                            }
                         }
                     }
                     None => {
@@ -148,6 +186,33 @@ impl App {
 
     fn library(&mut self, ui: &mut egui::Ui, s: &Shared) {
         self.community_banner(ui, s);
+        let groups = groups(s);
+        // A game left without modes (or deleted) has no page any more.
+        if let Filter::Game(id) = &self.library.filter {
+            if !groups.iter().any(|(g, _)| g.as_ref().is_some_and(|g| g.id == *id)) {
+                self.library.filter = Filter::All;
+            }
+        }
+        let open = match self.library.filter.clone() {
+            Filter::All => self.all_games(ui, s, &groups),
+            Filter::Game(id) => {
+                let (game, modes) = groups.iter().find(|(g, _)| g.as_ref().is_some_and(|g| g.id == id)).cloned().unwrap_or_default();
+                self.game_page(ui, s, game.as_ref(), &modes)
+            }
+            Filter::AnyGame => {
+                self.breadcrumb(ui, &[("Library", Some(Route::Library)), ("Any game", None)]);
+                self.builtin_modes(ui, s)
+            }
+        };
+        match open {
+            Some((game, id, Pick::Play)) => self.play_live(s, game.as_ref(), &id),
+            Some((game, id, Pick::Edit)) => self.open_mode(s, game.as_ref(), &id),
+            None => {}
+        }
+    }
+
+    /// The library's first page: every game as a card, then the built-in modes.
+    fn all_games(&mut self, ui: &mut egui::Ui, s: &Shared, groups: &[(Option<Game>, Vec<String>)]) -> Option<(Option<Game>, String, Pick)> {
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
                 heading(ui, "Library");
@@ -167,23 +232,6 @@ impl App {
         });
         ui.add_space(10.0);
         self.unlinked_executable(ui, s);
-
-        let groups = groups(s);
-        ui.horizontal_wrapped(|ui| {
-            let mut chip = |ui: &mut egui::Ui, filter: Filter, label: String| {
-                if ui.selectable_label(self.library.filter == filter, label).clicked() {
-                    self.library.filter = filter;
-                }
-            };
-            chip(ui, Filter::All, "All".to_owned());
-            for (game, modes) in &groups {
-                if let Some(game) = game {
-                    chip(ui, Filter::Game(game.id.clone()), format!("{} · {}", game.name, modes.len()));
-                }
-            }
-            chip(ui, Filter::AnyGame, "Any game".to_owned());
-        });
-        ui.add_space(10.0);
         if groups.is_empty() {
             card(PANEL).inner_margin(Margin::symmetric(18, 14)).show(ui, |ui| {
                 ui.set_width(ui.available_width());
@@ -195,78 +243,197 @@ impl App {
             });
             ui.add_space(12.0);
         }
-        let mut open: Option<(Option<Game>, String)> = None;
-        for (game, modes) in &groups {
-            let shown = match &self.library.filter {
-                Filter::All => true,
-                Filter::Game(id) => game.as_ref().is_some_and(|g| g.id == *id),
-                Filter::AnyGame => false,
-            };
-            if !shown {
-                continue;
+        let open = self.game_cards(ui, s, groups);
+        ui.add_space(8.0);
+        let builtin = self.builtin_modes(ui, s);
+        open.or(builtin)
+    }
+
+    /// A game's page: its banner and name, then its modes as tiles.
+    fn game_page(&mut self, ui: &mut egui::Ui, s: &Shared, game: Option<&Game>, modes: &[String]) -> Option<(Option<Game>, String, Pick)> {
+        let name = game.map_or("In no game", |g| g.name.as_str());
+        self.breadcrumb(ui, &[("Library", Some(Route::Library)), (name, None)]);
+        ui.horizontal(|ui| {
+            if let Some(texture) = game.and_then(|g| g.steam_app_id).and_then(|app| self.images.banner(ui.ctx(), app)) {
+                let size = egui::Vec2::new(GAME_BANNER_WIDTH, (GAME_BANNER_WIDTH / BANNER_RATIO).round());
+                cover_image(ui, &texture, size, egui::CornerRadius::same(8));
+                ui.add_space(8.0);
             }
-            ui.horizontal(|ui| {
-                // The game's banner, when Steam has one.
-                if let Some(app) = game.as_ref().and_then(|g| g.steam_app_id) {
-                    if let Some(texture) = self.images.banner(ui.ctx(), app) {
-                        let size = egui::Vec2::new(120.0, (120.0 / BANNER_RATIO).round());
-                        ui.add(egui::Image::new(&texture).fit_to_exact_size(size).corner_radius(6));
-                        ui.add_space(4.0);
+            ui.vertical(|ui| {
+                heading(ui, name);
+                let count = if modes.len() == 1 { "1 mode".to_owned() } else { format!("{} modes", modes.len()) };
+                ui.horizontal(|ui| {
+                    ui.label(muted(count));
+                    if let Some(game) = game {
+                        let running = s.running_executable.as_deref().is_some_and(|exe| game.is_running(exe, s.running_app));
+                        if running {
+                            ui.label(RichText::new("● Running").color(OK).size(12.5));
+                        }
                     }
-                }
-                let name = game.as_ref().map_or("In no game", |g| g.name.as_str());
-                ui.label(RichText::new(name).strong().size(16.0));
+                });
                 if let Some(game) = game {
-                    let running = s.running_executable.as_deref().is_some_and(|exe| game.is_running(exe, s.running_app));
-                    if running {
-                        ui.label(RichText::new("● Running").color(OK).size(12.5));
-                    }
-                    if ui.small_button("+ Mode").on_hover_text(format!("Create another mode for {}", game.name)).clicked() {
+                    ui.add_space(6.0);
+                    if ui.add(primary(&format!("+ Create a mode for {}", game.name))).clicked() {
                         self.open_create(Some(&game.name));
                     }
                 }
             });
-            ui.add_space(4.0);
-            if let Some(id) = self.mode_grid(ui, s, game.as_ref(), modes) {
-                open = Some((game.clone(), id));
+        });
+        ui.add_space(12.0);
+        self.mode_grid(ui, s, game, modes).map(|(id, pick)| (game.cloned(), id, pick))
+    }
+
+    /// The built-in modes, for any game.
+    fn builtin_modes(&mut self, ui: &mut egui::Ui, s: &Shared) -> Option<(Option<Game>, String, Pick)> {
+        ui.label(RichText::new("Any game · built-in").strong().size(16.0).color(MUTED));
+        ui.label(muted("Made for a genre, they know nothing of your game: good to try GameViber right away."));
+        ui.add_space(4.0);
+        let builtins: Vec<String> = s.modes.iter().filter(|e| e.builtin).map(|e| e.id.clone()).collect();
+        self.mode_grid(ui, s, None, &builtins).map(|(id, pick)| (None, id, pick))
+    }
+
+    /// Every game as a card: its banner, its name (showing it alone) and its
+    /// modes as rows; returns the mode clicked, with its game.
+    fn game_cards(&mut self, ui: &mut egui::Ui, s: &Shared, groups: &[(Option<Game>, Vec<String>)]) -> Option<(Option<Game>, String, Pick)> {
+        let mut open = None;
+        let gap = 12.0;
+        let width = ui.available_width();
+        let columns = (((width + gap) / (CARD_MIN_WIDTH + gap)).floor() as usize).max(1);
+        let card_width = ((width - gap * (columns - 1) as f32) / columns as f32).floor();
+        for row in groups.chunks(columns) {
+            ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing.x = gap;
+                for (game, modes) in row {
+                    let size = egui::Vec2::new(card_width, 0.0);
+                    ui.allocate_ui_with_layout(size, egui::Layout::top_down(egui::Align::Min), |ui| {
+                        if let Some((id, pick)) = self.game_card_tile(ui, s, game.as_ref(), modes, card_width) {
+                            open = Some((game.clone(), id, pick));
+                        }
+                    });
+                }
+            });
+            ui.add_space(gap);
+        }
+        open
+    }
+
+    /// One game's card in the library; returns the mode clicked.
+    fn game_card_tile(&mut self, ui: &mut egui::Ui, s: &Shared, game: Option<&Game>, modes: &[String], width: f32) -> Option<(String, Pick)> {
+        let mut clicked = None;
+        let inner = width - 2.0;
+        let playing_game = game.is_some_and(|g| s.game.as_ref().is_some_and(|p| p.id == g.id));
+        card(PANEL).inner_margin(Margin::same(0)).show(ui, |ui| {
+            ui.set_width(inner);
+            ui.spacing_mut().item_spacing.y = 0.0;
+            // The banner, else the game's name on a plain strip: both show the game alone.
+            let (rect, banner) = ui.allocate_exact_size(egui::Vec2::new(inner, CARD_BANNER_HEIGHT), egui::Sense::click());
+            let corners = egui::CornerRadius { nw: 11, ne: 11, sw: 0, se: 0 };
+            let name = game.map_or("In no game", |g| g.name.as_str());
+            match game.and_then(|g| g.steam_app_id).and_then(|app| self.images.banner(ui.ctx(), app)) {
+                Some(texture) => paint_cover(ui.painter(), rect, &texture, corners),
+                None => {
+                    ui.painter().rect_filled(rect, corners, RAISED);
+                    let font = egui::FontId::proportional(16.0);
+                    ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, name, font, MUTED);
+                }
             }
-            ui.add_space(8.0);
-        }
-        if matches!(self.library.filter, Filter::All | Filter::AnyGame) {
-            ui.label(RichText::new("Any game · built-in").strong().size(16.0).color(MUTED));
-            ui.label(muted("Made for a genre, they know nothing of your game: good to try GameViber right away."));
-            ui.add_space(4.0);
-            let builtins: Vec<String> = s.modes.iter().filter(|e| e.builtin).map(|e| e.id.clone()).collect();
-            if let Some(id) = self.mode_grid(ui, s, None, &builtins) {
-                open = Some((None, id));
+            if let Some(game) = game {
+                if banner.on_hover_text(format!("Only {}", game.name)).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                    self.library.filter = Filter::Game(game.id.clone());
+                }
             }
-        }
-        if let Some((game, id)) = open {
-            self.open_mode(s, game.as_ref(), &id);
-        }
+            egui::Frame::new().inner_margin(Margin::symmetric(12, 8)).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let title = ui.add(egui::Label::new(RichText::new(name).strong().size(15.0).color(TEXT)).truncate().sense(egui::Sense::click()));
+                    if let Some(game) = game {
+                        if title.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                            self.library.filter = Filter::Game(game.id.clone());
+                        }
+                        let running = s.running_executable.as_deref().is_some_and(|exe| game.is_running(exe, s.running_app));
+                        if running {
+                            ui.label(RichText::new("● Running").color(OK).size(12.5));
+                        }
+                    }
+                });
+            });
+            for id in modes {
+                let (name, kind) = self.mode_names(s, id);
+                let active = playing_game && main_of(&s.mode.id) == *id;
+                let (rect, row) = ui.allocate_exact_size(egui::Vec2::new(inner, MODE_ROW_HEIGHT), egui::Sense::click());
+                let painter = ui.painter();
+                let fill = if active { SELECTED_BG } else if row.hovered() { RAISED } else { PANEL };
+                painter.rect_filled(rect, 0, fill);
+                painter.hline(rect.x_range(), rect.top(), egui::Stroke::new(1.0, LINE));
+                if active {
+                    painter.vline(rect.left() + 1.0, rect.y_range(), egui::Stroke::new(2.0, ACCENT));
+                }
+                let icon = egui::Rect::from_center_size(egui::Pos2::new(rect.left() + 24.0, rect.center().y), egui::Vec2::splat(24.0));
+                painter.rect_filled(icon, 6, RAISED);
+                painter.text(icon.center(), egui::Align2::CENTER_CENTER, mode_icon(&ModeEntry::from_id(id)), egui::FontId::proportional(13.0), ACCENT);
+                // Its page, to change it; the row itself plays it.
+                let edit_rect = egui::Rect::from_min_size(egui::Pos2::new(rect.right() - 56.0, rect.center().y - 11.0), egui::Vec2::new(46.0, 22.0));
+                let mut right = edit_rect.left() - 10.0;
+                if active {
+                    let badge = painter.text(egui::Pos2::new(right, rect.center().y), egui::Align2::RIGHT_CENTER, "Playing", egui::FontId::proportional(11.5), ACCENT_TEXT);
+                    right = badge.left() - 10.0;
+                }
+                let left = icon.right() + 10.0;
+                let title = painter.layout_no_wrap(name, egui::FontId::proportional(14.0), TEXT);
+                let room = (right - left).max(20.0);
+                let kind = painter.layout(kind, egui::FontId::proportional(12.0), MUTED, (room - title.size().x - 8.0).max(0.0));
+                let title_width = title.size().x;
+                painter.galley(egui::Pos2::new(left, rect.center().y - title.size().y / 2.0), title, TEXT);
+                if left + title_width + 8.0 + kind.size().x <= right && kind.rows.len() == 1 {
+                    painter.galley(egui::Pos2::new(left + title_width + 8.0, rect.center().y - kind.size().y / 2.0), kind, MUTED);
+                }
+                let edit = ui.put(edit_rect, egui::Button::new(RichText::new("Edit").size(12.0))).on_hover_text("Its settings, presets, variants and script");
+                if edit.clicked() {
+                    clicked = Some((id.clone(), Pick::Edit));
+                } else if row.on_hover_text("Play it").on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                    clicked = Some((id.clone(), Pick::Play));
+                }
+            }
+            if let Some(game) = game {
+                egui::Frame::new().inner_margin(Margin::symmetric(8, 6)).show(ui, |ui| {
+                    ui.painter().hline(ui.max_rect().x_range(), ui.max_rect().top() - 6.0, egui::Stroke::new(1.0, LINE));
+                    if ui.small_button("+ Mode").on_hover_text(format!("Create another mode for {}", game.name)).clicked() {
+                        self.open_create(Some(&game.name));
+                    }
+                });
+            }
+        });
+        clicked
+    }
+
+    /// A mode's name, and what it is: its author, Community, or why it is not there.
+    fn mode_names(&self, s: &Shared, id: &str) -> (String, String) {
+        let entry = ModeEntry::from_id(id);
+        let info = s.catalog.get(id).and_then(|r| r.as_ref().ok());
+        let name = info.map_or(entry.key.clone(), |i| i.name.clone());
+        let kind = match s.catalog.get(id) {
+            None if !s.modes.iter().any(|e| e.id == *id) => "missing file".to_owned(),
+            Some(Err(_)) => "does not load".to_owned(),
+            _ if entry.builtin => info.map_or(String::new(), |i| i.category.clone()),
+            _ if self.origin_of(id).is_some_and(|o| !o.own) => "Community".to_owned(),
+            Some(Ok(i)) if !i.author.is_empty() => format!("by {}", i.author),
+            _ => "Yours".to_owned(),
+        };
+        (name, kind)
     }
 
     /// Tiles of the modes `ids`; returns the one clicked.
-    fn mode_grid(&mut self, ui: &mut egui::Ui, s: &Shared, game: Option<&Game>, ids: &[String]) -> Option<String> {
+    fn mode_grid(&mut self, ui: &mut egui::Ui, s: &Shared, game: Option<&Game>, ids: &[String]) -> Option<(String, Pick)> {
         let mut clicked = None;
         let playing_game = game.is_some_and(|g| s.game.as_ref().is_some_and(|p| p.id == g.id)) || game.is_none();
         // As many columns as fit, even for one mode: a tile keeps its width.
         let columns = ((ui.available_width() + 12.0) / (TILE_MIN_WIDTH + 12.0)).floor().max(1.0) as usize;
-        tile_grid(ui, ids.len().max(columns), TILE_MIN_WIDTH, TILE_HEIGHT, |ui, i, size| {
+        tile_grid(ui, ids.len().max(columns), TILE_MIN_WIDTH, TILE_HEIGHT + TILE_BUTTONS, |ui, i, size| {
             let Some(id) = ids.get(i) else { return };
             let entry = ModeEntry::from_id(id);
             let info = s.catalog.get(id).and_then(|r| r.as_ref().ok());
-            let name = info.map_or(entry.key.clone(), |i| i.name.clone());
-            let kind = match s.catalog.get(id) {
-                None if !s.modes.iter().any(|e| e.id == *id) => "missing file".to_owned(),
-                Some(Err(_)) => "does not load".to_owned(),
-                _ if entry.builtin => info.map_or(String::new(), |i| i.category.clone()),
-                _ if self.origin_of(id).is_some_and(|o| !o.own) => "Community".to_owned(),
-                Some(Ok(i)) if !i.author.is_empty() => format!("by {}", i.author),
-                _ => "Yours".to_owned(),
-            };
+            let (name, kind) = self.mode_names(s, id);
             let active = playing_game && main_of(&s.mode.id) == *id;
-            let body = info.map_or(String::new(), |i| i.description.clone());
+            let body = info.map_or(String::new(), |i| one_line(&i.description));
             let image = self.mode_cover(id).and_then(|path| self.images.file(ui.ctx(), &path));
             let tile = Tile {
                 icon: mode_icon(&entry),
@@ -276,9 +443,21 @@ impl App {
                 selected: active,
                 badge: active.then_some("Playing"),
                 image: image.as_ref(),
+                footer: TILE_BUTTONS,
             };
-            if tile.show(ui, size).clicked() {
-                clicked = Some(id.clone());
+            let response = tile.show(ui, size);
+            // Play it (the tile too), or open its page to change it.
+            let left = if image.is_some() { response.rect.left() + (response.rect.height() * 1.4).min(response.rect.width() * 0.4) + 12.0 } else { response.rect.left() + 14.0 };
+            let top = response.rect.bottom() - 14.0 - 26.0;
+            let play_rect = egui::Rect::from_min_size(egui::Pos2::new(left, top), egui::Vec2::new(76.0, 26.0));
+            let edit_rect = play_rect.translate(egui::Vec2::new(play_rect.width() + 8.0, 0.0)).with_max_x(play_rect.right() + 8.0 + 56.0);
+            let play = egui::Button::new(RichText::new("▶ Play").strong().color(ON_ACCENT)).fill(ACCENT);
+            let play = ui.put(play_rect, play).on_hover_text("Play it, and see it Live");
+            let edit = ui.put(edit_rect, egui::Button::new("Edit")).on_hover_text("Its settings, presets, variants and script");
+            if edit.clicked() {
+                clicked = Some((id.clone(), Pick::Edit));
+            } else if play.clicked() || response.clicked() {
+                clicked = Some((id.clone(), Pick::Play));
             }
         });
         clicked
