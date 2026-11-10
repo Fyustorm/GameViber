@@ -362,10 +362,17 @@ impl Client {
     }
 
     /// Sends a request built by `send`; the answer's body, or the server's error.
-    fn call(&self, path: &str, send: impl FnOnce(&ureq::Agent, &str, Option<String>) -> Result<ureq::http::Response<ureq::Body>, ureq::Error>) -> anyhow::Result<Vec<u8>> {
+    /// A token the server refuses (expired) is left out and the request sent
+    /// again: what anyone may do still works, the rest asks to sign in again.
+    fn call(&self, path: &str, send: impl Fn(&ureq::Agent, &str, Option<String>) -> Result<ureq::http::Response<ureq::Body>, ureq::Error>) -> anyhow::Result<Vec<u8>> {
         let url = format!("{}{path}", self.url);
         let auth = self.token.as_ref().map(|t| format!("Bearer {t}"));
-        let mut response = send(&Self::agent(), &url, auth).with_context(|| format!("the community server ({}) cannot be reached", self.url))?;
+        let unreachable = || format!("the community server ({}) cannot be reached", self.url);
+        let agent = Self::agent();
+        let mut response = send(&agent, &url, auth.clone()).with_context(unreachable)?;
+        if response.status() == 401 && auth.is_some() {
+            response = send(&agent, &url, None).with_context(unreachable)?;
+        }
         let status = response.status();
         let mut body = Vec::new();
         response.body_mut().as_reader().take(128 << 20).read_to_end(&mut body)?;
@@ -718,6 +725,37 @@ mod tests {
         )
         .unwrap();
         assert_eq!((detail.latest().unwrap().number, detail.game.steam_app_id, detail.is_public()), (2, Some(1145350), false));
+    }
+
+    #[test]
+    fn an_expired_token_still_browses() {
+        use std::io::{BufRead, BufReader, Write};
+        // A server refusing every token, and the author's pages without one.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for stream in listener.incoming().take(4) {
+                let mut stream = stream.unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let (mut first, mut auth) = (String::new(), false);
+                reader.read_line(&mut first).unwrap();
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    if line.trim().is_empty() {
+                        break;
+                    }
+                    auth |= line.to_ascii_lowercase().starts_with("authorization:");
+                }
+                let answer = if auth || first.contains("/authors/me") { "401 Unauthorized" } else { "200 OK" };
+                let body = if answer.starts_with("200") { "[]" } else { "" };
+                write!(stream, "HTTP/1.1 {answer}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            }
+        });
+        let account = Account { url: url.clone(), pseudo: "Fyu".into(), token: "expired".into() };
+        let client = Client::new(&url, Some(&account));
+        assert!(client.games("").unwrap().is_empty());
+        assert_eq!(client.my_modes().unwrap_err().to_string(), "sign in again");
     }
 }
 
