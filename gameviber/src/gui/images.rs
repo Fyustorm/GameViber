@@ -1,6 +1,7 @@
 //! Images loaded in threads: games' banners, as the website shows them (the
 //! header image of their Steam store page, for the games whose Steam app id is
-//! known, kept in GameViber's data directory once downloaded), and the images
+//! known, kept in GameViber's data directory once downloaded; recent games keep
+//! it under a path with a hash only Steam's store API tells), and the images
 //! showing modes (a community mode's cover from the server, a mode of the
 //! library's from its package).
 
@@ -27,6 +28,8 @@ const MAX_BYTES: u64 = 16 << 20;
 enum Source {
     /// Downloaded, and kept in a file when one is given.
     Web { url: String, keep: Option<PathBuf> },
+    /// The banner of a Steam app, kept in a file.
+    Banner { app: u32, keep: PathBuf },
     File(PathBuf),
 }
 
@@ -44,9 +47,8 @@ pub struct Images(HashMap<String, Slot>);
 impl Images {
     /// The banner of the Steam app `app`, once it is loaded.
     pub(super) fn banner(&mut self, ctx: &egui::Context, app: u32) -> Option<TextureHandle> {
-        let url = format!("https://shared.cloudflare.steamstatic.com/store_item_assets/steam/apps/{app}/header.jpg");
         let keep = config::data_dir().join("banners").join(format!("{app}.jpg"));
-        self.get(ctx, Source::Web { url, keep: Some(keep) })
+        self.get(ctx, Source::Banner { app, keep })
     }
 
     /// The image at `url`, once it is loaded (none when there is none).
@@ -62,6 +64,7 @@ impl Images {
     fn get(&mut self, ctx: &egui::Context, source: Source) -> Option<TextureHandle> {
         let key = match &source {
             Source::Web { url, .. } => url.clone(),
+            Source::Banner { app, .. } => format!("steam:{app}"),
             Source::File(path) => path.to_string_lossy().into_owned(),
         };
         let slot = self.0.entry(key.clone()).or_insert_with(|| {
@@ -105,17 +108,30 @@ impl Images {
 
 /// The image kept on disk, else downloaded (and kept).
 fn load(source: &Source) -> anyhow::Result<ColorImage> {
-    let (url, keep) = match source {
+    let keep = match source {
         Source::File(path) => return decode(&std::fs::read(path)?),
-        Source::Web { url, keep } => (url, keep),
+        Source::Web { keep, .. } => keep.as_ref(),
+        Source::Banner { keep, .. } => Some(keep),
     };
-    if let Some(image) = keep.as_ref().and_then(|path| std::fs::read(path).ok()).and_then(|bytes| decode(&bytes).ok()) {
+    if let Some(image) = keep.and_then(|path| std::fs::read(path).ok()).and_then(|bytes| decode(&bytes).ok()) {
         return Ok(image);
     }
     let agent: ureq::Agent = ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(20))).build().into();
-    let mut bytes = Vec::new();
-    agent.get(url).call().with_context(|| format!("downloading {url}"))?.body_mut().as_reader().take(MAX_BYTES).read_to_end(&mut bytes)?;
-    let image = decode(&bytes)?;
+    let (bytes, image) = match source {
+        Source::Banner { app, .. } => {
+            // The path without a hash, which older games still answer, else the one Steam's store gives.
+            let legacy = format!("https://shared.cloudflare.steamstatic.com/store_item_assets/steam/apps/{app}/header.jpg");
+            match download(&agent, &legacy) {
+                Ok(found) => found,
+                Err(e) => {
+                    log::debug!("banner {app}: {e:#}");
+                    download(&agent, &steam_header(&agent, *app)?)?
+                }
+            }
+        }
+        Source::Web { url, .. } => download(&agent, url)?,
+        Source::File(_) => unreachable!(),
+    };
     if let Some(path) = keep {
         let written = path.parent().map_or(Ok(()), config::create_dir).and_then(|()| std::fs::write(path, &bytes));
         if let Err(e) = written {
@@ -125,6 +141,33 @@ fn load(source: &Source) -> anyhow::Result<ColorImage> {
     Ok(image)
 }
 
+/// The image at `url`: its bytes, and decoded.
+fn download(agent: &ureq::Agent, url: &str) -> anyhow::Result<(Vec<u8>, ColorImage)> {
+    let mut bytes = Vec::new();
+    agent.get(url).call().with_context(|| format!("downloading {url}"))?.body_mut().as_reader().take(MAX_BYTES).read_to_end(&mut bytes)?;
+    let image = decode(&bytes)?;
+    Ok((bytes, image))
+}
+
+/// The header image of the Steam app `app`, as Steam's store API gives it.
+fn steam_header(agent: &ureq::Agent, app: u32) -> anyhow::Result<String> {
+    let url = format!("https://store.steampowered.com/api/appdetails?filters=basic&appids={app}");
+    let text = agent.get(&url).call().with_context(|| format!("asking {url}"))?.body_mut().read_to_string()?;
+    let answer: serde_json::Value = serde_json::from_str(&text)?;
+    header_of(&answer, app).with_context(|| format!("Steam gives no banner for {app}"))
+}
+
+/// `header_image` in Steam's answer about `app`, if it is an image of Steam's.
+fn header_of(answer: &serde_json::Value, app: u32) -> Option<String> {
+    let entry = answer.get(app.to_string())?;
+    if entry.get("success").and_then(serde_json::Value::as_bool) != Some(true) {
+        return None;
+    }
+    let url = entry.get("data")?.get("header_image")?.as_str()?;
+    let host = url.strip_prefix("https://")?.split(['/', '?']).next()?;
+    host.ends_with(".steamstatic.com").then(|| url.to_owned())
+}
+
 fn decode(bytes: &[u8]) -> anyhow::Result<ColorImage> {
     let mut image = image::load_from_memory(bytes)?;
     if image.width() > MAX_WIDTH {
@@ -132,4 +175,23 @@ fn decode(bytes: &[u8]) -> anyhow::Result<ColorImage> {
     }
     let image = image.to_rgba8();
     Ok(ColorImage::from_rgba_unmultiplied([image.width() as usize, image.height() as usize], image.as_raw()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn steam_header_is_read_from_the_store_answer() {
+        let answer = serde_json::json!({"4078430": {"success": true, "data": {"header_image":
+            "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/4078430/97215eb6/header.jpg?t=1791388584"}}});
+        assert_eq!(
+            header_of(&answer, 4078430).as_deref(),
+            Some("https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/4078430/97215eb6/header.jpg?t=1791388584")
+        );
+        assert_eq!(header_of(&answer, 1), None);
+        assert_eq!(header_of(&serde_json::json!({"1": {"success": false}}), 1), None);
+        let elsewhere = serde_json::json!({"1": {"success": true, "data": {"header_image": "https://evil.example/steamstatic.com/a.jpg"}}});
+        assert_eq!(header_of(&elsewhere, 1), None);
+    }
 }
