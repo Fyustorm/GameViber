@@ -37,7 +37,7 @@ export type Use = 'strokers' | 'screen' | 'programs'
 
 export const USES: Record<Use, { label: string; text: string }> = {
   strokers: {
-    label: 'Extras for strokers',
+    label: 'Vibrators + strokers',
     text: 'Plays on every toy, vibrators included; strokers also get its own strokes, thrusts or funscripts.',
   },
   screen: {
