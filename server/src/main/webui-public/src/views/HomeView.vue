@@ -260,9 +260,14 @@ const faq = [
       </div>
       <p v-else-if="games.error.value" class="state error">The community modes cannot be reached right now.</p>
       <p v-else-if="!featured.length" class="state">No mode published yet: yours could be the first, from the app's Sharing tab.</p>
-      <div v-else class="grid four">
-        <GameCard v-for="game in featured" :key="game.id" :game="game" />
-      </div>
+      <template v-else>
+        <div class="grid four">
+          <GameCard v-for="game in featured" :key="game.id" :game="game" />
+        </div>
+        <p class="show-more">
+          <RouterLink to="/games" class="button">Show more</RouterLink>
+        </p>
+      </template>
     </div>
   </section>
 
@@ -403,6 +408,11 @@ figcaption {
 
 .more {
   margin: 16px 0 0;
+}
+
+.show-more {
+  margin: 24px 0 0;
+  text-align: center;
 }
 
 .faq {
