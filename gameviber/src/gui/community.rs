@@ -230,6 +230,20 @@ impl App {
             Remote::Failed(e) => c.message = Some((false, e)),
             other => c.action = other,
         }
+        // A session the server refuses (expired) is forgotten: the author's
+        // panel asks to sign in again, the pseudo filled in.
+        let c = &mut self.community;
+        let refused = |r: &Remote<_>| matches!(r, Remote::Failed(e) if e.ends_with(community::SIGN_IN_AGAIN));
+        let message_refused = c.message.as_ref().is_some_and(|(ok, m)| !ok && m.ends_with(community::SIGN_IN_AGAIN));
+        if message_refused || refused(&c.mine) {
+            if let Some(Some(account)) = c.account.take() {
+                c.pseudo = account.pseudo;
+            }
+            Account::sign_out();
+            c.account = Some(None);
+            c.mine = Remote::Idle;
+            c.message = Some((false, "Your session has ended: sign in again, then publish.".to_owned()));
+        }
         self.scan_installed(s);
     }
 

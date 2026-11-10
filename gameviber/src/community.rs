@@ -27,6 +27,8 @@ pub const URL: &str = match option_env!("GAMEVIBER_COMMUNITY_URL") {
 /// The server of builds without `GAMEVIBER_COMMUNITY_URL`, which every build
 /// talked to before the public one.
 const LOCAL_URL: &str = "http://localhost:8080";
+/// The error of a request the server refused the account's session for (expired).
+pub const SIGN_IN_AGAIN: &str = "sign in again";
 const ORIGIN_FILE: &str = "community.json";
 const ACCOUNT_FILE: &str = "community.toml";
 const LINKS_FILE: &str = "community-links.json";
@@ -381,7 +383,7 @@ impl Client {
         }
         match serde_json::from_slice::<ErrorBody>(&body) {
             Ok(e) => bail!("{}", e.error),
-            Err(_) if status == 401 => bail!("sign in again"),
+            Err(_) if status == 401 => bail!(SIGN_IN_AGAIN),
             Err(_) => bail!("the community server answered {status}"),
         }
     }
@@ -755,7 +757,7 @@ mod tests {
         let account = Account { url: url.clone(), pseudo: "Fyu".into(), token: "expired".into() };
         let client = Client::new(&url, Some(&account));
         assert!(client.games("").unwrap().is_empty());
-        assert_eq!(client.my_modes().unwrap_err().to_string(), "sign in again");
+        assert_eq!(client.my_modes().unwrap_err().to_string(), SIGN_IN_AGAIN);
     }
 }
 
